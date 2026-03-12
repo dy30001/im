@@ -12,6 +12,7 @@ function readConfig() {
     mode,
     workspaceAllowlist,
     codexEndpoint: process.env.CODEX_IM_CODEX_ENDPOINT || "",
+    codexCommand: process.env.CODEX_IM_CODEX_COMMAND || "",
     feishu: {
       appId: process.env.FEISHU_APP_ID || "",
       appSecret: process.env.FEISHU_APP_SECRET || "",

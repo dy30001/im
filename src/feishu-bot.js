@@ -1,3 +1,4 @@
+const path = require("path");
 const { readConfig } = require("./config");
 const { SessionStore } = require("./session-store");
 const { CodexRpcClient } = require("./codex-rpc-client");
@@ -10,6 +11,7 @@ class FeishuBotRuntime {
     this.codex = new CodexRpcClient({
       endpoint: config.codexEndpoint,
       env: process.env,
+      codexCommand: config.codexCommand,
     });
     this.lark = null;
     this.client = null;
@@ -270,8 +272,8 @@ class FeishuBotRuntime {
 
   async handleBindCommand(normalized) {
     const bindingKey = this.sessionStore.buildBindingKey(normalized);
-    const workspaceRoot = extractBindPath(normalized.text);
-    if (!workspaceRoot) {
+    const rawWorkspaceRoot = extractBindPath(normalized.text);
+    if (!rawWorkspaceRoot) {
       await this.sendTextMessage({
         chatId: normalized.chatId,
         replyToMessageId: normalized.messageId,
@@ -280,11 +282,12 @@ class FeishuBotRuntime {
       return;
     }
 
-    if (!workspaceRoot.startsWith("/")) {
+    const workspaceRoot = normalizeWorkspacePath(rawWorkspaceRoot);
+    if (!isAbsoluteWorkspacePath(workspaceRoot)) {
       await this.sendTextMessage({
         chatId: normalized.chatId,
         replyToMessageId: normalized.messageId,
-        text: "只支持绝对路径绑定。",
+        text: "只支持绝对路径绑定。Windows 例如 `C:\\code\\repo`，macOS/Linux 例如 `/Users/name/repo`。",
       });
       return;
     }
@@ -329,12 +332,16 @@ class FeishuBotRuntime {
   }
 
   async handleWhereCommand(normalized) {
+    await this.showStatusPanel(normalized);
+  }
+
+  async showStatusPanel(normalized, { replyToMessageId } = {}) {
     const bindingKey = this.sessionStore.buildBindingKey(normalized);
     const workspaceRoot = this.resolveWorkspaceRootForBinding(bindingKey);
     if (!workspaceRoot) {
       await this.sendTextMessage({
         chatId: normalized.chatId,
-        replyToMessageId: normalized.messageId,
+        replyToMessageId: replyToMessageId || normalized.messageId,
         text: "当前会话还没有绑定工作目录。",
       });
       return;
@@ -353,15 +360,17 @@ class FeishuBotRuntime {
       });
     }
     const currentThread = threads.find((thread) => thread.id === threadId) || null;
-    const historyThreads = threads.filter((thread) => thread.id !== threadId);
+    const recentThreads = threads.filter((thread) => thread.id !== threadId).slice(0, 3);
+    const status = this.describeWorkspaceStatus(threadId);
     await this.sendInteractiveCard({
       chatId: normalized.chatId,
-      replyToMessageId: normalized.messageId,
-      card: buildWhereCard({
+      replyToMessageId: replyToMessageId || normalized.messageId,
+      card: buildStatusPanelCard({
         workspaceRoot,
         threadId,
         currentThread,
-        historyThreads,
+        recentThreads,
+        status,
       }),
     });
   }
@@ -432,39 +441,40 @@ class FeishuBotRuntime {
   }
 
   async handleWorkspacesCommand(normalized) {
+    await this.showThreadPicker(normalized);
+  }
+
+  async showThreadPicker(normalized, { replyToMessageId } = {}) {
     const bindingKey = this.sessionStore.buildBindingKey(normalized);
     const workspaceRoot = this.resolveWorkspaceRootForBinding(bindingKey);
-    const runtimeThreadsByWorkspaceRoot = new Map();
-    const workspaceItems = this.sessionStore.listWorkspaces(bindingKey);
-    const workspaceRoots = [
-      ...new Set(
-        [
-          workspaceRoot,
-          ...workspaceItems.map((item) => item.workspaceRoot),
-        ].filter(Boolean)
-      ),
-    ];
-
-    for (const candidateRoot of workspaceRoots) {
-      runtimeThreadsByWorkspaceRoot.set(
-        candidateRoot,
-        await this.refreshWorkspaceThreads(bindingKey, candidateRoot, normalized)
-      );
-    }
-
-    const items = this.sessionStore.listWorkspaces(bindingKey);
-    if (!items.length) {
-      await this.sendInfoCardMessage({
+    if (!workspaceRoot) {
+      await this.sendTextMessage({
         chatId: normalized.chatId,
-        replyToMessageId: normalized.messageId,
-        text: "当前会话还没有记录任何工作目录。",
+        replyToMessageId: replyToMessageId || normalized.messageId,
+        text: "当前会话还未绑定工作目录。先发送 `/codex bind /绝对路径`。",
       });
       return;
     }
+
+    const threads = await this.refreshWorkspaceThreads(bindingKey, workspaceRoot, normalized);
+    const currentThreadId = this.resolveThreadIdForBinding(bindingKey, workspaceRoot) || threads[0]?.id || "";
+    if (!threads.length) {
+      await this.sendInfoCardMessage({
+        chatId: normalized.chatId,
+        replyToMessageId: replyToMessageId || normalized.messageId,
+        text: `当前工作目录：\`${workspaceRoot}\`\n\n还没有可切换的历史线程。`,
+      });
+      return;
+    }
+
     await this.sendInteractiveCard({
       chatId: normalized.chatId,
-      replyToMessageId: normalized.messageId,
-      card: buildWorkspacesCard({ items, runtimeThreadsByWorkspaceRoot }),
+      replyToMessageId: replyToMessageId || normalized.messageId,
+      card: buildThreadPickerCard({
+        workspaceRoot,
+        threads,
+        currentThreadId,
+      }),
     });
   }
 
@@ -491,6 +501,7 @@ class FeishuBotRuntime {
         replyToMessageId: normalized.messageId,
         text: `已创建新线程并切换到它:\n${workspaceRoot}\n\nthread: ${createdThreadId}`,
       });
+      await this.showStatusPanel(normalized, { replyToMessageId: normalized.messageId });
     } catch (error) {
       await this.sendTextMessage({
         chatId: normalized.chatId,
@@ -501,17 +512,6 @@ class FeishuBotRuntime {
   }
 
   async handleUseCommand(normalized) {
-    const bindingKey = this.sessionStore.buildBindingKey(normalized);
-    const workspaceRoot = this.resolveWorkspaceRootForBinding(bindingKey);
-    if (!workspaceRoot) {
-      await this.sendTextMessage({
-        chatId: normalized.chatId,
-        replyToMessageId: normalized.messageId,
-        text: "当前会话还未绑定工作目录。先发送 `/codex bind /绝对路径`。",
-      });
-      return;
-    }
-
     const threadId = extractUseThreadId(normalized.text);
     if (!threadId) {
       await this.sendTextMessage({
@@ -522,39 +522,7 @@ class FeishuBotRuntime {
       return;
     }
 
-    const availableThreads = await this.refreshWorkspaceThreads(bindingKey, workspaceRoot, normalized);
-    const selectedThread = availableThreads.find((thread) => thread.id === threadId) || null;
-    if (!selectedThread) {
-      await this.sendInfoCardMessage({
-        chatId: normalized.chatId,
-        replyToMessageId: normalized.messageId,
-        text: `指定线程当前不可用\n\n工作目录：\`${workspaceRoot}\`\n线程：\`${threadId}\`\n\n先发送 \`/codex workspaces\` 查看当前 runtime 可见的历史线程。`,
-      });
-      return;
-    }
-
-    const resolvedWorkspaceRoot = selectedThread.cwd || workspaceRoot;
-    this.sessionStore.setActiveWorkspaceRoot(bindingKey, resolvedWorkspaceRoot);
-
-    this.sessionStore.setThreadIdForWorkspace(bindingKey, resolvedWorkspaceRoot, threadId, {
-      workspaceId: normalized.workspaceId,
-      chatId: normalized.chatId,
-      threadKey: normalized.threadKey,
-      senderId: normalized.senderId,
-    });
-    this.resumedThreadIds.delete(threadId);
-    const resumeResponse = await this.ensureThreadResumed(threadId);
-    const recentMessages = extractRecentConversationFromResumeResponse(resumeResponse);
-
-    await this.sendInfoCardMessage({
-      chatId: normalized.chatId,
-      replyToMessageId: normalized.messageId,
-      text: buildThreadSwitchSummary({
-        workspaceRoot: resolvedWorkspaceRoot,
-        thread: selectedThread,
-        recentMessages,
-      }),
-    });
+    await this.switchThreadById(normalized, threadId, { replyToMessageId: normalized.messageId });
   }
 
   async refreshWorkspaceThreads(bindingKey, workspaceRoot, normalized) {
@@ -580,6 +548,55 @@ class FeishuBotRuntime {
     });
     const threads = extractThreadsFromListResponse(response);
     return threads.filter((thread) => pathMatchesWorkspaceRoot(thread.cwd, workspaceRoot));
+  }
+
+  describeWorkspaceStatus(threadId) {
+    if (!threadId) {
+      return { code: "idle", label: "空闲" };
+    }
+    if (this.pendingApprovalByThreadId.has(threadId)) {
+      return { code: "approval", label: "等待授权" };
+    }
+    if (this.activeTurnIdByThreadId.has(threadId)) {
+      return { code: "running", label: "运行中" };
+    }
+    return { code: "idle", label: "空闲" };
+  }
+
+  async switchThreadById(normalized, threadId, { replyToMessageId } = {}) {
+    const bindingKey = this.sessionStore.buildBindingKey(normalized);
+    const workspaceRoot = this.resolveWorkspaceRootForBinding(bindingKey);
+    if (!workspaceRoot) {
+      await this.sendTextMessage({
+        chatId: normalized.chatId,
+        replyToMessageId: replyToMessageId || normalized.messageId,
+        text: "当前会话还未绑定工作目录。先发送 `/codex bind /绝对路径`。",
+      });
+      return;
+    }
+
+    const availableThreads = await this.refreshWorkspaceThreads(bindingKey, workspaceRoot, normalized);
+    const selectedThread = availableThreads.find((thread) => thread.id === threadId) || null;
+    if (!selectedThread) {
+      await this.sendTextMessage({
+        chatId: normalized.chatId,
+        replyToMessageId: replyToMessageId || normalized.messageId,
+        text: "指定线程当前不可用，请刷新后重试。",
+      });
+      return;
+    }
+
+    const resolvedWorkspaceRoot = selectedThread.cwd || workspaceRoot;
+    this.sessionStore.setActiveWorkspaceRoot(bindingKey, resolvedWorkspaceRoot);
+    this.sessionStore.setThreadIdForWorkspace(bindingKey, resolvedWorkspaceRoot, threadId, {
+      workspaceId: normalized.workspaceId,
+      chatId: normalized.chatId,
+      threadKey: normalized.threadKey,
+      senderId: normalized.senderId,
+    });
+    this.resumedThreadIds.delete(threadId);
+    await this.ensureThreadResumed(threadId);
+    await this.showStatusPanel(normalized, { replyToMessageId: replyToMessageId || normalized.messageId });
   }
 
   async handleStopCommand(normalized) {
@@ -863,35 +880,83 @@ class FeishuBotRuntime {
 
   async handleCardAction(data) {
     const action = extractCardAction(data);
-    if (!action || action.kind !== "approval") {
+    if (!action) {
       return {};
     }
 
-    const approval = this.pendingApprovalByThreadId.get(action.threadId);
-    if (!approval || String(approval.requestId) !== String(action.requestId)) {
-      return buildCardToast("该授权请求已失效。");
+    if (action.kind === "approval") {
+      const approval = this.pendingApprovalByThreadId.get(action.threadId);
+      if (!approval || String(approval.requestId) !== String(action.requestId)) {
+        return buildCardToast("该授权请求已失效。");
+      }
+
+      const chatId = approval.chatId || extractCardChatId(data);
+      try {
+        const decision = resolveApprovalDecision(
+          action.decision,
+          approval.method,
+          action.scope === "session" ? "/codex approve session" : "/codex approve"
+        );
+        await this.codex.sendResponse(approval.requestId, decision);
+        await this.markApprovalResolved(action.threadId, action.decision === "approve" ? "approved" : "rejected");
+        if (chatId) {
+          await this.sendTextMessage({
+            chatId,
+            replyToMessageId: approval.cardMessageId || approval.replyToMessageId || "",
+            text: action.decision === "approve" ? "已批准本次请求。" : "已拒绝本次请求。",
+          });
+        }
+        return buildCardToast(action.decision === "approve" ? "已批准" : "已拒绝");
+      } catch (error) {
+        return buildCardToast(`处理失败: ${error.message}`);
+      }
     }
 
-    const chatId = approval.chatId || extractCardChatId(data);
+    const normalized = normalizeCardActionContext(data, this.config);
+    if (!normalized) {
+      return buildCardToast("无法解析当前卡片上下文。");
+    }
+
     try {
-      const decision = resolveApprovalDecision(
-        action.decision,
-        approval.method,
-        action.scope === "session" ? "/codex approve session" : "/codex approve"
-      );
-      await this.codex.sendResponse(approval.requestId, decision);
-      await this.markApprovalResolved(action.threadId, action.decision === "approve" ? "approved" : "rejected");
-      if (chatId) {
-        await this.sendTextMessage({
-          chatId,
-          replyToMessageId: approval.cardMessageId || approval.replyToMessageId || "",
-          text: action.decision === "approve" ? "已批准本次请求。" : "已拒绝本次请求。",
-        });
+      if (action.kind === "panel") {
+        if (action.action === "open_threads") {
+          await this.showThreadPicker(normalized, { replyToMessageId: normalized.messageId });
+          return buildCardToast("已打开线程列表");
+        }
+        if (action.action === "new_thread") {
+          await this.handleNewCommand(normalized);
+          return buildCardToast("已创建新线程");
+        }
+        if (action.action === "show_messages") {
+          await this.handleMessageCommand(normalized);
+          return buildCardToast("已显示最近消息");
+        }
+        if (action.action === "stop") {
+          await this.handleStopCommand(normalized);
+          return buildCardToast("已发送停止请求");
+        }
+        if (action.action === "status") {
+          await this.showStatusPanel(normalized, { replyToMessageId: normalized.messageId });
+          return buildCardToast("已刷新状态");
+        }
       }
-      return buildCardToast(action.decision === "approve" ? "已批准" : "已拒绝");
+
+      if (action.kind === "thread") {
+        if (action.action === "switch") {
+          await this.switchThreadById(normalized, action.threadId, { replyToMessageId: normalized.messageId });
+          return buildCardToast("已切换线程");
+        }
+        if (action.action === "messages") {
+          await this.switchThreadById(normalized, action.threadId, { replyToMessageId: normalized.messageId });
+          await this.handleMessageCommand(normalized);
+          return buildCardToast("已显示线程消息");
+        }
+      }
     } catch (error) {
       return buildCardToast(`处理失败: ${error.message}`);
     }
+
+    return {};
   }
 
   async markApprovalResolved(threadId, resolution) {
@@ -1520,6 +1585,7 @@ function resolveApprovalDecision(command, method, rawText) {
 }
 
 function buildApprovalCard(approval) {
+  const requestType = approval?.method && approval.method.includes("command") ? "命令执行" : "敏感操作";
   return {
     schema: "2.0",
     config: {
@@ -1533,18 +1599,49 @@ function buildApprovalCard(approval) {
           tag: "markdown",
           content: [
             "## Codex 请求授权",
-            approval.reason ? `**原因**: ${escapeLarkMd(approval.reason)}` : "",
-            approval.command ? `**命令**:\n\`\`\`\n${approval.command}\n\`\`\`` : "",
-            "### 处理方式",
-            "`/codex approve`",
-            "`/codex approve session`",
-            "`/codex reject`",
+            `**请求类型**：${requestType}`,
+            approval.reason ? `**原因**：${escapeLarkMd(approval.reason)}` : "",
+            approval.command ? `**将执行的内容**：\n\`\`\`\n${approval.command}\n\`\`\`` : "",
+            "**处理方式**：",
+            "- 本次允许：只放行这一次",
+            "- 本会话允许：当前会话后续同类请求继续放行",
+            "- 拒绝：本次不执行",
           ].filter(Boolean).join("\n\n"),
         },
         {
-          tag: "markdown",
-          content: "也可以发送 `/codex approve`、`/codex approve session`、`/codex reject`。",
-          text_size: "notation",
+          tag: "button",
+          text: { tag: "plain_text", content: "本次允许" },
+          type: "primary",
+          value: {
+            kind: "approval",
+            decision: "approve",
+            scope: "once",
+            requestId: approval.requestId,
+            threadId: approval.threadId,
+          },
+        },
+        {
+          tag: "button",
+          text: { tag: "plain_text", content: "本会话允许" },
+          value: {
+            kind: "approval",
+            decision: "approve",
+            scope: "session",
+            requestId: approval.requestId,
+            threadId: approval.threadId,
+          },
+        },
+        {
+          tag: "button",
+          text: { tag: "plain_text", content: "拒绝" },
+          type: "danger",
+          value: {
+            kind: "approval",
+            decision: "reject",
+            scope: "once",
+            requestId: approval.requestId,
+            threadId: approval.threadId,
+          },
         },
       ],
     },
@@ -1594,63 +1691,123 @@ function buildInfoCard(text) {
   };
 }
 
-function buildWhereCard({ workspaceRoot, threadId, currentThread, historyThreads }) {
+function buildStatusPanelCard({ workspaceRoot, threadId, currentThread, recentThreads, status }) {
   const elements = [
     {
       tag: "markdown",
-      content: "**工作目录**",
+      content: [
+        "## 项目状态",
+        `**当前项目**：\`${escapeCardMarkdown(workspaceRoot)}\``,
+        `**当前线程**：${threadId ? formatThreadLabel(currentThread || { id: threadId }) : "未创建"}`,
+        `**当前状态**：${status?.label || "空闲"}`,
+      ].join("\n\n"),
     },
     {
+      tag: "button",
+      text: { tag: "plain_text", content: "切换线程" },
+      type: "primary",
+      value: buildPanelActionValue("open_threads"),
+    },
+    {
+      tag: "button",
+      text: { tag: "plain_text", content: "新建线程" },
+      value: buildPanelActionValue("new_thread"),
+    },
+    {
+      tag: "button",
+      text: { tag: "plain_text", content: "最近消息" },
+      value: buildPanelActionValue("show_messages"),
+    },
+    {
+      tag: "button",
+      text: { tag: "plain_text", content: "停止任务" },
+      type: "danger",
+      value: buildPanelActionValue("stop"),
+    },
+    { tag: "hr" },
+  ];
+
+  if (recentThreads?.length) {
+    elements.push({
       tag: "markdown",
-      content: "**当前目录** · `当前`",
+      content: `**最近线程**（${recentThreads.length}）`,
       text_size: "normal",
+    });
+    elements.push({
+      tag: "markdown",
+      content: recentThreads
+        .map((thread, index) => `${index + 1}. ${formatThreadLabel(thread)}\n${summarizeThreadPreview(thread)}`)
+        .join("\n\n"),
+      text_size: "notation",
+    });
+  } else {
+    elements.push({
+      tag: "markdown",
+      content: "**最近线程**\n\n暂无历史线程",
+      text_size: "normal",
+    });
+  }
+
+  return {
+    schema: "2.0",
+    config: {
+      wide_screen_mode: true,
+      update_multi: true,
     },
+    body: {
+      elements,
+    },
+  };
+}
+
+function buildThreadPickerCard({ workspaceRoot, threads, currentThreadId }) {
+  const elements = [
     {
       tag: "markdown",
-      content: `\`${escapeCardMarkdown(workspaceRoot)}\``,
-      text_size: "notation",
+      content: `## 线程列表\n\n**当前项目**：\`${escapeCardMarkdown(workspaceRoot)}\``,
     },
   ];
 
-  if (threadId) {
+  threads.slice(0, 8).forEach((thread, index) => {
+    if (index > 0) {
+      elements.push({ tag: "hr" });
+    }
+    const isCurrent = thread.id === currentThreadId;
     elements.push({
       tag: "markdown",
-      content: `当前线程：${formatThreadLabel(currentThread || { id: threadId })}`,
-      text_size: "notation",
+      content: [
+        `${isCurrent ? "**当前线程**" : "**历史线程**"}${isCurrent ? " · `当前`" : ""}`,
+        `${formatThreadLabel(thread)}`,
+        summarizeThreadPreview(thread),
+      ].filter(Boolean).join("\n\n"),
+      text_size: isCurrent ? "normal" : "notation",
     });
-  } else {
     elements.push({
-      tag: "markdown",
-      content: "当前线程：未创建",
-      text_size: "notation",
+      tag: "button",
+      text: { tag: "plain_text", content: isCurrent ? "继续这个线程" : "继续这个线程" },
+      type: isCurrent ? "default" : "primary",
+      value: buildThreadActionValue("switch", thread.id),
     });
-  }
-
-  elements.push({
-    tag: "hr",
+    elements.push({
+      tag: "button",
+      text: { tag: "plain_text", content: "查看最近消息" },
+      value: buildThreadActionValue("messages", thread.id),
+    });
   });
 
-  if (historyThreads.length) {
-    elements.push({
-      tag: "markdown",
-      content: `**历史线程**（${historyThreads.length}）`,
-      text_size: "normal",
-    });
-    elements.push({
-      tag: "markdown",
-      content: historyThreads
-        .slice(0, 6)
-        .map((thread) => `- ${formatThreadLabel(thread)}`)
-        .join("\n"),
-      text_size: "notation",
-    });
-  } else {
-    elements.push({
-      tag: "markdown",
-      content: "**历史线程**\n\n空",
-      text_size: "normal",
-    });
-  }
+  elements.push(
+    { tag: "hr" },
+    {
+      tag: "button",
+      text: { tag: "plain_text", content: "新建线程" },
+      value: buildPanelActionValue("new_thread"),
+    },
+    {
+      tag: "button",
+      text: { tag: "plain_text", content: "返回状态面板" },
+      value: buildPanelActionValue("status"),
+    }
+  );
 
   return {
     schema: "2.0",
@@ -2169,16 +2326,90 @@ function formatThreadLabel(thread) {
 function extractCardAction(data) {
   const action = data?.action || {};
   const value = action.value || {};
-  if (value.kind !== "approval") {
+  if (!value.kind) {
+    return null;
+  }
+  if (value.kind === "approval") {
+    return {
+      kind: value.kind,
+      decision: value.decision,
+      scope: value.scope || "once",
+      requestId: value.requestId,
+      threadId: value.threadId,
+    };
+  }
+  if (value.kind === "panel") {
+    return {
+      kind: value.kind,
+      action: value.action || "",
+    };
+  }
+  if (value.kind === "thread") {
+    return {
+      kind: value.kind,
+      action: value.action || "",
+      threadId: value.threadId || "",
+    };
+  }
+  return null;
+}
+
+function normalizeCardActionContext(data, config) {
+  const openMessageId = data?.open_message_id || data?.openMessageId || data?.message_id || "card-action";
+  const chatId = extractCardChatId(data);
+  if (!chatId) {
     return null;
   }
   return {
-    kind: value.kind,
-    decision: value.decision,
-    scope: value.scope || "once",
-    requestId: value.requestId,
-    threadId: value.threadId,
+    provider: "feishu",
+    workspaceId: config.defaultWorkspaceId,
+    chatId,
+    threadKey: "",
+    senderId: data?.operator?.operator_id?.open_id || data?.user_id || "",
+    messageId: openMessageId,
+    text: "",
+    command: "",
+    receivedAt: new Date().toISOString(),
   };
+}
+
+function buildPanelActionValue(action) {
+  return {
+    kind: "panel",
+    action,
+  };
+}
+
+function buildThreadActionValue(action, threadId) {
+  return {
+    kind: "thread",
+    action,
+    threadId,
+  };
+}
+
+function summarizeThreadPreview(thread) {
+  const updated = formatRelativeTimestamp(thread?.updatedAt);
+  const title = thread?.title ? "点击继续该线程" : "无摘要";
+  return [updated ? `更新时间：${updated}` : "", title].filter(Boolean).join("\n");
+}
+
+function formatRelativeTimestamp(value) {
+  const timestamp = Number(value || 0);
+  if (!Number.isFinite(timestamp) || timestamp <= 0) {
+    return "";
+  }
+  const seconds = Math.max(0, Math.floor(Date.now() / 1000 - timestamp));
+  if (seconds < 60) {
+    return `${seconds} 秒前`;
+  }
+  if (seconds < 3600) {
+    return `${Math.floor(seconds / 60)} 分钟前`;
+  }
+  if (seconds < 86400) {
+    return `${Math.floor(seconds / 3600)} 小时前`;
+  }
+  return `${Math.floor(seconds / 86400)} 天前`;
 }
 
 function extractCardChatId(data) {
@@ -2276,7 +2507,26 @@ function normalizeWorkspacePath(value) {
   if (!normalized) {
     return "";
   }
-  return normalized.replace(/\/+$/g, "");
+
+  const withForwardSlashes = normalized.replace(/\\/g, "/");
+  if (/^[A-Za-z]:\/$/.test(withForwardSlashes)) {
+    return withForwardSlashes;
+  }
+  if (/^[A-Za-z]:\//.test(withForwardSlashes)) {
+    return withForwardSlashes.replace(/\/+$/g, "");
+  }
+  return withForwardSlashes.replace(/\/+$/g, "");
+}
+
+function isAbsoluteWorkspacePath(workspaceRoot) {
+  const normalized = normalizeWorkspacePath(workspaceRoot);
+  if (!normalized) {
+    return false;
+  }
+  if (/^[A-Za-z]:\//.test(normalized)) {
+    return true;
+  }
+  return path.posix.isAbsolute(normalized);
 }
 
 function pathMatchesWorkspaceRoot(candidatePath, workspaceRoot) {
@@ -2382,12 +2632,23 @@ function isWorkspaceAllowed(workspaceRoot, allowlist) {
     return true;
   }
 
-  const normalizedWorkspaceRoot = String(workspaceRoot || "").trim();
+  const normalizedWorkspaceRoot = normalizeWorkspacePath(workspaceRoot);
+  const compareWorkspaceRoot = isWindowsStylePath(normalizedWorkspaceRoot)
+    ? normalizedWorkspaceRoot.toLowerCase()
+    : normalizedWorkspaceRoot;
+
   return allowlist.some((allowedRoot) => {
-    const normalizedAllowedRoot = String(allowedRoot || "").trim();
-    return normalizedWorkspaceRoot === normalizedAllowedRoot
-      || normalizedWorkspaceRoot.startsWith(`${normalizedAllowedRoot}/`);
+    const normalizedAllowedRoot = normalizeWorkspacePath(allowedRoot);
+    const compareAllowedRoot = isWindowsStylePath(normalizedAllowedRoot)
+      ? normalizedAllowedRoot.toLowerCase()
+      : normalizedAllowedRoot;
+    return compareWorkspaceRoot === compareAllowedRoot
+      || compareWorkspaceRoot.startsWith(`${compareAllowedRoot}/`);
   });
+}
+
+function isWindowsStylePath(value) {
+  return /^[A-Za-z]:\//.test(String(value || ""));
 }
 
 function maskSecret(value) {

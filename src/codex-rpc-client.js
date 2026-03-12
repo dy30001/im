@@ -1,10 +1,12 @@
 const { spawn } = require("child_process");
+const os = require("os");
 const WebSocket = require("ws");
 
 class CodexRpcClient {
-  constructor({ endpoint = "", env = process.env }) {
+  constructor({ endpoint = "", env = process.env, codexCommand = "" }) {
     this.endpoint = endpoint;
     this.env = env;
+    this.codexCommand = codexCommand || resolveDefaultCodexCommand(env);
     this.mode = endpoint ? "websocket" : "spawn";
     this.socket = null;
     this.child = null;
@@ -24,11 +26,44 @@ class CodexRpcClient {
   }
 
   async connectSpawn() {
-    const child = spawn("codex", ["app-server"], {
-      env: { ...this.env },
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    const commandCandidates = buildCodexCommandCandidates(this.codexCommand, this.env);
+    let child = null;
+    let lastError = null;
+    let selectedCommand = "";
+
+    for (const command of commandCandidates) {
+      try {
+        const spawnSpec = buildSpawnSpec(command);
+        child = spawn(spawnSpec.command, spawnSpec.args, {
+          env: { ...this.env },
+          stdio: ["pipe", "pipe", "pipe"],
+          shell: false,
+        });
+        selectedCommand = command;
+        child.once("spawn", () => {
+          console.log(`[codex-im] spawned Codex app-server via ${spawnSpec.command} ${spawnSpec.args.join(" ")}`);
+        });
+        break;
+      } catch (error) {
+        lastError = error;
+        if (error?.code !== "ENOENT" && error?.code !== "EINVAL") {
+          throw error;
+        }
+      }
+    }
+
+    if (!child) {
+      const attempted = commandCandidates.join(", ");
+      const detail = lastError?.message ? `: ${lastError.message}` : "";
+      throw new Error(`Unable to spawn Codex app-server. Tried ${attempted}${detail}. You can override with CODEX_IM_CODEX_COMMAND.`);
+    }
+
     this.child = child;
+
+    child.on("error", (error) => {
+      this.isReady = false;
+      console.error(`[codex-im] failed to spawn Codex app-server via ${selectedCommand || this.codexCommand}: ${error.message}`);
+    });
 
     child.stdout.on("data", (chunk) => {
       this.stdoutBuffer += chunk.toString("utf8");
@@ -218,6 +253,49 @@ class CodexRpcClient {
       listener(parsed);
     }
   }
+}
+
+function resolveDefaultCodexCommand(env = process.env) {
+  const explicit = String(env.CODEX_IM_CODEX_COMMAND || "").trim();
+  if (explicit) {
+    return explicit;
+  }
+  return os.platform() === "win32" ? "codex" : "codex";
+}
+
+function buildCodexCommandCandidates(configuredCommand, env = process.env) {
+  const explicit = String(configuredCommand || "").trim();
+  if (explicit) {
+    if (os.platform() !== "win32") {
+      return [explicit];
+    }
+
+    const candidates = [explicit];
+    if (!/\.(cmd|exe|bat)$/i.test(explicit)) {
+      candidates.push(`${explicit}.cmd`, `${explicit}.exe`, `${explicit}.bat`);
+    }
+    return [...new Set(candidates)];
+  }
+
+  if (os.platform() === "win32") {
+    return ["codex", "codex.cmd", "codex.exe", "codex.bat"];
+  }
+
+  return ["codex"];
+}
+
+function buildSpawnSpec(command) {
+  if (os.platform() === "win32") {
+    return {
+      command: "cmd.exe",
+      args: ["/c", command, "app-server"],
+    };
+  }
+
+  return {
+    command,
+    args: ["app-server"],
+  };
 }
 
 function buildTurnInputPayload(text) {
