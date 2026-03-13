@@ -1,11 +1,12 @@
-本项目完全通过Vibe Coding实现
 # codex-im
+
+本项目完全通过Vibe Coding实现
 
 `codex-im` 是一个本地运行的飞书机器人桥接层：
 
 `飞书消息 -> 本机 codex app-server -> 飞书回复`
 
-Codex、git、workspace 操作都留在 本地，飞书只负责消息交互。
+Codex 操作都留在 本地，飞书只负责消息交互。
 
 ## 特性
 
@@ -22,11 +23,11 @@ Codex、git、workspace 操作都留在 本地，飞书只负责消息交互。
 - `/codex message` 查看最近几轮消息
 - `/codex new` 新建线程
 - `/codex stop` 停止当前运行
-- 审批卡片与 `/codex approve` / `/codex reject`
+- `/codex approve` / `/codex reject` 审批卡片
 
 ## 安装
 
-全局安装：
+全局安装（暂不支持）：
 
 ```sh
 npm install -g codex-im
@@ -41,13 +42,9 @@ npm run feishu-bot
 
 ## 配置
 
-全局安装后，建议把配置文件放在：
+有两个配置文件：.env 和 sessions.json
 
-```text
-~/.codex-im/.env
-```
-
-开发态也可以直接放在当前目录 `.env`。
+ `.env`。
 
 程序会按这个顺序加载配置：
 
@@ -55,11 +52,11 @@ npm run feishu-bot
 2. `~/.codex-im/.env`
 3. 当前 shell 环境变量
 
-示例：
 
-```sh
-mkdir -p ~/.codex-im
-cp .env.example ~/.codex-im/.env
+以下是默认读取 session 文件位置，也可以通过 .env 的配置指定
+
+```text
+~/.codex-im/sessions.json
 ```
 
 必填环境变量：
@@ -69,27 +66,15 @@ cp .env.example ~/.codex-im/.env
 
 可选环境变量：
 
-- `CODEX_IM_DEFAULT_WORKSPACE_ID`
+- `CODEX_IM_DEFAULT_WORKSPACE_ID` 在session中读取当前绑定信息的key，更换key后，原来的信息虽然在session中，但是不会再读取
 - `CODEX_IM_FEISHU_STREAMING_OUTPUT`（默认 `true`，设为 `false` 则等 Codex 完成后一次性输出）
-- `CODEX_IM_WORKSPACE_ALLOWLIST`
-- `CODEX_IM_CODEX_ENDPOINT`
-- `CODEX_IM_SESSIONS_FILE`
+- `CODEX_IM_WORKSPACE_ALLOWLIST`允许绑定的项目白名单
+- `CODEX_IM_CODEX_ENDPOINT` 用来指定 Codex 的远程 WebSocket RPC 地址，默认是启动本地服务
+- `CODEX_IM_SESSIONS_FILE` session文件路径
 
-默认 session 文件位置：
 
-```text
-~/.codex-im/sessions.json
-```
 
 ## 使用
-
-启动：
-
-```sh
-codex-im
-```
-
-如果是源码目录运行，也可以：
 
 ```sh
 npm run feishu-bot
@@ -139,7 +124,7 @@ npm run feishu-bot
 - `package.json` 的 `license`
 - `package.json` 的 `repository`
 
-发布命令：
+发布命令（暂未支持）：
 
 ```sh
 npm login
@@ -147,10 +132,37 @@ npm publish
 ```
 
 # 飞书配置
-card.action.trigger
+1、在飞书平台配置机器人
+
+2. 事件权限配置
+
+| 名称 | 标识 |
+| --- | --- |
+| 消息被 reaction | `im.message.reaction.created_v1` |
+| 消息被取消 reaction | `im.message.reaction.deleted_v1` |
+| 接收消息 | `im.message.receive_v1` |
+
+3. 回调配置
+
+| 名称 | 标识 |
+| --- | --- |
+| 卡片回传交互 | `card.action.trigger` |
+
+4. 应用权限
+
+| 名称 | 标识 |
+| --- | --- |
+| 获取卡片信息 | `cardkit:card:read` |
+| 创建与更新卡片 | `cardkit:card:write` |
+| 获取与更新用户基本信息 | `contact:user.base:readonly` |
+| 读取用户发给机器人的单聊消息 | `im:message.p2p_msg:readonly` |
+| 以应用身份发消息 | `im:message:send_as_bot` |
+
 
 
 # 参考项目
 https://github.com/larksuite/openclaw-lark
+
 https://github.com/Emanuele-web04/remodex
+
 https://github.com/Dimillian/CodexMonitor
