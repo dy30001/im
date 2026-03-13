@@ -1,0 +1,45 @@
+{
+  "name": "codex-im",
+  "version": "0.1.0",
+  "description": "Feishu-first local bridge for Codex.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ben-Lee-2019/codex-im.git"
+  },
+  "homepage": "https://github.com/Ben-Lee-2019/codex-im#readme",
+  "bugs": {
+    "url": "https://github.com/Ben-Lee-2019/codex-im/issues"
+  },
+  "type": "commonjs",
+  "main": "src/index.js",
+  "keywords": [
+    "codex",
+    "feishu",
+    "lark",
+    "bot",
+    "cli",
+    "remote"
+  ],
+  "files": [
+    "bin",
+    "src",
+    "README.md",
+    ".env.example"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "codex-im": "./bin/codex-im.js"
+  },
+  "scripts": {
+    "feishu-bot": "node ./bin/codex-im.js",
+    "check": "node --check ./src/index.js && node --check ./src/feishu-bot.js && node --check ./src/codex-rpc-client.js && node --check ./src/session-store.js && node --check ./src/config.js"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.54.0",
+    "dotenv": "^16.4.7",
+    "ws": "^8.19.0"
+  }
+}
