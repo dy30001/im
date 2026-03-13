@@ -1,6 +1,6 @@
 # codex-im
 
-本项目完全通过Vibe Coding实现
+本项目完全通过Vibe Coding实现，主要特点：手机聊的电脑能继续聊，电脑聊的手机也能继续聊。在手机上可以使用命令或飞书的卡片来进行交互，快速切换项目和线程
 
 `codex-im` 是一个本地运行的飞书机器人桥接层：
 
@@ -132,7 +132,8 @@ npm publish
 ```
 
 # 飞书配置
-1、在飞书平台配置机器人
+
+1. 在飞书平台创建机器人
 
 2. 事件权限配置
 
@@ -157,6 +158,7 @@ npm publish
 | 获取与更新用户基本信息 | `contact:user.base:readonly` |
 | 读取用户发给机器人的单聊消息 | `im:message.p2p_msg:readonly` |
 | 以应用身份发消息 | `im:message:send_as_bot` |
+| 发送删除表情回复 | `im:message.reactions:write_only` |
 
 
 
