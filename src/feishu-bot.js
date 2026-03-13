@@ -99,54 +99,17 @@ class FeishuBotRuntime {
       return;
     }
 
-    if (normalized.command === "stop") {
-      await this.handleStopCommand(normalized);
-      return;
-    }
-    if (normalized.command === "bind") {
-      await this.handleBindCommand(normalized);
-      return;
-    }
-    if (normalized.command === "where") {
-      await this.handleWhereCommand(normalized);
-      return;
-    }
-    if (normalized.command === "inspect_message") {
-      await this.handleMessageCommand(normalized);
-      return;
-    }
-    if (normalized.command === "help") {
-      await this.handleHelpCommand(normalized);
-      return;
-    }
-    if (normalized.command === "unknown_command") {
-      await this.handleUnknownCommand(normalized);
-      return;
-    }
-    if (normalized.command === "workspaces") {
-      await this.handleWorkspacesCommand(normalized);
-      return;
-    }
-    if (normalized.command === "use") {
-      await this.handleUseCommand(normalized);
-      return;
-    }
-    if (normalized.command === "new") {
-      await this.handleNewCommand(normalized);
-      return;
-    }
-    if (normalized.command === "approve" || normalized.command === "reject") {
-      await this.handleApprovalCommand(normalized);
+    if (await this.dispatchTextCommand(normalized)) {
       return;
     }
 
     const bindingKey = this.sessionStore.buildBindingKey(normalized);
     const workspaceRoot = this.resolveWorkspaceRootForBinding(bindingKey);
     if (!workspaceRoot) {
-      await this.sendTextMessage({
+      await this.sendInfoCardMessage({
         chatId: normalized.chatId,
         replyToMessageId: normalized.messageId,
-        text: "当前会话还未绑定工作目录。先发送 `/codex bind /绝对路径`。",
+        text: "当前会话还未绑定项目。先发送 `/codex bind /绝对路径`。",
       });
       return;
     }
@@ -154,12 +117,12 @@ class FeishuBotRuntime {
     const selectedThreadId = this.resolveThreadIdForBinding(bindingKey, workspaceRoot);
     const threadId = selectedThreadId || availableThreads[0]?.id || null;
     if (!selectedThreadId && threadId) {
-      this.sessionStore.setThreadIdForWorkspace(bindingKey, workspaceRoot, threadId, {
-        workspaceId: normalized.workspaceId,
-        chatId: normalized.chatId,
-        threadKey: normalized.threadKey,
-        senderId: normalized.senderId,
-      });
+      this.sessionStore.setThreadIdForWorkspace(
+        bindingKey,
+        workspaceRoot,
+        threadId,
+        buildBindingMetadata(normalized)
+      );
     }
 
     this.pendingChatContextByBindingKey.set(bindingKey, normalized);
@@ -179,13 +142,54 @@ class FeishuBotRuntime {
       this.movePendingReactionToThread(bindingKey, resolvedThreadId);
     } catch (error) {
       await this.clearPendingReactionForBinding(bindingKey);
-      await this.sendTextMessage({
+      await this.sendInfoCardMessage({
         chatId: normalized.chatId,
         replyToMessageId: normalized.messageId,
         text: `处理失败: ${error.message}`,
       });
       throw error;
     }
+  }
+
+  async dispatchTextCommand(normalized) {
+    const commandHandlers = {
+      stop: () => this.handleStopCommand(normalized),
+      bind: () => this.handleBindCommand(normalized),
+      where: () => this.handleWhereCommand(normalized),
+      inspect_message: () => this.handleMessageCommand(normalized),
+      help: () => this.handleHelpCommand(normalized),
+      unknown_command: () => this.handleUnknownCommand(normalized),
+      workspace: () => this.handleWorkspacesCommand(normalized),
+      switch: () => this.handleSwitchCommand(normalized),
+      remove: () => this.handleRemoveCommand(normalized),
+      new: () => this.handleNewCommand(normalized),
+      approve: () => this.handleApprovalCommand(normalized),
+      reject: () => this.handleApprovalCommand(normalized),
+    };
+
+    const handler = commandHandlers[normalized.command];
+    if (!handler) {
+      return false;
+    }
+
+    await handler();
+    return true;
+  }
+
+  resolveReplyToMessageId(normalized, replyToMessageId = "") {
+    return replyToMessageId || normalized.messageId;
+  }
+
+  getBindingContext(normalized) {
+    const bindingKey = this.sessionStore.buildBindingKey(normalized);
+    const workspaceRoot = this.resolveWorkspaceRootForBinding(bindingKey);
+    return { bindingKey, workspaceRoot };
+  }
+
+  getCurrentThreadContext(normalized) {
+    const { bindingKey, workspaceRoot } = this.getBindingContext(normalized);
+    const threadId = workspaceRoot ? this.resolveThreadIdForBinding(bindingKey, workspaceRoot) : "";
+    return { bindingKey, workspaceRoot, threadId };
   }
 
   async ensureThreadAndSendMessage({ bindingKey, workspaceRoot, normalized, threadId }) {
@@ -244,12 +248,12 @@ class FeishuBotRuntime {
       throw new Error("thread/start did not return a thread id");
     }
 
-    this.sessionStore.setThreadIdForWorkspace(bindingKey, workspaceRoot, resolvedThreadId, {
-      workspaceId: normalized.workspaceId,
-      chatId: normalized.chatId,
-      threadKey: normalized.threadKey,
-      senderId: normalized.senderId,
-    });
+    this.sessionStore.setThreadIdForWorkspace(
+      bindingKey,
+      workspaceRoot,
+      resolvedThreadId,
+      buildBindingMetadata(normalized)
+    );
     this.resumedThreadIds.add(resolvedThreadId);
     this.pendingChatContextByThreadId.set(resolvedThreadId, normalized);
     return resolvedThreadId;
@@ -280,7 +284,7 @@ class FeishuBotRuntime {
     const bindingKey = this.sessionStore.buildBindingKey(normalized);
     const rawWorkspaceRoot = extractBindPath(normalized.text);
     if (!rawWorkspaceRoot) {
-      await this.sendTextMessage({
+      await this.sendInfoCardMessage({
         chatId: normalized.chatId,
         replyToMessageId: normalized.messageId,
         text: "用法: `/codex bind /绝对路径`",
@@ -290,7 +294,7 @@ class FeishuBotRuntime {
 
     const workspaceRoot = normalizeWorkspacePath(rawWorkspaceRoot);
     if (!isAbsoluteWorkspacePath(workspaceRoot)) {
-      await this.sendTextMessage({
+      await this.sendInfoCardMessage({
         chatId: normalized.chatId,
         replyToMessageId: normalized.messageId,
         text: "只支持绝对路径绑定。Windows 例如 `C:\\code\\repo`，macOS/Linux 例如 `/Users/name/repo`。",
@@ -298,29 +302,29 @@ class FeishuBotRuntime {
       return;
     }
     if (!isWorkspaceAllowed(workspaceRoot, this.config.workspaceAllowlist)) {
-      await this.sendTextMessage({
+      await this.sendInfoCardMessage({
         chatId: normalized.chatId,
         replyToMessageId: normalized.messageId,
-        text: "该目录不在允许绑定的白名单中。",
+        text: "该项目不在允许绑定的白名单中。",
       });
       return;
     }
 
     if (!fs.existsSync(workspaceRoot)) {
-      await this.sendTextMessage({
+      await this.sendInfoCardMessage({
         chatId: normalized.chatId,
         replyToMessageId: normalized.messageId,
-        text: `目录不存在: ${workspaceRoot}`,
+        text: `项目不存在: ${workspaceRoot}`,
       });
       return;
     }
 
     const stats = fs.statSync(workspaceRoot);
     if (!stats.isDirectory()) {
-      await this.sendTextMessage({
+      await this.sendInfoCardMessage({
         chatId: normalized.chatId,
         replyToMessageId: normalized.messageId,
-        text: `不是目录: ${workspaceRoot}`,
+        text: `路径非法: ${workspaceRoot}`,
       });
       return;
     }
@@ -328,12 +332,11 @@ class FeishuBotRuntime {
     this.sessionStore.setActiveWorkspaceRoot(bindingKey, workspaceRoot);
     await this.refreshWorkspaceThreads(bindingKey, workspaceRoot, normalized);
     const existingThreadId = this.resolveThreadIdForBinding(bindingKey, workspaceRoot);
-    await this.sendInfoCardMessage({
-      chatId: normalized.chatId,
+    await this.showStatusPanel(normalized, {
       replyToMessageId: normalized.messageId,
-      text: existingThreadId
-        ? `已切换到工作目录，并恢复原会话上下文:\n${workspaceRoot}`
-        : `已绑定工作目录:\n${workspaceRoot}`,
+      noticeText: existingThreadId
+        ? "已切换到项目，并恢复原会话上下文。"
+        : "已绑定项目。",
     });
   }
 
@@ -341,42 +344,45 @@ class FeishuBotRuntime {
     await this.showStatusPanel(normalized);
   }
 
-  async showStatusPanel(normalized, { replyToMessageId } = {}) {
-    const bindingKey = this.sessionStore.buildBindingKey(normalized);
-    const workspaceRoot = this.resolveWorkspaceRootForBinding(bindingKey);
+  async showStatusPanel(normalized, { replyToMessageId, noticeText = "" } = {}) {
+    const replyTarget = this.resolveReplyToMessageId(normalized, replyToMessageId);
+    const { bindingKey, workspaceRoot } = this.getBindingContext(normalized);
     if (!workspaceRoot) {
-      await this.sendTextMessage({
+      await this.sendInfoCardMessage({
         chatId: normalized.chatId,
-        replyToMessageId: replyToMessageId || normalized.messageId,
-        text: "当前会话还没有绑定工作目录。",
+        replyToMessageId: replyTarget,
+        text: "当前会话还没有绑定项目。",
       });
       return;
     }
 
     const threads = await this.refreshWorkspaceThreads(bindingKey, workspaceRoot, normalized);
-    const threadId = this.resolveThreadIdForBinding(bindingKey, workspaceRoot)
-      || threads[0]?.id
-      || "";
-    if (!this.resolveThreadIdForBinding(bindingKey, workspaceRoot) && threadId) {
-      this.sessionStore.setThreadIdForWorkspace(bindingKey, workspaceRoot, threadId, {
-        workspaceId: normalized.workspaceId,
-        chatId: normalized.chatId,
-        threadKey: normalized.threadKey,
-        senderId: normalized.senderId,
-      });
+    const selectedThreadId = this.resolveThreadIdForBinding(bindingKey, workspaceRoot);
+    const threadId = selectedThreadId || threads[0]?.id || "";
+    if (!selectedThreadId && threadId) {
+      this.sessionStore.setThreadIdForWorkspace(
+        bindingKey,
+        workspaceRoot,
+        threadId,
+        buildBindingMetadata(normalized)
+      );
     }
     const currentThread = threads.find((thread) => thread.id === threadId) || null;
-    const recentThreads = threads.filter((thread) => thread.id !== threadId).slice(0, 3);
+    const recentThreads = currentThread
+      ? threads.filter((thread) => thread.id !== threadId).slice(0, 2)
+      : threads.slice(0, 3);
     const status = this.describeWorkspaceStatus(threadId);
     await this.sendInteractiveCard({
       chatId: normalized.chatId,
-      replyToMessageId: replyToMessageId || normalized.messageId,
+      replyToMessageId: replyTarget,
       card: buildStatusPanelCard({
         workspaceRoot,
         threadId,
         currentThread,
         recentThreads,
+        totalThreadCount: threads.length,
         status,
+        noticeText,
       }),
     });
   }
@@ -385,10 +391,10 @@ class FeishuBotRuntime {
     const bindingKey = this.sessionStore.buildBindingKey(normalized);
     const workspaceRoot = this.resolveWorkspaceRootForBinding(bindingKey);
     if (!workspaceRoot) {
-      await this.sendTextMessage({
+      await this.sendInfoCardMessage({
         chatId: normalized.chatId,
         replyToMessageId: normalized.messageId,
-        text: "当前会话还没有绑定工作目录。",
+        text: "当前会话还没有绑定项目。",
       });
       return;
     }
@@ -397,19 +403,19 @@ class FeishuBotRuntime {
     let threadId = this.resolveThreadIdForBinding(bindingKey, workspaceRoot);
     if (!threadId && threads[0]?.id) {
       threadId = threads[0].id;
-      this.sessionStore.setThreadIdForWorkspace(bindingKey, workspaceRoot, threadId, {
-        workspaceId: normalized.workspaceId,
-        chatId: normalized.chatId,
-        threadKey: normalized.threadKey,
-        senderId: normalized.senderId,
-      });
+      this.sessionStore.setThreadIdForWorkspace(
+        bindingKey,
+        workspaceRoot,
+        threadId,
+        buildBindingMetadata(normalized)
+      );
     }
 
     if (!threadId) {
       await this.sendInfoCardMessage({
         chatId: normalized.chatId,
         replyToMessageId: normalized.messageId,
-        text: `当前工作目录：\`${workspaceRoot}\`\n\n该目录还没有可查看的线程消息。`,
+        text: `当前项目：\`${workspaceRoot}\`\n\n该项目还没有可查看的线程消息。`,
       });
       return;
     }
@@ -446,18 +452,35 @@ class FeishuBotRuntime {
     });
   }
 
-  async handleWorkspacesCommand(normalized) {
-    await this.showThreadPicker(normalized);
+  async handleWorkspacesCommand(normalized, { replyToMessageId } = {}) {
+    const bindingKey = this.sessionStore.buildBindingKey(normalized);
+    const binding = this.sessionStore.getBinding(bindingKey) || {};
+    const items = listBoundWorkspaces(binding);
+    const replyTarget = this.resolveReplyToMessageId(normalized, replyToMessageId);
+    if (!items.length) {
+      await this.sendInfoCardMessage({
+        chatId: normalized.chatId,
+        replyToMessageId: replyTarget,
+        text: "当前会话还没有已绑定项目。先发送 `/codex bind /绝对路径`。",
+      });
+      return;
+    }
+
+    await this.sendInteractiveCard({
+      chatId: normalized.chatId,
+      replyToMessageId: replyTarget,
+      card: buildWorkspaceBindingsCard(items),
+    });
   }
 
   async showThreadPicker(normalized, { replyToMessageId } = {}) {
-    const bindingKey = this.sessionStore.buildBindingKey(normalized);
-    const workspaceRoot = this.resolveWorkspaceRootForBinding(bindingKey);
+    const replyTarget = this.resolveReplyToMessageId(normalized, replyToMessageId);
+    const { bindingKey, workspaceRoot } = this.getBindingContext(normalized);
     if (!workspaceRoot) {
-      await this.sendTextMessage({
+      await this.sendInfoCardMessage({
         chatId: normalized.chatId,
-        replyToMessageId: replyToMessageId || normalized.messageId,
-        text: "当前会话还未绑定工作目录。先发送 `/codex bind /绝对路径`。",
+        replyToMessageId: replyTarget,
+        text: "当前会话还未绑定项目。先发送 `/codex bind /绝对路径`。",
       });
       return;
     }
@@ -467,15 +490,15 @@ class FeishuBotRuntime {
     if (!threads.length) {
       await this.sendInfoCardMessage({
         chatId: normalized.chatId,
-        replyToMessageId: replyToMessageId || normalized.messageId,
-        text: `当前工作目录：\`${workspaceRoot}\`\n\n还没有可切换的历史线程。`,
+        replyToMessageId: replyTarget,
+        text: `当前项目：\`${workspaceRoot}\`\n\n还没有可切换的历史线程。`,
       });
       return;
     }
 
     await this.sendInteractiveCard({
       chatId: normalized.chatId,
-      replyToMessageId: replyToMessageId || normalized.messageId,
+      replyToMessageId: replyTarget,
       card: buildThreadPickerCard({
         workspaceRoot,
         threads,
@@ -488,10 +511,10 @@ class FeishuBotRuntime {
     const bindingKey = this.sessionStore.buildBindingKey(normalized);
     const workspaceRoot = this.resolveWorkspaceRootForBinding(bindingKey);
     if (!workspaceRoot) {
-      await this.sendTextMessage({
+      await this.sendInfoCardMessage({
         chatId: normalized.chatId,
         replyToMessageId: normalized.messageId,
-        text: "当前会话还未绑定工作目录。先发送 `/codex bind /绝对路径`。",
+        text: "当前会话还未绑定项目。先发送 `/codex bind /绝对路径`。",
       });
       return;
     }
@@ -509,7 +532,7 @@ class FeishuBotRuntime {
       });
       await this.showStatusPanel(normalized, { replyToMessageId: normalized.messageId });
     } catch (error) {
-      await this.sendTextMessage({
+      await this.sendInfoCardMessage({
         chatId: normalized.chatId,
         replyToMessageId: normalized.messageId,
         text: `创建新线程失败: ${error.message}`,
@@ -517,18 +540,43 @@ class FeishuBotRuntime {
     }
   }
 
-  async handleUseCommand(normalized) {
-    const threadId = extractUseThreadId(normalized.text);
+  async handleSwitchCommand(normalized) {
+    const threadId = extractSwitchThreadId(normalized.text);
     if (!threadId) {
-      await this.sendTextMessage({
+      await this.sendInfoCardMessage({
         chatId: normalized.chatId,
         replyToMessageId: normalized.messageId,
-        text: "用法: `/codex use <threadId>`",
+        text: "用法: `/codex switch <threadId>`",
       });
       return;
     }
 
     await this.switchThreadById(normalized, threadId, { replyToMessageId: normalized.messageId });
+  }
+
+  async handleRemoveCommand(normalized) {
+    const workspaceRoot = extractRemoveWorkspacePath(normalized.text);
+    if (!workspaceRoot) {
+      await this.sendInfoCardMessage({
+        chatId: normalized.chatId,
+        replyToMessageId: normalized.messageId,
+        text: "用法: `/codex remove /绝对路径`",
+      });
+      return;
+    }
+
+    if (!isAbsoluteWorkspacePath(workspaceRoot)) {
+      await this.sendInfoCardMessage({
+        chatId: normalized.chatId,
+        replyToMessageId: normalized.messageId,
+        text: "路径必须是绝对路径。",
+      });
+      return;
+    }
+
+    await this.removeWorkspaceByPath(normalized, workspaceRoot, {
+      replyToMessageId: normalized.messageId,
+    });
   }
 
   async refreshWorkspaceThreads(bindingKey, workspaceRoot, normalized) {
@@ -570,13 +618,23 @@ class FeishuBotRuntime {
   }
 
   async switchThreadById(normalized, threadId, { replyToMessageId } = {}) {
-    const bindingKey = this.sessionStore.buildBindingKey(normalized);
-    const workspaceRoot = this.resolveWorkspaceRootForBinding(bindingKey);
+    const replyTarget = this.resolveReplyToMessageId(normalized, replyToMessageId);
+    const { bindingKey, workspaceRoot } = this.getBindingContext(normalized);
     if (!workspaceRoot) {
-      await this.sendTextMessage({
+      await this.sendInfoCardMessage({
         chatId: normalized.chatId,
-        replyToMessageId: replyToMessageId || normalized.messageId,
-        text: "当前会话还未绑定工作目录。先发送 `/codex bind /绝对路径`。",
+        replyToMessageId: replyTarget,
+        text: "当前会话还未绑定项目。先发送 `/codex bind /绝对路径`。",
+      });
+      return;
+    }
+
+    const currentThreadId = this.resolveThreadIdForBinding(bindingKey, workspaceRoot);
+    if (currentThreadId && currentThreadId === threadId) {
+      await this.sendInfoCardMessage({
+        chatId: normalized.chatId,
+        replyToMessageId: replyTarget,
+        text: "已经是当前线程，无需切换。",
       });
       return;
     }
@@ -584,9 +642,9 @@ class FeishuBotRuntime {
     const availableThreads = await this.refreshWorkspaceThreads(bindingKey, workspaceRoot, normalized);
     const selectedThread = availableThreads.find((thread) => thread.id === threadId) || null;
     if (!selectedThread) {
-      await this.sendTextMessage({
+      await this.sendInfoCardMessage({
         chatId: normalized.chatId,
-        replyToMessageId: replyToMessageId || normalized.messageId,
+        replyToMessageId: replyTarget,
         text: "指定线程当前不可用，请刷新后重试。",
       });
       return;
@@ -594,15 +652,15 @@ class FeishuBotRuntime {
 
     const resolvedWorkspaceRoot = selectedThread.cwd || workspaceRoot;
     this.sessionStore.setActiveWorkspaceRoot(bindingKey, resolvedWorkspaceRoot);
-    this.sessionStore.setThreadIdForWorkspace(bindingKey, resolvedWorkspaceRoot, threadId, {
-      workspaceId: normalized.workspaceId,
-      chatId: normalized.chatId,
-      threadKey: normalized.threadKey,
-      senderId: normalized.senderId,
-    });
+    this.sessionStore.setThreadIdForWorkspace(
+      bindingKey,
+      resolvedWorkspaceRoot,
+      threadId,
+      buildBindingMetadata(normalized)
+    );
     this.resumedThreadIds.delete(threadId);
     await this.ensureThreadResumed(threadId);
-    await this.showStatusPanel(normalized, { replyToMessageId: replyToMessageId || normalized.messageId });
+    await this.showStatusPanel(normalized, { replyToMessageId: replyTarget });
   }
 
   async handleStopCommand(normalized) {
@@ -612,7 +670,7 @@ class FeishuBotRuntime {
     const turnId = threadId ? this.activeTurnIdByThreadId.get(threadId) || null : null;
 
     if (!threadId) {
-      await this.sendTextMessage({
+      await this.sendInfoCardMessage({
         chatId: normalized.chatId,
         replyToMessageId: normalized.messageId,
         text: "当前会话还没有可停止的运行任务。",
@@ -625,13 +683,13 @@ class FeishuBotRuntime {
         threadId,
         turnId,
       });
-      await this.sendTextMessage({
+      await this.sendInfoCardMessage({
         chatId: normalized.chatId,
         replyToMessageId: normalized.messageId,
         text: "已发送停止请求。",
       });
     } catch (error) {
-      await this.sendTextMessage({
+      await this.sendInfoCardMessage({
         chatId: normalized.chatId,
         replyToMessageId: normalized.messageId,
         text: `停止失败: ${error.message}`,
@@ -640,13 +698,11 @@ class FeishuBotRuntime {
   }
 
   async handleApprovalCommand(normalized) {
-    const bindingKey = this.sessionStore.buildBindingKey(normalized);
-    const workspaceRoot = this.resolveWorkspaceRootForBinding(bindingKey);
-    const threadId = workspaceRoot ? this.resolveThreadIdForBinding(bindingKey, workspaceRoot) : null;
+    const { threadId } = this.getCurrentThreadContext(normalized);
     const approval = threadId ? this.pendingApprovalByThreadId.get(threadId) || null : null;
 
     if (!threadId || !approval) {
-      await this.sendTextMessage({
+      await this.sendInfoCardMessage({
         chatId: normalized.chatId,
         replyToMessageId: normalized.messageId,
         text: "当前没有待处理的授权请求。",
@@ -658,13 +714,13 @@ class FeishuBotRuntime {
     try {
       await this.codex.sendResponse(approval.requestId, decision);
       await this.markApprovalResolved(threadId, normalized.command === "approve" ? "approved" : "rejected");
-      await this.sendTextMessage({
+      await this.sendInfoCardMessage({
         chatId: normalized.chatId,
         replyToMessageId: normalized.messageId,
         text: normalized.command === "approve" ? "已批准本次请求。" : "已拒绝本次请求。",
       });
     } catch (error) {
-      await this.sendTextMessage({
+      await this.sendInfoCardMessage({
         chatId: normalized.chatId,
         replyToMessageId: normalized.messageId,
         text: `处理授权失败: ${error.message}`,
@@ -694,7 +750,7 @@ class FeishuBotRuntime {
       outbound.payload.threadKey = context.threadKey;
     }
 
-    if (eventShouldClearPendingReaction(outbound.type)) {
+    if (eventShouldClearPendingReaction(outbound)) {
       this.clearPendingReactionForThread(threadId).catch((error) => {
         console.error(`[codex-im] failed to clear pending reaction: ${error.message}`);
       });
@@ -713,12 +769,16 @@ class FeishuBotRuntime {
         chatId: event.payload.chatId,
         text: event.payload.text,
         state: "streaming",
+        deferFlush: !this.config.feishuStreamingOutput,
       });
       return;
     }
 
     if (event.type === "im.run_state") {
       if (event.payload.state === "streaming") {
+        if (!this.config.feishuStreamingOutput) {
+          return;
+        }
         await this.upsertAssistantReplyCard({
           threadId: event.payload.threadId,
           turnId: event.payload.turnId,
@@ -762,39 +822,7 @@ class FeishuBotRuntime {
     }
   }
 
-  async sendTextMessage({ chatId, text, replyToMessageId = "", replyInThread = false }) {
-    if (!chatId || !text) {
-      return null;
-    }
-
-    if (replyToMessageId) {
-      const replyMessage = resolveReplyMessageMethod(this.client);
-      return replyMessage.call(this.client.im?.v1?.message || this.client.im?.message || this.client, {
-        path: {
-          message_id: normalizeMessageId(replyToMessageId),
-        },
-        data: {
-          content: JSON.stringify({ text }),
-          msg_type: "text",
-          reply_in_thread: replyInThread,
-        },
-      });
-    }
-
-    const createMessage = resolveCreateMessageMethod(this.client);
-    return createMessage.call(this.client.im?.v1?.message || this.client.im?.message || this.client, {
-      params: {
-        receive_id_type: "chat_id",
-      },
-      data: {
-        receive_id: chatId,
-        content: JSON.stringify({ text }),
-        msg_type: "text",
-      },
-    });
-  }
-
-  async sendInfoCardMessage({ chatId, text, replyToMessageId = "", replyInThread = false }) {
+  async sendInfoCardMessage({ chatId, text, replyToMessageId = "", replyInThread = false, kind = "info" }) {
     if (!chatId || !text) {
       return null;
     }
@@ -803,7 +831,7 @@ class FeishuBotRuntime {
       chatId,
       replyToMessageId,
       replyInThread,
-      card: buildInfoCard(text),
+      card: buildInfoCard(text, { kind }),
     });
   }
 
@@ -894,90 +922,144 @@ class FeishuBotRuntime {
     const action = extractCardAction(data);
     console.log("[codex-im] card callback parsed action:", action);
     if (!action) {
-      return buildCardToast("无法识别卡片操作。");
+      this.runCardActionTask(this.sendCardActionFeedback(data, "无法识别卡片操作。", "error"));
+      return buildCardResponse({});
     }
 
     if (action.kind === "approval") {
-      const approval = this.pendingApprovalByThreadId.get(action.threadId);
-      if (!approval || String(approval.requestId) !== String(action.requestId)) {
-        return buildCardToast("该授权请求已失效。");
-      }
-
-      const chatId = approval.chatId || extractCardChatId(data);
-      try {
-        const resolution = action.decision === "approve" ? "approved" : "rejected";
-        const resolvedApproval = {
-          ...approval,
-          resolution,
-        };
-        const decision = resolveApprovalDecision(
-          action.decision,
-          approval.method,
-          action.scope === "session" ? "/codex approve session" : "/codex approve"
-        );
-        await this.codex.sendResponse(approval.requestId, decision);
-        await this.markApprovalResolved(action.threadId, resolution);
-        if (chatId) {
-          await this.sendTextMessage({
-            chatId,
-            replyToMessageId: approval.cardMessageId || approval.replyToMessageId || "",
-            text: action.decision === "approve" ? "已批准本次请求。" : "已拒绝本次请求。",
-          });
-        }
-        return buildCardResponse({
-          toast: action.decision === "approve" ? "已批准" : "已拒绝",
-          card: buildApprovalResolvedCard(resolvedApproval),
-        });
-      } catch (error) {
-        return buildCardToast(`处理失败: ${error.message}`);
-      }
+      this.runCardActionTask((async () => {
+        await this.sendCardActionFeedback(data, "正在处理授权...", "progress");
+        await this.handleApprovalCardActionAsync(action, data);
+      })());
+      return buildCardResponse({});
     }
 
     const normalized = normalizeCardActionContext(data, this.config);
     if (!normalized) {
-      return buildCardToast("无法解析当前卡片上下文。");
+      this.runCardActionTask(this.sendCardActionFeedback(data, "无法解析当前卡片上下文。", "error"));
+      return buildCardResponse({});
     }
 
     try {
-      if (action.kind === "panel") {
-        if (action.action === "open_threads") {
-          await this.showThreadPicker(normalized, { replyToMessageId: normalized.messageId });
-          return buildCardToast("已打开线程列表");
-        }
-        if (action.action === "new_thread") {
-          await this.handleNewCommand(normalized);
-          return buildCardToast("已创建新线程");
-        }
-        if (action.action === "show_messages") {
-          await this.handleMessageCommand(normalized);
-          return buildCardToast("已显示最近消息");
-        }
-        if (action.action === "stop") {
-          await this.handleStopCommand(normalized);
-          return buildCardToast("已发送停止请求");
-        }
-        if (action.action === "status") {
-          await this.showStatusPanel(normalized, { replyToMessageId: normalized.messageId });
-          return buildCardToast("已刷新状态");
-        }
-      }
-
-      if (action.kind === "thread") {
-        if (action.action === "switch") {
-          await this.switchThreadById(normalized, action.threadId, { replyToMessageId: normalized.messageId });
-          return buildCardToast("已切换线程");
-        }
-        if (action.action === "messages") {
-          await this.switchThreadById(normalized, action.threadId, { replyToMessageId: normalized.messageId });
-          await this.handleMessageCommand(normalized);
-          return buildCardToast("已显示线程消息");
-        }
+      const handled = this.dispatchCardAction(action, normalized);
+      if (handled) {
+        return handled;
       }
     } catch (error) {
-      return buildCardToast(`处理失败: ${error.message}`);
+      this.runCardActionTask(this.sendCardActionFeedbackByContext(normalized, `处理失败: ${error.message}`, "error"));
+      return buildCardResponse({});
     }
 
-    return buildCardToast("未支持的卡片操作。");
+    this.runCardActionTask(this.sendCardActionFeedbackByContext(normalized, "未支持的卡片操作。", "error"));
+    return buildCardResponse({});
+  }
+
+  dispatchCardAction(action, normalized) {
+    if (action.kind === "panel") {
+      return this.handlePanelCardAction(action, normalized);
+    }
+    if (action.kind === "thread") {
+      return this.handleThreadCardAction(action, normalized);
+    }
+    if (action.kind === "workspace") {
+      return this.handleWorkspaceCardAction(action, normalized);
+    }
+    return null;
+  }
+
+  handlePanelCardAction(action, normalized) {
+    const handlers = {
+      open_threads: {
+        feedback: "正在打开线程列表...",
+        run: () => this.showThreadPicker(normalized, { replyToMessageId: normalized.messageId }),
+      },
+      new_thread: {
+        feedback: "正在创建新线程...",
+        run: () => this.handleNewCommand(normalized),
+      },
+      show_messages: {
+        feedback: "正在获取最近消息...",
+        run: () => this.handleMessageCommand(normalized),
+      },
+      stop: {
+        feedback: "正在发送停止请求...",
+        run: () => this.handleStopCommand(normalized),
+      },
+      status: {
+        feedback: "正在刷新状态...",
+        run: () => this.showStatusPanel(normalized, { replyToMessageId: normalized.messageId }),
+      },
+    };
+
+    const handler = handlers[action.action];
+    if (!handler) {
+      return null;
+    }
+
+    return this.queueCardActionWithFeedback(normalized, handler.feedback, handler.run);
+  }
+
+  handleThreadCardAction(action, normalized) {
+    const { threadId: currentThreadId } = this.getCurrentThreadContext(normalized);
+
+    if (action.action === "switch") {
+      if (currentThreadId && currentThreadId === action.threadId) {
+        this.runCardActionTask(this.sendCardActionFeedbackByContext(normalized, "已经是当前线程，无需切换。", "info"));
+        return buildCardResponse({});
+      }
+
+      return this.queueCardActionWithFeedback(normalized, "正在切换线程...", () => (
+        this.switchThreadById(normalized, action.threadId, { replyToMessageId: normalized.messageId })
+      ));
+    }
+
+    if (action.action === "messages") {
+      if (!currentThreadId || currentThreadId !== action.threadId) {
+        this.runCardActionTask(this.sendCardActionFeedbackByContext(normalized, "非当前线程，请先切换到该线程。", "error"));
+        return buildCardResponse({});
+      }
+
+      return this.queueCardActionWithFeedback(normalized, "正在获取最近消息...", () => this.handleMessageCommand(normalized));
+    }
+
+    return null;
+  }
+
+  handleWorkspaceCardAction(action, normalized) {
+    if (action.action === "status") {
+      return this.queueCardActionWithFeedback(normalized, "正在查看线程列表...", () => (
+        this.showStatusPanel(normalized, { replyToMessageId: normalized.messageId })
+      ));
+    }
+
+    if (action.action === "remove") {
+      return this.queueCardActionWithFeedback(normalized, "正在移除项目...", () => (
+        this.removeWorkspaceByPath(normalized, action.workspaceRoot, { replyToMessageId: normalized.messageId })
+      ));
+    }
+
+    if (action.action !== "switch") {
+      return null;
+    }
+
+    const { workspaceRoot: currentWorkspaceRoot } = this.getBindingContext(normalized);
+    const targetWorkspaceRoot = normalizeWorkspacePath(action.workspaceRoot);
+    if (currentWorkspaceRoot && targetWorkspaceRoot && currentWorkspaceRoot === targetWorkspaceRoot) {
+      this.runCardActionTask(this.sendCardActionFeedbackByContext(normalized, "已经是当前项目，无需切换。", "info"));
+      return buildCardResponse({});
+    }
+
+    return this.queueCardActionWithFeedback(normalized, "正在切换项目...", () => (
+      this.switchWorkspaceByPath(normalized, action.workspaceRoot, { replyToMessageId: normalized.messageId })
+    ));
+  }
+
+  queueCardActionWithFeedback(normalized, feedbackText, task) {
+    this.runCardActionTask((async () => {
+      await this.sendCardActionFeedbackByContext(normalized, feedbackText, "progress");
+      await task();
+    })());
+    return buildCardResponse({});
   }
 
   async markApprovalResolved(threadId, resolution) {
@@ -1001,7 +1083,153 @@ class FeishuBotRuntime {
     }
   }
 
-  async upsertAssistantReplyCard({ threadId, turnId, chatId, text, state }) {
+  runCardActionTask(taskPromise) {
+    Promise.resolve(taskPromise).catch((error) => {
+      console.error(`[codex-im] async card action failed: ${error.message}`);
+    });
+  }
+
+  async handleApprovalCardActionAsync(action, data) {
+    const approval = this.pendingApprovalByThreadId.get(action.threadId);
+    if (!approval || String(approval.requestId) !== String(action.requestId)) {
+      await this.sendCardActionFeedback(data, "该授权请求已失效。", "error");
+      return;
+    }
+
+    const chatId = approval.chatId || extractCardChatId(data);
+    try {
+      const resolution = action.decision === "approve" ? "approved" : "rejected";
+      const decision = resolveApprovalDecision(
+        action.decision,
+        approval.method,
+        action.scope === "session" ? "/codex approve session" : "/codex approve"
+      );
+      await this.codex.sendResponse(approval.requestId, decision);
+      await this.markApprovalResolved(action.threadId, resolution);
+      if (chatId) {
+        await this.sendInfoCardMessage({
+          chatId,
+          replyToMessageId: approval.cardMessageId || approval.replyToMessageId || "",
+          text: action.decision === "approve" ? "已批准本次请求。" : "已拒绝本次请求。",
+          kind: "success",
+        });
+      }
+    } catch (error) {
+      await this.sendCardActionFeedback(data, `处理失败: ${error.message}`, "error");
+    }
+  }
+
+  async sendCardActionFeedbackByContext(normalized, text, kind = "info") {
+    if (!normalized?.chatId || !text) {
+      return;
+    }
+    await this.sendInfoCardMessage({
+      chatId: normalized.chatId,
+      replyToMessageId: normalized.messageId || "",
+      text,
+      kind,
+    });
+  }
+
+  async sendCardActionFeedback(data, text, kind = "info") {
+    const normalized = normalizeCardActionContext(data, this.config);
+    if (!normalized) {
+      return;
+    }
+    await this.sendCardActionFeedbackByContext(normalized, text, kind);
+  }
+
+  async switchWorkspaceByPath(normalized, workspaceRoot, { replyToMessageId } = {}) {
+    const targetWorkspaceRoot = normalizeWorkspacePath(workspaceRoot);
+    if (!targetWorkspaceRoot) {
+      await this.sendInfoCardMessage({
+        chatId: normalized.chatId,
+        replyToMessageId: replyToMessageId || normalized.messageId,
+        text: "目标项目无效，请刷新后重试。",
+      });
+      return;
+    }
+
+    const bindingKey = this.sessionStore.buildBindingKey(normalized);
+    const currentWorkspaceRoot = this.resolveWorkspaceRootForBinding(bindingKey);
+    if (currentWorkspaceRoot && currentWorkspaceRoot === targetWorkspaceRoot) {
+      await this.sendInfoCardMessage({
+        chatId: normalized.chatId,
+        replyToMessageId: replyToMessageId || normalized.messageId,
+        text: "已经是当前项目，无需切换。",
+      });
+      return;
+    }
+
+    const binding = this.sessionStore.getBinding(bindingKey) || {};
+    const items = listBoundWorkspaces(binding);
+    if (!items.some((item) => item.workspaceRoot === targetWorkspaceRoot)) {
+      await this.sendInfoCardMessage({
+        chatId: normalized.chatId,
+        replyToMessageId: replyToMessageId || normalized.messageId,
+        text: "该项目未绑定到当前会话，请先执行 `/codex bind /绝对路径`。",
+      });
+      return;
+    }
+
+    this.sessionStore.setActiveWorkspaceRoot(bindingKey, targetWorkspaceRoot);
+    const threads = await this.refreshWorkspaceThreads(bindingKey, targetWorkspaceRoot, normalized);
+    const selectedThreadId = this.resolveThreadIdForBinding(bindingKey, targetWorkspaceRoot);
+    const threadId = selectedThreadId || threads[0]?.id || "";
+    if (!selectedThreadId && threadId) {
+      this.sessionStore.setThreadIdForWorkspace(
+        bindingKey,
+        targetWorkspaceRoot,
+        threadId,
+        buildBindingMetadata(normalized)
+      );
+    }
+
+    await this.handleWorkspacesCommand(normalized, {
+      replyToMessageId: replyToMessageId || normalized.messageId,
+    });
+  }
+
+  async removeWorkspaceByPath(normalized, workspaceRoot, { replyToMessageId } = {}) {
+    const targetWorkspaceRoot = normalizeWorkspacePath(workspaceRoot);
+    if (!targetWorkspaceRoot) {
+      await this.sendInfoCardMessage({
+        chatId: normalized.chatId,
+        replyToMessageId: replyToMessageId || normalized.messageId,
+        text: "目标项目无效，请刷新后重试。",
+      });
+      return;
+    }
+
+    const bindingKey = this.sessionStore.buildBindingKey(normalized);
+    const currentWorkspaceRoot = this.resolveWorkspaceRootForBinding(bindingKey);
+    if (currentWorkspaceRoot && currentWorkspaceRoot === targetWorkspaceRoot) {
+      await this.sendInfoCardMessage({
+        chatId: normalized.chatId,
+        replyToMessageId: replyToMessageId || normalized.messageId,
+        text: "当前项目不支持移除，请先切换到其他项目。",
+      });
+      return;
+    }
+
+    const binding = this.sessionStore.getBinding(bindingKey) || {};
+    const items = listBoundWorkspaces(binding);
+    if (!items.some((item) => item.workspaceRoot === targetWorkspaceRoot)) {
+      await this.sendInfoCardMessage({
+        chatId: normalized.chatId,
+        replyToMessageId: replyToMessageId || normalized.messageId,
+        text: "该项目未绑定到当前会话，无需移除。",
+      });
+      return;
+    }
+
+    this.sessionStore.removeWorkspace(bindingKey, targetWorkspaceRoot);
+    await this.handleWorkspacesCommand(normalized, {
+      replyToMessageId: replyToMessageId || normalized.messageId,
+    });
+  }
+
+  async upsertAssistantReplyCard({ threadId, turnId, chatId, text, state, deferFlush = false }) {
     if (!threadId || !chatId) {
       return;
     }
@@ -1035,6 +1263,10 @@ class FeishuBotRuntime {
 
     this.replyCardByRunKey.set(runKey, existing);
     this.currentRunKeyByThreadId.set(threadId, runKey);
+
+    if (deferFlush && existing.state !== "completed" && existing.state !== "failed") {
+      return;
+    }
 
     const shouldFlushImmediately = existing.state === "completed"
       || existing.state === "failed"
@@ -1098,6 +1330,9 @@ class FeishuBotRuntime {
         return;
       }
       this.replyCardByRunKey.set(runKey, entry);
+      this.clearPendingReactionForThread(entry.threadId).catch((error) => {
+        console.error(`[codex-im] failed to clear pending reaction after first reply card: ${error.message}`);
+      });
       return;
     }
 
@@ -1211,7 +1446,7 @@ function normalizeFeishuTextEvent(event, config) {
     return null;
   }
 
-  const command = parseCommand(text, config.feishuBotName);
+  const command = parseCommand(text);
 
   return {
     provider: "feishu",
@@ -1223,6 +1458,15 @@ function normalizeFeishuTextEvent(event, config) {
     text,
     command,
     receivedAt: new Date().toISOString(),
+  };
+}
+
+function buildBindingMetadata(normalized) {
+  return {
+    workspaceId: normalized.workspaceId,
+    chatId: normalized.chatId,
+    threadKey: normalized.threadKey,
+    senderId: normalized.senderId,
   };
 }
 
@@ -1355,46 +1599,36 @@ function parseFeishuMessageText(rawContent) {
   }
 }
 
-function parseCommand(text, botName) {
+function parseCommand(text) {
   const normalized = text.trim().toLowerCase();
-  const alias = (botName || "codex").trim().toLowerCase();
-  const prefixes = ["/codex ", `/@${alias} `];
-  const exactPrefixes = ["/codex", `/@${alias}`];
+  const prefixes = ["/codex "];
+  const exactPrefixes = ["/codex"];
 
-  if (normalized === "/codex stop" || normalized === `/@${alias} stop`) {
-    return "stop";
+  const exactCommands = {
+    stop: ["stop"],
+    where: ["where"],
+    inspect_message: ["message"],
+    help: ["help"],
+    workspace: ["workspace"],
+    remove: ["remove"],
+    new: ["new"],
+    approve: ["approve", "approve session"],
+    reject: ["reject"],
+  };
+  for (const [command, suffixes] of Object.entries(exactCommands)) {
+    if (matchesExactCommand(normalized, suffixes)) {
+      return command;
+    }
   }
-  if (normalized === "/codex where" || normalized === `/@${alias} where`) {
-    return "where";
+
+  if (matchesPrefixCommand(normalized, "switch")) {
+    return "switch";
   }
-  if (normalized === "/codex message" || normalized === `/@${alias} message`) {
-    return "inspect_message";
+  if (matchesPrefixCommand(normalized, "remove")) {
+    return "remove";
   }
-  if (normalized === "/codex help" || normalized === `/@${alias} help`) {
-    return "help";
-  }
-  if (normalized === "/codex workspaces" || normalized === `/@${alias} workspaces`) {
-    return "workspaces";
-  }
-  if (normalized.startsWith("/codex use ") || normalized.startsWith(`/@${alias} use `)) {
-    return "use";
-  }
-  if (normalized === "/codex new" || normalized === `/@${alias} new`) {
-    return "new";
-  }
-  if (normalized.startsWith("/codex bind ") || normalized.startsWith(`/@${alias} bind `)) {
+  if (matchesPrefixCommand(normalized, "bind")) {
     return "bind";
-  }
-  if (
-    normalized === "/codex approve"
-    || normalized === `/@${alias} approve`
-    || normalized === "/codex approve session"
-    || normalized === `/@${alias} approve session`
-  ) {
-    return "approve";
-  }
-  if (normalized === "/codex reject" || normalized === `/@${alias} reject`) {
-    return "reject";
   }
   if (prefixes.some((prefix) => normalized.startsWith(prefix))) {
     return "unknown_command";
@@ -1407,6 +1641,16 @@ function parseCommand(text, botName) {
   }
 
   return "";
+}
+
+function matchesExactCommand(text, suffixes) {
+  return suffixes.some((suffix) => (
+    text === `/codex ${suffix}`
+  ));
+}
+
+function matchesPrefixCommand(text, command) {
+  return text.startsWith(`/codex ${command} `);
 }
 
 function resolveCreateMessageMethod(client) {
@@ -1619,50 +1863,79 @@ function buildApprovalCard(approval) {
         {
           tag: "markdown",
           content: [
-            "## Codex 请求授权",
+            "## Codex 授权请求",
             `**请求类型**：${requestType}`,
             approval.reason ? `**原因**：${escapeLarkMd(approval.reason)}` : "",
             approval.command ? `**将执行的内容**：\n\`\`\`\n${approval.command}\n\`\`\`` : "",
-            "**处理方式**：",
-            "- 本次允许：只放行这一次",
-            "- 本会话允许：当前会话后续同类请求继续放行",
-            "- 拒绝：本次不执行",
+            "请选择处理方式：",
           ].filter(Boolean).join("\n\n"),
         },
         {
-          tag: "button",
-          text: { tag: "plain_text", content: "本次允许" },
-          type: "primary",
-          value: {
-            kind: "approval",
-            decision: "approve",
-            scope: "once",
-            requestId: approval.requestId,
-            threadId: approval.threadId,
-          },
+          tag: "column_set",
+          flex_mode: "none",
+          columns: [
+            {
+              tag: "column",
+              width: "weighted",
+              weight: 1,
+              elements: [
+                {
+                  tag: "button",
+                  text: { tag: "plain_text", content: "本次允许" },
+                  type: "primary",
+                  value: {
+                    kind: "approval",
+                    decision: "approve",
+                    scope: "once",
+                    requestId: approval.requestId,
+                    threadId: approval.threadId,
+                  },
+                },
+              ],
+            },
+            {
+              tag: "column",
+              width: "weighted",
+              weight: 1,
+              elements: [
+                {
+                  tag: "button",
+                  text: { tag: "plain_text", content: "会话允许" },
+                  value: {
+                    kind: "approval",
+                    decision: "approve",
+                    scope: "session",
+                    requestId: approval.requestId,
+                    threadId: approval.threadId,
+                  },
+                },
+              ],
+            },
+            {
+              tag: "column",
+              width: "weighted",
+              weight: 1,
+              elements: [
+                {
+                  tag: "button",
+                  text: { tag: "plain_text", content: "拒绝" },
+                  type: "danger",
+                  value: {
+                    kind: "approval",
+                    decision: "reject",
+                    scope: "once",
+                    requestId: approval.requestId,
+                    threadId: approval.threadId,
+                  },
+                },
+              ],
+            },
+          ],
         },
         {
-          tag: "button",
-          text: { tag: "plain_text", content: "本会话允许" },
-          value: {
-            kind: "approval",
-            decision: "approve",
-            scope: "session",
-            requestId: approval.requestId,
-            threadId: approval.threadId,
-          },
-        },
-        {
-          tag: "button",
-          text: { tag: "plain_text", content: "拒绝" },
-          type: "danger",
-          value: {
-            kind: "approval",
-            decision: "reject",
-            scope: "once",
-            requestId: approval.requestId,
-            threadId: approval.threadId,
-          },
+          tag: "markdown",
+          content: "`会话允许` 仅对当前会话生效。",
+          text_size: "notation",
         },
       ],
     },
@@ -1671,10 +1944,17 @@ function buildApprovalCard(approval) {
 
 function buildAssistantReplyCard({ text, state }) {
   const normalizedState = state || "streaming";
+  const stateLabel = normalizedState === "failed"
+    ? " · 🔴 执行失败"
+    : normalizedState === "completed"
+      ? ""
+      : " · 🟡 处理中";
   const content = typeof text === "string" && text.trim()
     ? text.trim()
     : normalizedState === "failed"
       ? "执行失败"
+      : normalizedState === "completed"
+        ? "执行完成"
       : "思考中";
 
   return {
@@ -1687,14 +1967,29 @@ function buildAssistantReplyCard({ text, state }) {
       elements: [
         {
           tag: "markdown",
+          content: `**🤖 Codex**${stateLabel}`,
+          text_size: "notation",
+        },
+        { tag: "hr" },
+        {
+          tag: "markdown",
           content: escapeCardMarkdown(content),
+          text_size: "normal",
         },
       ],
     },
   };
 }
 
-function buildInfoCard(text) {
+function buildInfoCard(text, { kind = "info" } = {}) {
+  const normalizedText = String(text || "").trim();
+  const title = kind === "progress"
+    ? "⏳ 处理中"
+    : kind === "success"
+      ? "✅ 已完成"
+      : kind === "error"
+        ? "❌ 处理失败"
+        : "💬 提示";
   return {
     schema: "2.0",
     config: {
@@ -1705,68 +2000,224 @@ function buildInfoCard(text) {
       elements: [
         {
           tag: "markdown",
-          content: escapeCardMarkdown(String(text || "").trim()),
+          content: `**${title}**\n\n${escapeCardMarkdown(normalizedText)}`,
+          text_size: "normal",
         },
       ],
     },
   };
 }
 
-function buildStatusPanelCard({ workspaceRoot, threadId, currentThread, recentThreads, status }) {
-  const elements = [
-    {
-      tag: "markdown",
-      content: [
-        "## 项目状态",
-        `**当前项目**：\`${escapeCardMarkdown(workspaceRoot)}\``,
-        `**当前线程**：${threadId ? formatThreadLabel(currentThread || { id: threadId }) : "未创建"}`,
-        `**当前状态**：${status?.label || "空闲"}`,
-      ].join("\n\n"),
-    },
-    {
-      tag: "button",
-      text: { tag: "plain_text", content: "切换线程" },
-      type: "primary",
-      value: buildPanelActionValue("open_threads"),
-    },
-    {
-      tag: "button",
-      text: { tag: "plain_text", content: "新建线程" },
-      value: buildPanelActionValue("new_thread"),
-    },
-    {
-      tag: "button",
-      text: { tag: "plain_text", content: "最近消息" },
-      value: buildPanelActionValue("show_messages"),
-    },
-    {
-      tag: "button",
-      text: { tag: "plain_text", content: "停止任务" },
-      type: "danger",
-      value: buildPanelActionValue("stop"),
-    },
-    { tag: "hr" },
-  ];
-
-  if (recentThreads?.length) {
-    elements.push({
-      tag: "markdown",
-      content: `**最近线程**（${recentThreads.length}）`,
-      text_size: "normal",
+function buildStatusPanelCard({
+  workspaceRoot,
+  threadId,
+  currentThread,
+  recentThreads,
+  totalThreadCount,
+  status,
+  noticeText = "",
+}) {
+  const isRunning = status?.code === "running";
+  const currentThreadStatusText = status?.code === "running"
+    ? "🟡 运行中"
+    : status?.code === "approval"
+      ? "🟠 等待授权"
+      : "";
+  const shouldShowAllThreadsButton = Number(totalThreadCount || 0) > 3;
+  const threadRows = [];
+  const current = threadId ? (currentThread || { id: threadId }) : null;
+  if (current) {
+    threadRows.push({
+      isCurrent: true,
+      thread: current,
+      label: "当前线程",
+      buttonText: "当前",
+      buttonType: "default",
     });
+  }
+  for (const thread of (recentThreads || [])) {
+    threadRows.push({
+      isCurrent: false,
+      thread,
+      label: "历史线程",
+      buttonText: "切换",
+      buttonType: "primary",
+    });
+  }
+
+  const elements = [];
+  if (typeof noticeText === "string" && noticeText.trim()) {
     elements.push({
       tag: "markdown",
-      content: recentThreads
-        .map((thread, index) => `${index + 1}. ${formatThreadLabel(thread)}\n${summarizeThreadPreview(thread)}`)
-        .join("\n\n"),
+      content: `✅ ${escapeCardMarkdown(noticeText.trim())}`,
       text_size: "notation",
+    });
+  }
+
+  elements.push({
+      tag: "column_set",
+      flex_mode: "none",
+      columns: [
+        {
+          tag: "column",
+          width: "weighted",
+          weight: 5,
+          vertical_align: "top",
+          elements: [
+            {
+              tag: "markdown",
+              content: [
+                `**当前项目**：\`${escapeCardMarkdown(workspaceRoot)}\``,
+              ].join(""),
+            },
+          ],
+        },
+        {
+          tag: "column",
+          width: "auto",
+          vertical_align: "top",
+          elements: [
+            {
+              tag: "button",
+              text: { tag: "plain_text", content: "新建" },
+              value: buildPanelActionValue("new_thread"),
+            },
+          ],
+        },
+      ],
+    }
+  );
+  elements.push({ tag: "hr" });
+
+  if (threadRows.length) {
+    elements.push({
+      tag: "markdown",
+      content: `**线程列表**（${threadRows.length}）`,
+      text_size: "notation",
+    });
+    threadRows.forEach((row, index) => {
+      if (index > 0) {
+        elements.push({ tag: "hr" });
+      }
+      elements.push({
+        tag: "column_set",
+        flex_mode: "none",
+        columns: [
+          {
+            tag: "column",
+            width: "weighted",
+            weight: 5,
+            vertical_align: "top",
+            elements: [
+              {
+                tag: "markdown",
+                content: [
+                  `${row.label === "当前线程" ? "🟢 当前" : "⚪ 历史"} · **${formatThreadLabel(row.thread)}**${row.isCurrent && currentThreadStatusText ? ` · ${currentThreadStatusText}` : ""}`,
+                  formatThreadIdLine(row.thread),
+                  summarizeThreadPreview(row.thread),
+                ].filter(Boolean).join("\n"),
+                text_size: "notation",
+              },
+            ],
+          },
+          {
+            tag: "column",
+            width: "auto",
+            vertical_align: "center",
+            elements: [
+              ...(row.isCurrent
+                ? [
+                  {
+                    tag: "column_set",
+                    flex_mode: "none",
+                    columns: [
+                      {
+                        tag: "column",
+                        width: "auto",
+                        elements: [
+                          {
+                            tag: "button",
+                            text: { tag: "plain_text", content: "最近消息" },
+                            type: "primary",
+                            value: buildThreadActionValue("messages", row.thread.id),
+                          },
+                        ],
+                      },
+                      {
+                        tag: "column",
+                        width: "auto",
+                        elements: [
+                          {
+                            tag: "button",
+                            text: { tag: "plain_text", content: row.buttonText },
+                            type: row.buttonType,
+                            disabled: true,
+                          },
+                        ],
+                      },
+                    ],
+                  },
+                ]
+                : [
+                  {
+                    tag: "button",
+                    text: { tag: "plain_text", content: row.buttonText },
+                    type: row.buttonType,
+                    value: buildThreadActionValue("switch", row.thread.id),
+                  },
+                ]),
+            ],
+          },
+        ],
+      });
     });
   } else {
     elements.push({
       tag: "markdown",
-      content: "**最近线程**\n\n暂无历史线程",
-      text_size: "normal",
+      content: "**线程列表**\n暂无历史线程",
+      text_size: "notation",
     });
+  }
+
+  const footerColumns = [];
+  if (shouldShowAllThreadsButton) {
+    footerColumns.push({
+      tag: "column",
+      width: "weighted",
+      weight: 1,
+      elements: [
+        {
+          tag: "button",
+          text: { tag: "plain_text", content: "全部线程" },
+          value: buildPanelActionValue("open_threads"),
+        },
+      ],
+    });
+  }
+  if (isRunning) {
+    footerColumns.push({
+      tag: "column",
+      width: "weighted",
+      weight: 1,
+      elements: [
+        {
+          tag: "button",
+          text: { tag: "plain_text", content: "停止" },
+          type: "danger",
+          value: buildPanelActionValue("stop"),
+        },
+      ],
+    });
+  }
+  if (footerColumns.length) {
+    elements.push(
+      { tag: "hr" },
+      {
+        tag: "column_set",
+        flex_mode: "none",
+        columns: footerColumns,
+      }
+    );
   }
 
   return {
@@ -1785,7 +2236,13 @@ function buildThreadPickerCard({ workspaceRoot, threads, currentThreadId }) {
   const elements = [
     {
       tag: "markdown",
-      content: `## 线程列表\n\n**当前项目**：\`${escapeCardMarkdown(workspaceRoot)}\``,
+      content: `**当前项目**：\`${escapeCardMarkdown(workspaceRoot)}\``,
+    },
+    { tag: "hr" },
+    {
+      tag: "markdown",
+      content: `**线程列表**（${Math.min(threads.length, 8)}）`,
+      text_size: "notation",
     },
   ];
 
@@ -1795,24 +2252,75 @@ function buildThreadPickerCard({ workspaceRoot, threads, currentThreadId }) {
     }
     const isCurrent = thread.id === currentThreadId;
     elements.push({
-      tag: "markdown",
-      content: [
-        `${isCurrent ? "**当前线程**" : "**历史线程**"}${isCurrent ? " · `当前`" : ""}`,
-        `${formatThreadLabel(thread)}`,
-        summarizeThreadPreview(thread),
-      ].filter(Boolean).join("\n\n"),
-      text_size: isCurrent ? "normal" : "notation",
-    });
-    elements.push({
-      tag: "button",
-      text: { tag: "plain_text", content: isCurrent ? "继续这个线程" : "继续这个线程" },
-      type: isCurrent ? "default" : "primary",
-      value: buildThreadActionValue("switch", thread.id),
-    });
-    elements.push({
-      tag: "button",
-      text: { tag: "plain_text", content: "查看最近消息" },
-      value: buildThreadActionValue("messages", thread.id),
+      tag: "column_set",
+      flex_mode: "none",
+      columns: [
+        {
+          tag: "column",
+          width: "weighted",
+          weight: 5,
+          vertical_align: "top",
+          elements: [
+            {
+              tag: "markdown",
+              content: [
+                `${isCurrent ? "🟢 当前" : "⚪ 历史"} · **${formatThreadLabel(thread)}**`,
+                formatThreadIdLine(thread),
+                summarizeThreadPreview(thread),
+              ].filter(Boolean).join("\n"),
+              text_size: "notation",
+            },
+          ],
+        },
+        {
+          tag: "column",
+          width: "auto",
+          vertical_align: "center",
+          elements: [
+            ...(isCurrent
+              ? [
+                {
+                  tag: "column_set",
+                  flex_mode: "none",
+                  columns: [
+                    {
+                      tag: "column",
+                      width: "auto",
+                      elements: [
+                        {
+                          tag: "button",
+                          text: { tag: "plain_text", content: "最近消息" },
+                          type: "primary",
+                          value: buildThreadActionValue("messages", thread.id),
+                        },
+                      ],
+                    },
+                    {
+                      tag: "column",
+                      width: "auto",
+                      elements: [
+                        {
+                          tag: "button",
+                          text: { tag: "plain_text", content: "当前" },
+                          type: "default",
+                          disabled: true,
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ]
+              : [
+                {
+                  tag: "button",
+                  text: { tag: "plain_text", content: "切换" },
+                  type: "primary",
+                  value: buildThreadActionValue("switch", thread.id),
+                },
+              ]),
+          ],
+        },
+      ],
     });
   });
 
@@ -1822,106 +2330,8 @@ function buildThreadPickerCard({ workspaceRoot, threads, currentThreadId }) {
       tag: "button",
       text: { tag: "plain_text", content: "新建线程" },
       value: buildPanelActionValue("new_thread"),
-    },
-    {
-      tag: "button",
-      text: { tag: "plain_text", content: "返回状态面板" },
-      value: buildPanelActionValue("status"),
     }
   );
-
-  return {
-    schema: "2.0",
-    config: {
-      wide_screen_mode: true,
-      update_multi: true,
-    },
-    body: {
-      elements,
-    },
-  };
-}
-
-function buildWorkspacesCard({ items, runtimeThreadsByWorkspaceRoot }) {
-  const elements = [
-    {
-      tag: "markdown",
-      content: "**工作目录**",
-    },
-  ];
-
-  items.forEach((item, index) => {
-    const runtimeThreads = runtimeThreadsByWorkspaceRoot.get(item.workspaceRoot) || [];
-    const latestThread = runtimeThreads[0] || null;
-    const currentThread = runtimeThreads.find((thread) => thread.id === item.currentThreadId) || null;
-    const historicalThreads = runtimeThreads.filter((thread) => thread.id !== item.currentThreadId);
-
-    if (index > 0) {
-      elements.push({
-        tag: "hr",
-      });
-    }
-
-    elements.push({
-      tag: "markdown",
-      content: item.isActive ? "**当前目录** · `当前`" : "**已记录目录**",
-      text_size: "normal",
-    });
-
-    elements.push({
-      tag: "markdown",
-      content: `\`${escapeCardMarkdown(item.workspaceRoot)}\``,
-      text_size: "notation",
-    });
-
-    if (item.currentThreadId && currentThread) {
-      elements.push({
-        tag: "markdown",
-        content: `当前线程：${formatThreadLabel(currentThread)}`,
-        text_size: "notation",
-      });
-    } else if (item.currentThreadId) {
-      elements.push({
-        tag: "markdown",
-        content: `当前线程：\`${escapeCardMarkdown(item.currentThreadId)}\``,
-        text_size: "notation",
-      });
-    } else if (latestThread) {
-      elements.push({
-        tag: "markdown",
-        content: `默认复用：${formatThreadLabel(latestThread)}`,
-        text_size: "notation",
-      });
-    } else {
-      elements.push({
-        tag: "markdown",
-        content: "当前线程：未创建",
-        text_size: "notation",
-      });
-    }
-
-    if (historicalThreads.length) {
-      elements.push({
-        tag: "markdown",
-        content: `历史线程（${historicalThreads.length}）`,
-        text_size: "notation",
-      });
-      elements.push({
-        tag: "markdown",
-        content: historicalThreads
-          .slice(0, 6)
-          .map((thread) => `- ${formatThreadLabel(thread)}`)
-          .join("\n"),
-        text_size: "notation",
-      });
-    } else {
-      elements.push({
-        tag: "markdown",
-        content: "历史线程：空",
-        text_size: "notation",
-      });
-    }
-  });
 
   return {
     schema: "2.0",
@@ -1939,17 +2349,17 @@ function buildHelpCardText() {
   const sections = [
     [
       "**直接对话**",
-      "绑定目录后，直接发普通消息即可继续当前线程。",
+      "绑定项目后，直接发普通消息即可继续当前线程。",
     ],
     [
-      "**绑定工作目录**",
+      "**绑定项目**",
       "`/codex bind /绝对路径`",
-      "把当前飞书会话绑定到一个本地项目目录。",
+      "把当前飞书会话绑定到一个本地项目。",
     ],
     [
       "**查看当前状态**",
       "`/codex where`",
-      "查看当前绑定的工作目录和正在使用的线程。",
+      "查看当前绑定的项目和正在使用的线程。",
     ],
     [
       "**查看最近消息**",
@@ -1958,18 +2368,23 @@ function buildHelpCardText() {
     ],
     [
       "**查看可用历史线程**",
-      "`/codex workspaces`",
-      "查看当前目录下 Codex runtime 可见的历史线程。",
+      "`/codex workspace`",
+      "查看当前项目下 Codex runtime 可见的历史线程。",
+    ],
+    [
+      "**移除会话项目绑定**",
+      "`/codex remove /绝对路径`",
+      "从当前飞书会话中移除指定项目（不能移除当前项目）。",
     ],
     [
       "**切换到指定线程**",
-      "`/codex use <threadId>`",
-      "切换到某条历史线程，并回显最近几轮对话。",
+      "`/codex switch <threadId>`",
+      "按线程 ID 切换到指定线程。",
     ],
     [
       "**新建线程**",
       "`/codex new`",
-      "在当前工作目录下创建一条新线程并切换过去。",
+      "在当前项目下创建一条新线程并切换过去。",
     ],
     [
       "**中断运行**",
@@ -1989,17 +2404,158 @@ function buildHelpCardText() {
   ].join("\n\n");
 }
 
+function listBoundWorkspaces(binding) {
+  const activeWorkspaceRoot = String(binding?.activeWorkspaceRoot || "").trim();
+  const threadIdByWorkspaceRoot = binding?.threadIdByWorkspaceRoot
+    && typeof binding.threadIdByWorkspaceRoot === "object"
+    ? binding.threadIdByWorkspaceRoot
+    : {};
+  const workspaceRoots = new Set(Object.keys(threadIdByWorkspaceRoot));
+  if (activeWorkspaceRoot) {
+    workspaceRoots.add(activeWorkspaceRoot);
+  }
+
+  return [...workspaceRoots]
+    .map((workspaceRoot) => String(workspaceRoot || "").trim())
+    .filter(Boolean)
+    .sort((left, right) => left.localeCompare(right))
+    .map((workspaceRoot) => ({
+      workspaceRoot,
+      isActive: workspaceRoot === activeWorkspaceRoot,
+      threadId: String(threadIdByWorkspaceRoot[workspaceRoot] || "").trim(),
+    }));
+}
+
+function buildWorkspaceBindingsCard(items) {
+  const elements = [
+    {
+      tag: "markdown",
+      content: `**会话绑定项目**（${items.length}）`,
+      text_size: "normal",
+    },
+  ];
+
+  items.forEach((item, index) => {
+    if (index > 0) {
+      elements.push({ tag: "hr" });
+    }
+    elements.push({
+      tag: "column_set",
+      flex_mode: "none",
+      columns: [
+        {
+          tag: "column",
+          width: "weighted",
+          weight: 5,
+          vertical_align: "top",
+          elements: [
+            {
+              tag: "markdown",
+              content: [
+                `${item.isActive ? "🟢 当前项目" : "⚪ 已绑定项目"}`,
+                `\`${escapeCardMarkdown(item.workspaceRoot)}\``,
+                item.threadId ? "" : "线程：未关联",
+              ].filter(Boolean).join("\n"),
+              text_size: "notation",
+            },
+          ],
+        },
+        {
+          tag: "column",
+          width: "auto",
+          vertical_align: "center",
+          elements: item.isActive
+            ? [
+              {
+                tag: "column_set",
+                flex_mode: "none",
+                columns: [
+                  {
+                    tag: "column",
+                    width: "auto",
+                    elements: [
+                      {
+                        tag: "button",
+                        text: { tag: "plain_text", content: "线程列表" },
+                        type: "primary",
+                        value: buildWorkspaceActionValue("status", item.workspaceRoot),
+                      },
+                    ],
+                  },
+                  {
+                    tag: "column",
+                    width: "auto",
+                    elements: [
+                      {
+                        tag: "button",
+                        text: { tag: "plain_text", content: "当前" },
+                        type: "default",
+                        disabled: true,
+                      },
+                    ],
+                  },
+                ],
+              },
+            ]
+            : [
+              {
+                tag: "column_set",
+                flex_mode: "none",
+                columns: [
+                  {
+                    tag: "column",
+                    width: "auto",
+                    elements: [
+                      {
+                        tag: "button",
+                        text: { tag: "plain_text", content: "移除" },
+                        type: "default",
+                        value: buildWorkspaceActionValue("remove", item.workspaceRoot),
+                      },
+                    ],
+                  },
+                  {
+                    tag: "column",
+                    width: "auto",
+                    elements: [
+                      {
+                        tag: "button",
+                        text: { tag: "plain_text", content: "切换" },
+                        type: "primary",
+                        value: buildWorkspaceActionValue("switch", item.workspaceRoot),
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+        },
+      ],
+    });
+  });
+
+  return {
+    schema: "2.0",
+    config: {
+      wide_screen_mode: true,
+      update_multi: true,
+    },
+    body: {
+      elements,
+    },
+  };
+}
+
 function buildThreadMessagesSummary({ workspaceRoot, thread, recentMessages }) {
   const sections = [
-    "最近对话",
-    `工作目录：\`${workspaceRoot}\``,
+    `项目：\`${workspaceRoot}\``,
     `当前线程：${formatThreadLabel(thread)}`,
     "***",
     "**对话记录**",
   ];
 
   if (!Array.isArray(recentMessages) || recentMessages.length === 0) {
-    sections.push("最近对话：空");
+    sections.push("空");
     return sections.join("\n\n");
   }
 
@@ -2008,7 +2564,7 @@ function buildThreadMessagesSummary({ workspaceRoot, thread, recentMessages }) {
       ? `😄 **你**\n> ${escapeCardMarkdown(message.text).replace(/\n/g, "\n> ")}`
       : `🤖 <font color='blue'>**Codex**</font>\n> ${escapeCardMarkdown(message.text).replace(/\n/g, "\n> ")}`
   ));
-  sections.push(normalizedTranscript.join("\n\n"));
+  sections.push(normalizedTranscript.join("\n\n---\n\n"));
   return sections.join("\n\n");
 }
 
@@ -2055,10 +2611,10 @@ function buildApprovalResolvedCard(approval) {
         {
           tag: "markdown",
           content: [
-            `## Codex 请求授权 <font color='${colorText}'>${resolutionLabel}</font>`,
+            `## Codex 授权请求 <font color='${colorText}'>${resolutionLabel}</font>`,
             approval.reason ? `**原因**: ${escapeLarkMd(approval.reason)}` : "",
             approval.command ? `**命令**:\n\`\`\`\n${approval.command}\n\`\`\`` : "",
-            `处理结果: ${resolutionLabel}`,
+            `结果：${resolutionLabel}`,
           ].filter(Boolean).join("\n\n"),
         },
       ],
@@ -2312,36 +2868,33 @@ function extractTextFromResumeAgentMessage(item) {
   );
 }
 
-function buildThreadSwitchSummary({ workspaceRoot, thread, recentMessages }) {
-  const sections = [
-    "已切换到指定线程",
-    `工作目录：\`${workspaceRoot}\``,
-    `当前线程：${formatThreadLabel(thread)}`,
-  ];
-
-  if (!Array.isArray(recentMessages) || recentMessages.length === 0) {
-    sections.push("最近对话：空");
-    return sections.join("\n\n");
-  }
-
-  const transcript = recentMessages.map((message) => (
-    `${message.role === "user" ? "**你**" : "**Codex**"}：${escapeCardMarkdown(message.text)}`
-  ));
-  sections.push(`最近对话\n\n${transcript.join("\n\n")}`);
-  return sections.join("\n\n");
-}
-
 function formatThreadLabel(thread) {
   if (!thread) {
     return "";
   }
 
   const title = typeof thread.title === "string" ? thread.title.trim() : "";
-  const id = typeof thread.id === "string" ? thread.id.trim() : "";
-  if (title && id) {
-    return `${title} (\`${id}\`)`;
+  if (!title) {
+    return "未命名线程";
   }
-  return title || (id ? `\`${id}\`` : "");
+  return truncateDisplayText(title, 50);
+}
+
+function formatThreadIdLine(thread) {
+  const threadId = normalizeIdentifier(thread?.id || thread?.threadId || thread?.thread_id);
+  if (!threadId) {
+    return "";
+  }
+  return `线程ID：\`${escapeCardMarkdown(threadId)}\``;
+}
+
+function truncateDisplayText(text, maxLength) {
+  const input = String(text || "");
+  const chars = Array.from(input);
+  if (!Number.isFinite(maxLength) || maxLength <= 0 || chars.length <= maxLength) {
+    return input;
+  }
+  return `${chars.slice(0, maxLength).join("")}...`;
 }
 
 function extractCardAction(data) {
@@ -2374,6 +2927,13 @@ function extractCardAction(data) {
       kind: value.kind,
       action: value.action || "",
       threadId: value.threadId || "",
+    };
+  }
+  if (value.kind === "workspace") {
+    return {
+      kind: value.kind,
+      action: value.action || "",
+      workspaceRoot: value.workspaceRoot || "",
     };
   }
   return null;
@@ -2426,10 +2986,17 @@ function buildThreadActionValue(action, threadId) {
   };
 }
 
+function buildWorkspaceActionValue(action, workspaceRoot) {
+  return {
+    kind: "workspace",
+    action,
+    workspaceRoot,
+  };
+}
+
 function summarizeThreadPreview(thread) {
   const updated = formatRelativeTimestamp(thread?.updatedAt);
-  const title = thread?.title ? "点击继续该线程" : "无摘要";
-  return [updated ? `更新时间：${updated}` : "", title].filter(Boolean).join("\n");
+  return updated ? `更新时间：${updated}` : "更新时间：未知";
 }
 
 function formatRelativeTimestamp(value) {
@@ -2502,8 +3069,21 @@ function patchWsClientForCardCallbacks(wsClient) {
   };
 }
 
-function eventShouldClearPendingReaction(eventType) {
-  return eventType === "im.agent_reply" || eventType === "im.run_state";
+function eventShouldClearPendingReaction(event) {
+  if (!event || typeof event !== "object") {
+    return false;
+  }
+
+  if (event.type === "im.run_state") {
+    const state = String(event.payload?.state || "").toLowerCase();
+    return state === "completed" || state === "failed";
+  }
+
+  if (event.type === "im.approval_request") {
+    return true;
+  }
+
+  return false;
 }
 
 function envelopeEventObject(params) {
@@ -2659,25 +3239,26 @@ function escapeCardMarkdown(text) {
 function extractBindPath(text) {
   const trimmed = String(text || "").trim();
   const bindPrefix = "/codex bind ";
-  const mentionBindMatch = trimmed.match(/^\/@[^ ]+\s+bind\s+(.+)$/i);
   if (trimmed.toLowerCase().startsWith(bindPrefix)) {
     return trimmed.slice(bindPrefix.length).trim();
-  }
-  if (mentionBindMatch) {
-    return mentionBindMatch[1].trim();
   }
   return "";
 }
 
-function extractUseThreadId(text) {
+function extractSwitchThreadId(text) {
   const trimmed = String(text || "").trim();
-  const usePrefix = "/codex use ";
-  const mentionUseMatch = trimmed.match(/^\/@[^ ]+\s+use\s+(.+)$/i);
-  if (trimmed.toLowerCase().startsWith(usePrefix)) {
-    return trimmed.slice(usePrefix.length).trim();
+  const switchPrefix = "/codex switch ";
+  if (trimmed.toLowerCase().startsWith(switchPrefix)) {
+    return trimmed.slice(switchPrefix.length).trim();
   }
-  if (mentionUseMatch) {
-    return mentionUseMatch[1].trim();
+  return "";
+}
+
+function extractRemoveWorkspacePath(text) {
+  const trimmed = String(text || "").trim();
+  const removePrefix = "/codex remove ";
+  if (trimmed.toLowerCase().startsWith(removePrefix)) {
+    return trimmed.slice(removePrefix.length).trim();
   }
   return "";
 }
@@ -2716,4 +3297,4 @@ function maskSecret(value) {
   return `${value.slice(0, 3)}***${value.slice(-3)}`;
 }
 
-module.exports = { FeishuBotRuntime, normalizeFeishuTextEvent };
+module.exports = { FeishuBotRuntime };

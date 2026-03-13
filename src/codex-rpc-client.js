@@ -2,6 +2,16 @@ const { spawn } = require("child_process");
 const os = require("os");
 const WebSocket = require("ws");
 
+const THREAD_SOURCE_KINDS = [
+  "cli",
+  "vscode",
+  "appServer",
+  "subAgentReview",
+  "subAgentCompact",
+  "subAgentThreadSpawn",
+  "unknown",
+];
+
 class CodexRpcClient {
   constructor({ endpoint = "", env = process.env, codexCommand = "" }) {
     this.endpoint = endpoint;
@@ -26,7 +36,7 @@ class CodexRpcClient {
   }
 
   async connectSpawn() {
-    const commandCandidates = buildCodexCommandCandidates(this.codexCommand, this.env);
+    const commandCandidates = buildCodexCommandCandidates(this.codexCommand);
     let child = null;
     let lastError = null;
     let selectedCommand = "";
@@ -172,20 +182,12 @@ class CodexRpcClient {
       cursor,
       limit,
       sortKey,
-      sourceKinds: [
-        "cli",
-        "vscode",
-        "appServer",
-        "subAgentReview",
-        "subAgentCompact",
-        "subAgentThreadSpawn",
-        "unknown",
-      ],
+      sourceKinds: THREAD_SOURCE_KINDS,
     });
   }
 
   async sendRequest(method, params) {
-    const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const id = createRequestId();
     const payload = JSON.stringify({ id, method, params });
 
     const responsePromise = new Promise((resolve, reject) => {
@@ -204,17 +206,6 @@ class CodexRpcClient {
     this.sendRaw(JSON.stringify({ id, result }));
   }
 
-  async sendErrorResponse(id, code, message, data) {
-    this.sendRaw(JSON.stringify({
-      id,
-      error: {
-        code,
-        message,
-        data,
-      },
-    }));
-  }
-
   sendRaw(payload) {
     if (this.mode === "websocket") {
       if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
@@ -231,10 +222,8 @@ class CodexRpcClient {
   }
 
   handleIncoming(rawMessage) {
-    let parsed = null;
-    try {
-      parsed = JSON.parse(rawMessage);
-    } catch {
+    const parsed = tryParseJson(rawMessage);
+    if (!parsed) {
       return;
     }
 
@@ -255,15 +244,27 @@ class CodexRpcClient {
   }
 }
 
+function createRequestId() {
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function tryParseJson(rawMessage) {
+  try {
+    return JSON.parse(rawMessage);
+  } catch {
+    return null;
+  }
+}
+
 function resolveDefaultCodexCommand(env = process.env) {
   const explicit = String(env.CODEX_IM_CODEX_COMMAND || "").trim();
   if (explicit) {
     return explicit;
   }
-  return os.platform() === "win32" ? "codex" : "codex";
+  return "codex";
 }
 
-function buildCodexCommandCandidates(configuredCommand, env = process.env) {
+function buildCodexCommandCandidates(configuredCommand) {
   const explicit = String(configuredCommand || "").trim();
   if (explicit) {
     if (os.platform() !== "win32") {

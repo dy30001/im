@@ -1,16 +1,15 @@
 const path = require("path");
 const os = require("os");
 
+const TRUE_ENV_VALUES = new Set(["1", "true", "yes", "on"]);
+const FALSE_ENV_VALUES = new Set(["0", "false", "no", "off"]);
+
 function readConfig() {
   const mode = process.argv[2] || "";
-  const workspaceAllowlist = String(process.env.CODEX_IM_WORKSPACE_ALLOWLIST || "")
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
 
   return {
     mode,
-    workspaceAllowlist,
+    workspaceAllowlist: readListEnv("CODEX_IM_WORKSPACE_ALLOWLIST"),
     codexEndpoint: process.env.CODEX_IM_CODEX_ENDPOINT || "",
     codexCommand: process.env.CODEX_IM_CODEX_COMMAND || "",
     feishu: {
@@ -18,10 +17,33 @@ function readConfig() {
       appSecret: process.env.FEISHU_APP_SECRET || "",
     },
     defaultWorkspaceId: process.env.CODEX_IM_DEFAULT_WORKSPACE_ID || "default",
-    feishuBotName: process.env.CODEX_IM_FEISHU_BOT_NAME || "codex",
+    feishuStreamingOutput: readBooleanEnv("CODEX_IM_FEISHU_STREAMING_OUTPUT", true),
     sessionsFile: process.env.CODEX_IM_SESSIONS_FILE
       || path.join(os.homedir(), ".codex-im", "sessions.json"),
   };
+}
+
+function readListEnv(name) {
+  return String(process.env[name] || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function readBooleanEnv(name, defaultValue) {
+  const rawValue = process.env[name];
+  if (typeof rawValue !== "string" || !rawValue.trim()) {
+    return defaultValue;
+  }
+
+  const normalized = rawValue.trim().toLowerCase();
+  if (TRUE_ENV_VALUES.has(normalized)) {
+    return true;
+  }
+  if (FALSE_ENV_VALUES.has(normalized)) {
+    return false;
+  }
+  return defaultValue;
 }
 
 module.exports = { readConfig };

@@ -7,16 +7,16 @@ const { readConfig } = require("./config");
 const { FeishuBotRuntime } = require("./feishu-bot");
 
 function loadEnv() {
-  const cwdEnvPath = path.join(process.cwd(), ".env");
-  const userEnvPath = path.join(os.homedir(), ".codex-im", ".env");
+  const envCandidates = [
+    path.join(process.cwd(), ".env"),
+    path.join(os.homedir(), ".codex-im", ".env"),
+  ];
 
-  if (fs.existsSync(cwdEnvPath)) {
-    dotenv.config({ path: cwdEnvPath });
-    return;
-  }
-
-  if (fs.existsSync(userEnvPath)) {
-    dotenv.config({ path: userEnvPath });
+  for (const envPath of envCandidates) {
+    if (!fs.existsSync(envPath)) {
+      continue;
+    }
+    dotenv.config({ path: envPath });
     return;
   }
 

@@ -3,9 +3,7 @@ const fs = require("fs");
 class SessionStore {
   constructor({ filePath }) {
     this.filePath = filePath;
-    this.state = {
-      bindings: {},
-    };
+    this.state = createEmptyState();
     this.load();
   }
 
@@ -17,7 +15,7 @@ class SessionStore {
         this.state = parsed;
       }
     } catch {
-      this.state = { bindings: {} };
+      this.state = createEmptyState();
     }
   }
 
@@ -29,110 +27,104 @@ class SessionStore {
     return this.state.bindings[bindingKey] || null;
   }
 
-  setBinding(bindingKey, value) {
-    this.state.bindings[bindingKey] = {
-      ...value,
-      updatedAt: new Date().toISOString(),
-    };
-    this.save();
-    return this.state.bindings[bindingKey];
-  }
-
   getActiveWorkspaceRoot(bindingKey) {
     return this.state.bindings[bindingKey]?.activeWorkspaceRoot || "";
   }
 
   setActiveWorkspaceRoot(bindingKey, workspaceRoot) {
-    const current = this.state.bindings[bindingKey] || {
-      threadIdByWorkspaceRoot: {},
-    };
-    const normalizedWorkspaceRoot = String(workspaceRoot || "").trim();
-    const threadIdByWorkspaceRoot = {
-      ...(current.threadIdByWorkspaceRoot || {}),
-    };
+    const normalizedWorkspaceRoot = normalizeValue(workspaceRoot);
+    const current = this.getBinding(bindingKey) || { threadIdByWorkspaceRoot: {} };
+    const threadIdByWorkspaceRoot = getThreadMap(current);
     if (normalizedWorkspaceRoot && !(normalizedWorkspaceRoot in threadIdByWorkspaceRoot)) {
       threadIdByWorkspaceRoot[normalizedWorkspaceRoot] = "";
     }
 
-    this.state.bindings[bindingKey] = {
+    return this.updateBinding(bindingKey, {
       ...current,
       activeWorkspaceRoot: normalizedWorkspaceRoot,
       threadIdByWorkspaceRoot,
-      updatedAt: new Date().toISOString(),
-    };
-    this.save();
-    return this.state.bindings[bindingKey];
+    });
   }
 
   getThreadIdForWorkspace(bindingKey, workspaceRoot) {
-    const normalizedWorkspaceRoot = String(workspaceRoot || "").trim();
+    const normalizedWorkspaceRoot = normalizeValue(workspaceRoot);
     if (!normalizedWorkspaceRoot) {
       return "";
     }
     return this.state.bindings[bindingKey]?.threadIdByWorkspaceRoot?.[normalizedWorkspaceRoot] || "";
   }
 
-  listWorkspaces(bindingKey) {
-    const binding = this.state.bindings[bindingKey] || {};
-    const activeWorkspaceRoot = binding.activeWorkspaceRoot || "";
-    const threadIdByWorkspaceRoot = binding.threadIdByWorkspaceRoot || {};
-    const workspaceRoots = new Set(Object.keys(threadIdByWorkspaceRoot));
-    if (activeWorkspaceRoot) {
-      workspaceRoots.add(activeWorkspaceRoot);
-    }
-
-    return [...workspaceRoots]
-      .sort((left, right) => left.localeCompare(right))
-      .map((workspaceRoot) => {
-        const currentThreadId = threadIdByWorkspaceRoot[workspaceRoot] || "";
-
-        return {
-          workspaceRoot,
-          threadId: currentThreadId,
-          currentThreadId,
-          isActive: workspaceRoot === activeWorkspaceRoot,
-        };
-      });
-  }
-
   setThreadIdForWorkspace(bindingKey, workspaceRoot, threadId, extra = {}) {
-    const normalizedWorkspaceRoot = String(workspaceRoot || "").trim();
+    const normalizedWorkspaceRoot = normalizeValue(workspaceRoot);
     if (!normalizedWorkspaceRoot) {
       return this.getBinding(bindingKey);
     }
 
-    const current = this.state.bindings[bindingKey] || {};
+    const current = this.getBinding(bindingKey) || {};
     const threadIdByWorkspaceRoot = {
-      ...(current.threadIdByWorkspaceRoot || {}),
+      ...getThreadMap(current),
       [normalizedWorkspaceRoot]: threadId,
     };
 
-    this.state.bindings[bindingKey] = {
+    return this.updateBinding(bindingKey, {
       ...current,
       ...extra,
       activeWorkspaceRoot: normalizedWorkspaceRoot,
       threadIdByWorkspaceRoot,
-      updatedAt: new Date().toISOString(),
-    };
-    this.save();
-    return this.state.bindings[bindingKey];
+    });
   }
 
   clearThreadIdForWorkspace(bindingKey, workspaceRoot) {
-    const normalizedWorkspaceRoot = String(workspaceRoot || "").trim();
+    const normalizedWorkspaceRoot = normalizeValue(workspaceRoot);
     if (!normalizedWorkspaceRoot) {
       return this.getBinding(bindingKey);
     }
 
-    const current = this.state.bindings[bindingKey] || {};
+    const current = this.getBinding(bindingKey) || {};
     const threadIdByWorkspaceRoot = {
-      ...(current.threadIdByWorkspaceRoot || {}),
+      ...getThreadMap(current),
       [normalizedWorkspaceRoot]: "",
     };
 
-    this.state.bindings[bindingKey] = {
+    return this.updateBinding(bindingKey, {
       ...current,
       threadIdByWorkspaceRoot,
+    });
+  }
+
+  removeWorkspace(bindingKey, workspaceRoot) {
+    const normalizedWorkspaceRoot = normalizeValue(workspaceRoot);
+    if (!normalizedWorkspaceRoot) {
+      return this.getBinding(bindingKey);
+    }
+
+    const current = this.getBinding(bindingKey) || {};
+    const threadIdByWorkspaceRoot = getThreadMap(current);
+    const hasWorkspaceEntry = Object.prototype.hasOwnProperty.call(
+      threadIdByWorkspaceRoot,
+      normalizedWorkspaceRoot
+    );
+    const activeWorkspaceRoot = normalizeValue(current.activeWorkspaceRoot);
+    if (!hasWorkspaceEntry && activeWorkspaceRoot !== normalizedWorkspaceRoot) {
+      return current;
+    }
+
+    delete threadIdByWorkspaceRoot[normalizedWorkspaceRoot];
+
+    const nextActiveWorkspaceRoot = activeWorkspaceRoot === normalizedWorkspaceRoot
+      ? (Object.keys(threadIdByWorkspaceRoot).sort((left, right) => left.localeCompare(right))[0] || "")
+      : activeWorkspaceRoot;
+
+    return this.updateBinding(bindingKey, {
+      ...current,
+      activeWorkspaceRoot: nextActiveWorkspaceRoot,
+      threadIdByWorkspaceRoot,
+    });
+  }
+
+  updateBinding(bindingKey, nextBinding) {
+    this.state.bindings[bindingKey] = {
+      ...nextBinding,
       updatedAt: new Date().toISOString(),
     };
     this.save();
@@ -140,8 +132,8 @@ class SessionStore {
   }
 
   buildBindingKey({ workspaceId, chatId, threadKey, senderId, messageId }) {
-    const normalizedThreadKey = typeof threadKey === "string" ? threadKey.trim() : "";
-    const normalizedMessageId = typeof messageId === "string" ? messageId.trim() : "";
+    const normalizedThreadKey = normalizeValue(threadKey);
+    const normalizedMessageId = normalizeValue(messageId);
     const hasStableThreadKey = normalizedThreadKey && normalizedThreadKey !== normalizedMessageId;
 
     if (hasStableThreadKey) {
@@ -149,6 +141,18 @@ class SessionStore {
     }
     return `${workspaceId}:${chatId}:sender:${senderId}`;
   }
+}
+
+function normalizeValue(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function createEmptyState() {
+  return { bindings: {} };
+}
+
+function getThreadMap(binding) {
+  return { ...(binding?.threadIdByWorkspaceRoot || {}) };
 }
 
 module.exports = { SessionStore };

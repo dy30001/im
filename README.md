@@ -14,10 +14,11 @@ Codex、git、workspace 操作都留在 本地，飞书只负责消息交互。
 - 卡片回复与流式更新
 - 先加表情、后输出正文
 - 回复到触发它的原消息
-- `/codex bind` 绑定工作目录
-- `/codex where` 查看当前目录/线程
-- `/codex workspaces` 查看当前会话已记录目录和线程
-- `/codex use <threadId>` 切换线程
+- `/codex bind` 绑定项目
+- `/codex where` 查看当前项目/线程
+- `/codex workspace` 查看当前会话已记录项目和线程
+- `/codex remove /绝对路径` 移除会话绑定项目
+- `/codex switch <threadId>` 切换线程
 - `/codex message` 查看最近几轮消息
 - `/codex new` 新建线程
 - `/codex stop` 停止当前运行
@@ -68,8 +69,8 @@ cp .env.example ~/.codex-im/.env
 
 可选环境变量：
 
-- `CODEX_IM_FEISHU_BOT_NAME`
 - `CODEX_IM_DEFAULT_WORKSPACE_ID`
+- `CODEX_IM_FEISHU_STREAMING_OUTPUT`（默认 `true`，设为 `false` 则等 Codex 完成后一次性输出）
 - `CODEX_IM_WORKSPACE_ALLOWLIST`
 - `CODEX_IM_CODEX_ENDPOINT`
 - `CODEX_IM_SESSIONS_FILE`
@@ -98,8 +99,9 @@ npm run feishu-bot
 
 - `/codex bind /绝对路径`
 - `/codex where`
-- `/codex workspaces`
-- `/codex use <threadId>`
+- `/codex workspace`
+- `/codex remove /绝对路径`
+- `/codex switch <threadId>`
 - `/codex message`
 - `/codex new`
 - `/codex stop`
@@ -108,12 +110,12 @@ npm run feishu-bot
 - `/codex reject`
 - `/codex help`
 
-## 目录与线程模型
+## 项目与线程模型
 
-- 一个飞书会话可以记住多个工作目录
-- 每个工作目录对应一个当前选中的 Codex 线程
+- 一个飞书会话可以记住多个项目
+- 每个项目对应一个当前选中的 Codex 线程
 - 历史线程列表以 Codex `thread/list` 为准
-- 切换目录或线程后，后续普通消息继续发到当前线程
+- 切换项目或线程后，后续普通消息继续发到当前线程
 
 ## 工作方式
 
