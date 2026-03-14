@@ -2,6 +2,17 @@ const { spawn } = require("child_process");
 const os = require("os");
 const WebSocket = require("ws");
 
+const THREAD_SOURCE_KINDS = [
+  "app",
+  "cli",
+  "vscode",
+  "appServer",
+  "subAgentReview",
+  "subAgentCompact",
+  "subAgentThreadSpawn",
+  "unknown",
+];
+
 class CodexRpcClient {
   constructor({ endpoint = "", env = process.env, codexCommand = "" }) {
     this.endpoint = endpoint;
@@ -167,7 +178,7 @@ class CodexRpcClient {
     });
   }
 
-  async listThreads({ cursor = null, limit = 100, sortKey = "updated_at", sourceKinds = null } = {}) {
+  async listThreads({ cursor = null, limit = 100, sortKey = "updated_at", sourceKinds = THREAD_SOURCE_KINDS } = {}) {
     const params = {
       limit,
       sortKey,

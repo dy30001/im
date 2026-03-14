@@ -595,6 +595,25 @@ class FeishuBotRuntime {
   }
 
   async listCodexThreadsForWorkspace(workspaceRoot) {
+    const preferredSourceKinds = process.platform === "win32" ? null : undefined;
+    let allThreads = await this.listCodexThreadsPaginated({ sourceKinds: preferredSourceKinds });
+    let matchedThreads = allThreads.filter((thread) => pathMatchesWorkspaceRoot(thread.cwd, workspaceRoot));
+
+    if (matchedThreads.length > 0) {
+      return matchedThreads;
+    }
+
+    // Fallback: if filtered sources return nothing on non-Windows platforms,
+    // retry without sourceKinds to tolerate protocol/source-kind drift.
+    if (preferredSourceKinds !== null) {
+      allThreads = await this.listCodexThreadsPaginated({ sourceKinds: null });
+      matchedThreads = allThreads.filter((thread) => pathMatchesWorkspaceRoot(thread.cwd, workspaceRoot));
+    }
+
+    return matchedThreads;
+  }
+
+  async listCodexThreadsPaginated({ sourceKinds = undefined } = {}) {
     const allThreads = [];
     const seenThreadIds = new Set();
     let cursor = null;
@@ -604,6 +623,7 @@ class FeishuBotRuntime {
         cursor,
         limit: 200,
         sortKey: "updated_at",
+        sourceKinds,
       });
       const pageThreads = extractThreadsFromListResponse(response);
       for (const thread of pageThreads) {
@@ -624,7 +644,7 @@ class FeishuBotRuntime {
       }
     }
 
-    return allThreads.filter((thread) => pathMatchesWorkspaceRoot(thread.cwd, workspaceRoot));
+    return allThreads;
   }
 
   describeWorkspaceStatus(threadId) {
@@ -735,7 +755,7 @@ class FeishuBotRuntime {
 
     const decision = resolveApprovalDecision(normalized.command, approval.method, normalized.text);
     try {
-      await this.codex.sendResponse(approval.requestId, decision);
+      await this.codex.sendResponse(approval.requestId, buildApprovalResponsePayload(decision, approval.method));
       await this.markApprovalResolved(threadId, normalized.command === "approve" ? "approved" : "rejected");
       await this.sendInfoCardMessage({
         chatId: normalized.chatId,
@@ -1127,7 +1147,7 @@ class FeishuBotRuntime {
         approval.method,
         action.scope === "session" ? "/codex approve session" : "/codex approve"
       );
-      await this.codex.sendResponse(approval.requestId, decision);
+      await this.codex.sendResponse(approval.requestId, buildApprovalResponsePayload(decision, approval.method));
       await this.markApprovalResolved(action.threadId, resolution);
       if (chatId) {
         await this.sendInfoCardMessage({
@@ -1261,16 +1281,38 @@ class FeishuBotRuntime {
       || this.activeTurnIdByThreadId.get(threadId)
       || extractTurnIdFromRunKey(this.currentRunKeyByThreadId.get(threadId) || "")
       || "";
-    const runKey = buildRunKey(threadId, resolvedTurnId);
-    const existing = this.replyCardByRunKey.get(runKey) || {
-      messageId: "",
-      chatId,
-      replyToMessageId: "",
-      text: "",
-      state: "streaming",
-      threadId,
-      turnId: resolvedTurnId,
-    };
+    const preferredRunKey = buildRunKey(threadId, resolvedTurnId);
+    let runKey = preferredRunKey;
+    let existing = this.replyCardByRunKey.get(runKey) || null;
+
+    // Some Codex events may arrive without a stable turn id.
+    // Reuse current thread card while streaming to avoid fragmented multi-card replies.
+    if (!existing) {
+      const currentRunKey = this.currentRunKeyByThreadId.get(threadId) || "";
+      const currentEntry = this.replyCardByRunKey.get(currentRunKey) || null;
+      const shouldReuseCurrent = !!(
+        currentEntry
+        && currentEntry.state !== "completed"
+        && currentEntry.state !== "failed"
+        && (!resolvedTurnId || !currentEntry.turnId || currentEntry.turnId === resolvedTurnId)
+      );
+      if (shouldReuseCurrent) {
+        runKey = currentRunKey;
+        existing = currentEntry;
+      }
+    }
+
+    if (!existing) {
+      existing = {
+        messageId: "",
+        chatId,
+        replyToMessageId: "",
+        text: "",
+        state: "streaming",
+        threadId,
+        turnId: resolvedTurnId,
+      };
+    }
 
     if (typeof text === "string" && text.trim()) {
       existing.text = mergeReplyText(existing.text, text.trim());
@@ -1860,8 +1902,7 @@ function resolveApprovalDecision(command, method, rawText) {
 
   const normalizedMethod = typeof method === "string" ? method.trim() : "";
   const normalizedText = typeof rawText === "string" ? rawText.trim().toLowerCase() : "";
-  const isCommandApproval = normalizedMethod === "item/commandExecution/requestApproval"
-    || normalizedMethod === "item/command_execution/request_approval";
+  const isCommandApproval = isCommandApprovalMethod(normalizedMethod);
   const wantsSession = normalizedText === "/codex approve session"
     || normalizedText.endsWith(" approve session");
 
@@ -1870,6 +1911,27 @@ function resolveApprovalDecision(command, method, rawText) {
   }
 
   return "accept";
+}
+
+function isCommandApprovalMethod(method) {
+  const normalizedMethod = String(method || "").trim().toLowerCase();
+  if (!normalizedMethod) {
+    return false;
+  }
+
+  const compact = normalizedMethod.replace(/[^a-z]/g, "");
+  return (
+    compact.includes("commandexecutionrequestapproval")
+    || compact.includes("commandrequestapproval")
+  );
+}
+
+function buildApprovalResponsePayload(decision, method) {
+  const normalizedMethod = String(method || "").toLowerCase();
+  if (normalizedMethod.includes("requestapproval")) {
+    return { decision };
+  }
+  return decision;
 }
 
 function buildApprovalCard(approval) {
@@ -2667,7 +2729,7 @@ function extractThreadsFromListResponse(response) {
     return candidate
       .map((thread) => ({
         id: normalizeIdentifier(thread?.id || thread?.threadId || thread?.thread_id),
-        cwd: normalizeWorkspacePath(thread?.cwd || thread?.thread?.cwd || ""),
+        cwd: extractThreadWorkspaceRoot(thread),
         title: extractThreadDisplayName(thread),
         updatedAt: thread?.updated_at || thread?.updatedAt || 0,
       }))
@@ -2699,14 +2761,74 @@ function extractThreadListCursor(response) {
 function extractThreadDisplayName(thread) {
   const candidates = [
     thread?.title,
+    thread?.displayTitle,
+    thread?.headline,
     thread?.name,
     thread?.preview,
+    thread?.summary,
     thread?.thread?.title,
+    thread?.thread?.displayTitle,
+    thread?.thread?.headline,
     thread?.thread?.name,
     thread?.thread?.preview,
+    thread?.thread?.summary,
+    thread?.metadata?.title,
+    thread?.thread?.metadata?.title,
   ];
 
   for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+
+  return "";
+}
+
+function extractThreadWorkspaceRoot(thread) {
+  const candidates = [
+    thread?.cwd,
+    thread?.thread?.cwd,
+    thread?.workspaceRoot,
+    thread?.workspace_root,
+    thread?.path,
+    thread?.thread?.workspaceRoot,
+    thread?.thread?.workspace_root,
+    thread?.thread?.path,
+    thread?.workspace?.root,
+    thread?.workspace?.cwd,
+    thread?.workspace?.path,
+  ];
+
+  for (const candidate of candidates) {
+    const extracted = extractPossiblePathValue(candidate);
+    if (extracted) {
+      return normalizeWorkspacePath(extracted);
+    }
+  }
+
+  return "";
+}
+
+function extractPossiblePathValue(value) {
+  if (typeof value === "string" && value.trim()) {
+    return value.trim();
+  }
+  if (!value || typeof value !== "object") {
+    return "";
+  }
+
+  const objectCandidates = [
+    value.path,
+    value.cwd,
+    value.root,
+    value.uri,
+    value.url,
+    value.pathname,
+    value.value,
+  ];
+
+  for (const candidate of objectCandidates) {
     if (typeof candidate === "string" && candidate.trim()) {
       return candidate.trim();
     }
@@ -3224,9 +3346,12 @@ function pathMatchesWorkspaceRoot(candidatePath, workspaceRoot) {
   const compareWorkspaceRoot = shouldComparePathCaseInsensitive(normalizedWorkspaceRoot)
     ? normalizedWorkspaceRoot.toLowerCase()
     : normalizedWorkspaceRoot;
+  if (compareCandidate === compareWorkspaceRoot) {
+    return true;
+  }
   return (
-    compareCandidate === compareWorkspaceRoot
-    || compareCandidate.startsWith(`${compareWorkspaceRoot}/`)
+    shouldComparePathCaseInsensitive(compareWorkspaceRoot)
+    && compareCandidate.startsWith(`${compareWorkspaceRoot}/`)
   );
 }
 
