@@ -35,7 +35,7 @@
   },
   "scripts": {
     "feishu-bot": "node ./bin/codex-im.js",
-    "check": "node --check ./src/index.js && node --check ./src/feishu-bot.js && node --check ./src/codex-rpc-client.js && node --check ./src/session-store.js && node --check ./src/config.js"
+    "check": "node --check ./src/index.js && node --check ./src/feishu-bot.js && node --check ./src/codex-rpc-client.js && node --check ./src/session-store.js && node --check ./src/config.js && node --check ./src/workspace-paths.js && node --check ./src/command-parsing.js && node --check ./src/codex-message-utils.js"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.54.0",
