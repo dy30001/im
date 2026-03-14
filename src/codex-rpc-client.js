@@ -12,7 +12,6 @@ const CODEX_CLIENT_INFO = {
 };
 
 const THREAD_SOURCE_KINDS = [
-  "app",
   "cli",
   "vscode",
   "appServer",

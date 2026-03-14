@@ -7,6 +7,8 @@ const { readConfig } = require("./config");
 const { FeishuBotRuntime } = require("./feishu-bot");
 
 function loadEnv() {
+  ensureDefaultConfigDirectory();
+
   const envCandidates = [
     path.join(process.cwd(), ".env"),
     path.join(os.homedir(), ".codex-im", ".env"),
@@ -21,6 +23,11 @@ function loadEnv() {
   }
 
   dotenv.config();
+}
+
+function ensureDefaultConfigDirectory() {
+  const defaultConfigDir = path.join(os.homedir(), ".codex-im");
+  fs.mkdirSync(defaultConfigDir, { recursive: true });
 }
 
 async function main() {
