@@ -1,10 +1,17 @@
 const fs = require("fs");
+const path = require("path");
 
 class SessionStore {
   constructor({ filePath }) {
     this.filePath = filePath;
     this.state = createEmptyState();
+    this.ensureParentDirectory();
     this.load();
+  }
+
+  ensureParentDirectory() {
+    const parentDirectory = path.dirname(this.filePath);
+    fs.mkdirSync(parentDirectory, { recursive: true });
   }
 
   load() {

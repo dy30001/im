@@ -1,7 +1,19 @@
-const path = require("path");
 const { readConfig } = require("./config");
 const { SessionStore } = require("./session-store");
 const { CodexRpcClient } = require("./codex-rpc-client");
+const {
+  filterThreadsByWorkspaceRoot,
+  getPreferredThreadSourceKinds,
+  isAbsoluteWorkspacePath,
+  isWorkspaceAllowed,
+  normalizeWorkspacePath,
+} = require("./workspace-paths");
+const {
+  extractBindPath,
+  extractRemoveWorkspacePath,
+  extractSwitchThreadId,
+} = require("./command-parsing");
+const codexMessageUtils = require("./codex-message-utils");
 const fs = require("fs");
 
 class FeishuBotRuntime {
@@ -68,6 +80,10 @@ class FeishuBotRuntime {
       appType: this.lark.AppType.SelfBuild,
       domain: this.lark.Domain.Feishu,
       loggerLevel: this.lark.LoggerLevel.info,
+      wsConfig: {
+        PingInterval: 30,
+        PingTimeout: 5,
+      },
     });
     patchWsClientForCardCallbacks(this.wsClient);
   }
@@ -94,7 +110,7 @@ class FeishuBotRuntime {
   }
 
   async handleIncomingTextEvent(event) {
-    const normalized = normalizeFeishuTextEvent(event, this.config);
+    const normalized = codexMessageUtils.normalizeFeishuTextEvent(event, this.config);
     if (!normalized) {
       return;
     }
@@ -121,7 +137,7 @@ class FeishuBotRuntime {
         bindingKey,
         workspaceRoot,
         threadId,
-        buildBindingMetadata(normalized)
+        codexMessageUtils.buildBindingMetadata(normalized)
       );
     }
 
@@ -243,7 +259,7 @@ class FeishuBotRuntime {
     });
     console.log(`[codex-im] thread/start ok workspace=${workspaceRoot}`);
 
-    const resolvedThreadId = extractThreadId(response);
+    const resolvedThreadId = codexMessageUtils.extractThreadId(response);
     if (!resolvedThreadId) {
       throw new Error("thread/start did not return a thread id");
     }
@@ -252,7 +268,7 @@ class FeishuBotRuntime {
       bindingKey,
       workspaceRoot,
       resolvedThreadId,
-      buildBindingMetadata(normalized)
+      codexMessageUtils.buildBindingMetadata(normalized)
     );
     this.resumedThreadIds.add(resolvedThreadId);
     this.pendingChatContextByThreadId.set(resolvedThreadId, normalized);
@@ -364,7 +380,7 @@ class FeishuBotRuntime {
         bindingKey,
         workspaceRoot,
         threadId,
-        buildBindingMetadata(normalized)
+        codexMessageUtils.buildBindingMetadata(normalized)
       );
     }
     const currentThread = threads.find((thread) => thread.id === threadId) || null;
@@ -407,7 +423,7 @@ class FeishuBotRuntime {
         bindingKey,
         workspaceRoot,
         threadId,
-        buildBindingMetadata(normalized)
+        codexMessageUtils.buildBindingMetadata(normalized)
       );
     }
 
@@ -423,7 +439,7 @@ class FeishuBotRuntime {
     const currentThread = threads.find((thread) => thread.id === threadId) || { id: threadId };
     this.resumedThreadIds.delete(threadId);
     const resumeResponse = await this.ensureThreadResumed(threadId);
-    const recentMessages = extractRecentConversationFromResumeResponse(resumeResponse);
+    const recentMessages = codexMessageUtils.extractRecentConversationFromResumeResponse(resumeResponse);
 
     await this.sendInfoCardMessage({
       chatId: normalized.chatId,
@@ -595,13 +611,56 @@ class FeishuBotRuntime {
   }
 
   async listCodexThreadsForWorkspace(workspaceRoot) {
-    const response = await this.codex.listThreads({
-      cursor: null,
-      limit: 100,
-      sortKey: "updated_at",
-    });
-    const threads = extractThreadsFromListResponse(response);
-    return threads.filter((thread) => pathMatchesWorkspaceRoot(thread.cwd, workspaceRoot));
+    const preferredSourceKinds = getPreferredThreadSourceKinds();
+    let allThreads = await this.listCodexThreadsPaginated({ sourceKinds: preferredSourceKinds });
+    let matchedThreads = filterThreadsByWorkspaceRoot(allThreads, workspaceRoot);
+
+    if (matchedThreads.length > 0) {
+      return matchedThreads;
+    }
+
+    // Fallback: if filtered sources return nothing on non-Windows platforms,
+    // retry without sourceKinds to tolerate protocol/source-kind drift.
+    if (preferredSourceKinds !== null) {
+      allThreads = await this.listCodexThreadsPaginated({ sourceKinds: null });
+      matchedThreads = filterThreadsByWorkspaceRoot(allThreads, workspaceRoot);
+    }
+
+    return matchedThreads;
+  }
+
+  async listCodexThreadsPaginated({ sourceKinds = undefined } = {}) {
+    const allThreads = [];
+    const seenThreadIds = new Set();
+    let cursor = null;
+
+    for (let page = 0; page < 10; page += 1) {
+      const response = await this.codex.listThreads({
+        cursor,
+        limit: 200,
+        sortKey: "updated_at",
+        sourceKinds,
+      });
+      const pageThreads = codexMessageUtils.extractThreadsFromListResponse(response);
+      for (const thread of pageThreads) {
+        if (seenThreadIds.has(thread.id)) {
+          continue;
+        }
+        seenThreadIds.add(thread.id);
+        allThreads.push(thread);
+      }
+
+      const nextCursor = codexMessageUtils.extractThreadListCursor(response);
+      if (!nextCursor || nextCursor === cursor) {
+        break;
+      }
+      cursor = nextCursor;
+      if (pageThreads.length === 0) {
+        break;
+      }
+    }
+
+    return allThreads;
   }
 
   describeWorkspaceStatus(threadId) {
@@ -656,7 +715,7 @@ class FeishuBotRuntime {
       bindingKey,
       resolvedWorkspaceRoot,
       threadId,
-      buildBindingMetadata(normalized)
+      codexMessageUtils.buildBindingMetadata(normalized)
     );
     this.resumedThreadIds.delete(threadId);
     await this.ensureThreadResumed(threadId);
@@ -710,9 +769,9 @@ class FeishuBotRuntime {
       return;
     }
 
-    const decision = resolveApprovalDecision(normalized.command, approval.method, normalized.text);
+    const decision = codexMessageUtils.resolveApprovalDecision(normalized.command, approval.method, normalized.text);
     try {
-      await this.codex.sendResponse(approval.requestId, decision);
+      await this.codex.sendResponse(approval.requestId, codexMessageUtils.buildApprovalResponsePayload(decision, approval.method));
       await this.markApprovalResolved(threadId, normalized.command === "approve" ? "approved" : "rejected");
       await this.sendInfoCardMessage({
         chatId: normalized.chatId,
@@ -732,10 +791,10 @@ class FeishuBotRuntime {
     if (typeof message?.method === "string") {
       console.log(`[codex-im] codex event ${message.method}`);
     }
-    trackRunningTurn(this.activeTurnIdByThreadId, message);
-    trackPendingApproval(this.pendingApprovalByThreadId, message);
-    trackRunKeyState(this.currentRunKeyByThreadId, this.activeTurnIdByThreadId, message);
-    const outbound = mapCodexMessageToImEvent(message);
+    codexMessageUtils.trackRunningTurn(this.activeTurnIdByThreadId, message);
+    codexMessageUtils.trackPendingApproval(this.pendingApprovalByThreadId, message);
+    codexMessageUtils.trackRunKeyState(this.currentRunKeyByThreadId, this.activeTurnIdByThreadId, message);
+    const outbound = codexMessageUtils.mapCodexMessageToImEvent(message);
     if (!outbound) {
       return;
     }
@@ -750,7 +809,7 @@ class FeishuBotRuntime {
       outbound.payload.threadKey = context.threadKey;
     }
 
-    if (eventShouldClearPendingReaction(outbound)) {
+    if (codexMessageUtils.eventShouldClearPendingReaction(outbound)) {
       this.clearPendingReactionForThread(threadId).catch((error) => {
         console.error(`[codex-im] failed to clear pending reaction: ${error.message}`);
       });
@@ -815,7 +874,7 @@ class FeishuBotRuntime {
         approval,
         replyToMessageId: approval.replyToMessageId || "",
       });
-      const messageId = extractCreatedMessageId(response);
+      const messageId = codexMessageUtils.extractCreatedMessageId(response);
       if (messageId) {
         approval.cardMessageId = messageId;
       }
@@ -919,7 +978,7 @@ class FeishuBotRuntime {
       console.log("[codex-im] card callback raw: <unserializable>");
     }
 
-    const action = extractCardAction(data);
+    const action = codexMessageUtils.extractCardAction(data);
     console.log("[codex-im] card callback parsed action:", action);
     if (!action) {
       this.runCardActionTask(this.sendCardActionFeedback(data, "无法识别卡片操作。", "error"));
@@ -934,7 +993,7 @@ class FeishuBotRuntime {
       return buildCardResponse({});
     }
 
-    const normalized = normalizeCardActionContext(data, this.config);
+    const normalized = codexMessageUtils.normalizeCardActionContext(data, this.config);
     if (!normalized) {
       this.runCardActionTask(this.sendCardActionFeedback(data, "无法解析当前卡片上下文。", "error"));
       return buildCardResponse({});
@@ -1099,12 +1158,12 @@ class FeishuBotRuntime {
     const chatId = approval.chatId || extractCardChatId(data);
     try {
       const resolution = action.decision === "approve" ? "approved" : "rejected";
-      const decision = resolveApprovalDecision(
+      const decision = codexMessageUtils.resolveApprovalDecision(
         action.decision,
         approval.method,
         action.scope === "session" ? "/codex approve session" : "/codex approve"
       );
-      await this.codex.sendResponse(approval.requestId, decision);
+      await this.codex.sendResponse(approval.requestId, codexMessageUtils.buildApprovalResponsePayload(decision, approval.method));
       await this.markApprovalResolved(action.threadId, resolution);
       if (chatId) {
         await this.sendInfoCardMessage({
@@ -1132,7 +1191,7 @@ class FeishuBotRuntime {
   }
 
   async sendCardActionFeedback(data, text, kind = "info") {
-    const normalized = normalizeCardActionContext(data, this.config);
+    const normalized = codexMessageUtils.normalizeCardActionContext(data, this.config);
     if (!normalized) {
       return;
     }
@@ -1181,7 +1240,7 @@ class FeishuBotRuntime {
         bindingKey,
         targetWorkspaceRoot,
         threadId,
-        buildBindingMetadata(normalized)
+        codexMessageUtils.buildBindingMetadata(normalized)
       );
     }
 
@@ -1236,18 +1295,40 @@ class FeishuBotRuntime {
 
     const resolvedTurnId = turnId
       || this.activeTurnIdByThreadId.get(threadId)
-      || extractTurnIdFromRunKey(this.currentRunKeyByThreadId.get(threadId) || "")
+      || codexMessageUtils.extractTurnIdFromRunKey(this.currentRunKeyByThreadId.get(threadId) || "")
       || "";
-    const runKey = buildRunKey(threadId, resolvedTurnId);
-    const existing = this.replyCardByRunKey.get(runKey) || {
-      messageId: "",
-      chatId,
-      replyToMessageId: "",
-      text: "",
-      state: "streaming",
-      threadId,
-      turnId: resolvedTurnId,
-    };
+    const preferredRunKey = codexMessageUtils.buildRunKey(threadId, resolvedTurnId);
+    let runKey = preferredRunKey;
+    let existing = this.replyCardByRunKey.get(runKey) || null;
+
+    // Some Codex events may arrive without a stable turn id.
+    // Reuse current thread card while streaming to avoid fragmented multi-card replies.
+    if (!existing) {
+      const currentRunKey = this.currentRunKeyByThreadId.get(threadId) || "";
+      const currentEntry = this.replyCardByRunKey.get(currentRunKey) || null;
+      const shouldReuseCurrent = !!(
+        currentEntry
+        && currentEntry.state !== "completed"
+        && currentEntry.state !== "failed"
+        && (!resolvedTurnId || !currentEntry.turnId || currentEntry.turnId === resolvedTurnId)
+      );
+      if (shouldReuseCurrent) {
+        runKey = currentRunKey;
+        existing = currentEntry;
+      }
+    }
+
+    if (!existing) {
+      existing = {
+        messageId: "",
+        chatId,
+        replyToMessageId: "",
+        text: "",
+        state: "streaming",
+        threadId,
+        turnId: resolvedTurnId,
+      };
+    }
 
     if (typeof text === "string" && text.trim()) {
       existing.text = mergeReplyText(existing.text, text.trim());
@@ -1325,7 +1406,7 @@ class FeishuBotRuntime {
         card,
         replyToMessageId: entry.replyToMessageId,
       });
-      entry.messageId = extractCreatedMessageId(response);
+      entry.messageId = codexMessageUtils.extractCreatedMessageId(response);
       if (!entry.messageId) {
         return;
       }
@@ -1432,421 +1513,6 @@ class FeishuBotRuntime {
       }
     );
   }
-}
-
-function normalizeFeishuTextEvent(event, config) {
-  const message = event?.message || {};
-  const sender = event?.sender || {};
-  if (message.message_type !== "text") {
-    return null;
-  }
-
-  const text = parseFeishuMessageText(message.content);
-  if (!text) {
-    return null;
-  }
-
-  const command = parseCommand(text);
-
-  return {
-    provider: "feishu",
-    workspaceId: config.defaultWorkspaceId,
-    chatId: message.chat_id || "",
-    threadKey: message.root_id || "",
-    senderId: sender?.sender_id?.open_id || sender?.sender_id?.user_id || "",
-    messageId: message.message_id || "",
-    text,
-    command,
-    receivedAt: new Date().toISOString(),
-  };
-}
-
-function buildBindingMetadata(normalized) {
-  return {
-    workspaceId: normalized.workspaceId,
-    chatId: normalized.chatId,
-    threadKey: normalized.threadKey,
-    senderId: normalized.senderId,
-  };
-}
-
-function extractThreadId(response) {
-  return response?.result?.threadId
-    || response?.result?.thread?.id
-    || response?.params?.threadId
-    || null;
-}
-
-function mapCodexMessageToImEvent(message) {
-  const method = message?.method;
-  const params = message?.params || {};
-  const threadId = extractThreadIdentifier(params);
-  const turnId = extractTurnIdentifier(params);
-
-  if (isAssistantMessageMethod(method, params)) {
-    const text = extractAssistantText(params);
-    if (!text) {
-      return null;
-    }
-    return {
-      type: "im.agent_reply",
-      payload: {
-        threadId,
-        turnId,
-        text,
-      },
-    };
-  }
-
-  if (method === "turn/started" || method === "turn/start") {
-    return {
-      type: "im.run_state",
-      payload: {
-        threadId,
-        turnId,
-        state: "streaming",
-      },
-    };
-  }
-
-  if (method === "turn/completed") {
-    return {
-      type: "im.run_state",
-      payload: {
-        threadId,
-        turnId,
-        state: "completed",
-      },
-    };
-  }
-
-  if (method === "turn/failed") {
-    return {
-      type: "im.run_state",
-      payload: {
-        threadId,
-        turnId,
-        state: "failed",
-      },
-    };
-  }
-
-  if (isApprovalRequestMethod(method)) {
-    return {
-      type: "im.approval_request",
-      payload: {
-        threadId,
-        reason: params.reason || "",
-        command: params.command || "",
-      },
-    };
-  }
-
-  return null;
-}
-
-function extractAssistantText(params) {
-  const eventObject = envelopeEventObject(params);
-  const itemObject = params?.item && typeof params.item === "object" ? params.item : null;
-
-  const directCandidates = [
-    params?.delta,
-    params?.textDelta,
-    params?.text_delta,
-    params?.text,
-    typeof params?.message === "string" ? params.message : "",
-    params?.summary,
-    params?.part,
-    eventObject?.delta,
-    eventObject?.text,
-    typeof eventObject?.message === "string" ? eventObject.message : "",
-    eventObject?.summary,
-    itemObject?.delta,
-    itemObject?.text,
-    typeof itemObject?.message === "string" ? itemObject.message : "",
-    itemObject?.summary,
-  ];
-
-  for (const candidate of directCandidates) {
-    if (typeof candidate === "string" && candidate.trim()) {
-      return candidate.trim();
-    }
-  }
-
-  const contentObjects = [
-    params?.content,
-    params?.message?.content,
-    itemObject?.content,
-    eventObject?.content,
-  ];
-
-  for (const content of contentObjects) {
-    const extracted = extractTextFromContent(content);
-    if (extracted) {
-      return extracted;
-    }
-  }
-
-  return "";
-}
-
-function parseFeishuMessageText(rawContent) {
-  try {
-    const parsed = JSON.parse(rawContent || "{}");
-    return typeof parsed.text === "string" ? parsed.text.trim() : "";
-  } catch {
-    return "";
-  }
-}
-
-function parseCommand(text) {
-  const normalized = text.trim().toLowerCase();
-  const prefixes = ["/codex "];
-  const exactPrefixes = ["/codex"];
-
-  const exactCommands = {
-    stop: ["stop"],
-    where: ["where"],
-    inspect_message: ["message"],
-    help: ["help"],
-    workspace: ["workspace"],
-    remove: ["remove"],
-    new: ["new"],
-    approve: ["approve", "approve session"],
-    reject: ["reject"],
-  };
-  for (const [command, suffixes] of Object.entries(exactCommands)) {
-    if (matchesExactCommand(normalized, suffixes)) {
-      return command;
-    }
-  }
-
-  if (matchesPrefixCommand(normalized, "switch")) {
-    return "switch";
-  }
-  if (matchesPrefixCommand(normalized, "remove")) {
-    return "remove";
-  }
-  if (matchesPrefixCommand(normalized, "bind")) {
-    return "bind";
-  }
-  if (prefixes.some((prefix) => normalized.startsWith(prefix))) {
-    return "unknown_command";
-  }
-  if (exactPrefixes.includes(normalized)) {
-    return "unknown_command";
-  }
-  if (text.trim()) {
-    return "message";
-  }
-
-  return "";
-}
-
-function matchesExactCommand(text, suffixes) {
-  return suffixes.some((suffix) => (
-    text === `/codex ${suffix}`
-  ));
-}
-
-function matchesPrefixCommand(text, command) {
-  return text.startsWith(`/codex ${command} `);
-}
-
-function resolveCreateMessageMethod(client) {
-  const fn = client?.im?.v1?.message?.create || client?.im?.message?.create;
-  if (typeof fn !== "function") {
-    throw new Error("Unsupported Feishu SDK shape: missing message.create");
-  }
-  return fn;
-}
-
-function resolveReplyMessageMethod(client) {
-  const fn = client?.im?.v1?.message?.reply || client?.im?.message?.reply;
-  if (typeof fn !== "function") {
-    throw new Error("Unsupported Feishu SDK shape: missing message.reply");
-  }
-  return fn;
-}
-
-function resolvePatchMessageMethod(client) {
-  const fn = client?.im?.v1?.message?.patch || client?.im?.message?.patch;
-  if (typeof fn !== "function") {
-    throw new Error("Unsupported Feishu SDK shape: missing message.patch");
-  }
-  return fn;
-}
-
-function normalizeMessageId(messageId) {
-  const normalized = typeof messageId === "string" ? messageId.trim() : "";
-  if (!normalized) {
-    return "";
-  }
-  return normalized.split(":")[0];
-}
-
-function isAssistantMessageMethod(method, params) {
-  if (method === "item/agentMessage/delta"
-    || method === "codex/event/agent_message_content_delta"
-    || method === "codex/event/agent_message_delta"
-    || method === "codex/event/agent_message"
-    || method === "agent/message") {
-    return true;
-  }
-
-  if (method === "message/created" || method === "item/completed" || method === "codex/event/item_completed") {
-    return looksLikeAssistantPayload(params);
-  }
-
-  return false;
-}
-
-function looksLikeAssistantPayload(params) {
-  const eventObject = envelopeEventObject(params);
-  const itemObject = params?.item && typeof params.item === "object" ? params.item : null;
-  const candidates = [
-    params?.type,
-    params?.item?.type,
-    params?.role,
-    params?.source,
-    params?.author,
-    itemObject?.type,
-    itemObject?.role,
-    itemObject?.source,
-    itemObject?.author,
-    eventObject?.type,
-    eventObject?.role,
-    eventObject?.source,
-    eventObject?.author,
-    eventObject?.item?.type,
-    eventObject?.item?.role,
-    eventObject?.item?.source,
-    eventObject?.item?.author,
-  ]
-    .map((value) => (typeof value === "string" ? value.trim().toLowerCase() : ""))
-    .filter(Boolean);
-
-  if (candidates.some((value) => value.includes("user"))) {
-    return false;
-  }
-
-  return (
-    candidates.some((value) => value.includes("assistant") || value.includes("agent"))
-  );
-}
-
-function resolveCreateReactionMethod(client) {
-  const fn = client?.im?.v1?.messageReaction?.create || client?.im?.messageReaction?.create;
-  if (typeof fn !== "function") {
-    throw new Error("Unsupported Feishu SDK shape: missing messageReaction.create");
-  }
-  return fn;
-}
-
-function resolveDeleteReactionMethod(client) {
-  const fn = client?.im?.v1?.messageReaction?.delete || client?.im?.messageReaction?.delete;
-  if (typeof fn !== "function") {
-    throw new Error("Unsupported Feishu SDK shape: missing messageReaction.delete");
-  }
-  return fn;
-}
-
-function trackRunningTurn(activeTurnIdByThreadId, message) {
-  const method = message?.method;
-  const params = message?.params || {};
-  const threadId = params.threadId || params.thread_id || params.turn?.threadId || params.turn?.thread_id;
-  const turnId = params.turnId || params.turn_id || params.turn?.id;
-
-  if (!threadId) {
-    return;
-  }
-
-  if ((method === "turn/started" || method === "turn/start") && turnId) {
-    activeTurnIdByThreadId.set(threadId, turnId);
-    return;
-  }
-
-  if (method === "turn/completed" || method === "turn/failed" || method === "turn/cancelled") {
-    activeTurnIdByThreadId.delete(threadId);
-  }
-}
-
-function trackPendingApproval(pendingApprovalByThreadId, message) {
-  const method = message?.method;
-  const params = message?.params || {};
-  const threadId = params.threadId || params.thread_id || "";
-
-  if (isApprovalRequestMethod(method) && threadId && message?.id != null) {
-    pendingApprovalByThreadId.set(threadId, {
-      requestId: message.id,
-      method,
-      threadId,
-      reason: params.reason || "",
-      command: params.command || "",
-      chatId: "",
-      replyToMessageId: "",
-      resolution: "",
-      cardMessageId: "",
-    });
-    return;
-  }
-
-  if (method === "turn/completed" || method === "turn/failed" || method === "turn/cancelled") {
-    pendingApprovalByThreadId.delete(threadId);
-  }
-}
-
-function trackRunKeyState(currentRunKeyByThreadId, activeTurnIdByThreadId, message) {
-  const method = message?.method;
-  const params = message?.params || {};
-  const threadId = params.threadId || params.thread_id || params.turn?.threadId || params.turn?.thread_id || "";
-  const turnId = params.turnId || params.turn_id || params.turn?.id || activeTurnIdByThreadId.get(threadId) || "";
-  if (!threadId) {
-    return;
-  }
-
-  if ((method === "turn/started" || method === "turn/start") && turnId) {
-    currentRunKeyByThreadId.set(threadId, buildRunKey(threadId, turnId));
-    return;
-  }
-
-  if (method === "turn/completed" || method === "turn/failed" || method === "turn/cancelled") {
-    if (turnId) {
-      currentRunKeyByThreadId.set(threadId, buildRunKey(threadId, turnId));
-    }
-  }
-}
-
-function isApprovalRequestMethod(method) {
-  if (typeof method !== "string" || !method) {
-    return false;
-  }
-
-  return (
-    method === "item/commandExecution/requestApproval"
-    || method === "item/fileChange/requestApproval"
-    || method.endsWith("requestApproval")
-    || method === "approval/requested"
-  );
-}
-
-function resolveApprovalDecision(command, method, rawText) {
-  if (command !== "approve") {
-    return "decline";
-  }
-
-  const normalizedMethod = typeof method === "string" ? method.trim() : "";
-  const normalizedText = typeof rawText === "string" ? rawText.trim().toLowerCase() : "";
-  const isCommandApproval = normalizedMethod === "item/commandExecution/requestApproval"
-    || normalizedMethod === "item/command_execution/request_approval";
-  const wantsSession = normalizedText === "/codex approve session"
-    || normalizedText.endsWith(" approve session");
-
-  if (isCommandApproval && wantsSession) {
-    return "acceptForSession";
-  }
-
-  return "accept";
 }
 
 function buildApprovalCard(approval) {
@@ -2568,17 +2234,6 @@ function buildThreadMessagesSummary({ workspaceRoot, thread, recentMessages }) {
   return sections.join("\n\n");
 }
 
-function buildRunKey(threadId, turnId) {
-  return `${threadId}:${turnId || "pending"}`;
-}
-
-function extractTurnIdFromRunKey(runKey) {
-  if (!runKey || !runKey.includes(":")) {
-    return "";
-  }
-  return runKey.slice(runKey.indexOf(":") + 1);
-}
-
 function mergeReplyText(previousText, nextText) {
   if (!previousText) {
     return nextText;
@@ -2622,252 +2277,6 @@ function buildApprovalResolvedCard(approval) {
   };
 }
 
-function extractCreatedMessageId(response) {
-  return response?.data?.message_id || response?.data?.message?.message_id || "";
-}
-
-function extractThreadsFromListResponse(response) {
-  const candidates = [
-    response?.result?.data,
-    response?.result?.threads,
-    response?.result?.items,
-    response?.data,
-    response?.threads,
-    response?.items,
-  ];
-
-  for (const candidate of candidates) {
-    if (!Array.isArray(candidate)) {
-      continue;
-    }
-
-    return candidate
-      .map((thread) => ({
-        id: normalizeIdentifier(thread?.id || thread?.threadId || thread?.thread_id),
-        cwd: normalizeWorkspacePath(thread?.cwd || thread?.thread?.cwd || ""),
-        title: extractThreadDisplayName(thread),
-        updatedAt: thread?.updated_at || thread?.updatedAt || 0,
-      }))
-      .filter((thread) => thread.id);
-  }
-
-  return [];
-}
-
-function extractThreadDisplayName(thread) {
-  const candidates = [
-    thread?.title,
-    thread?.name,
-    thread?.preview,
-    thread?.thread?.title,
-    thread?.thread?.name,
-    thread?.thread?.preview,
-  ];
-
-  for (const candidate of candidates) {
-    if (typeof candidate === "string" && candidate.trim()) {
-      return candidate.trim();
-    }
-  }
-
-  return "";
-}
-
-function extractRecentConversationFromResumeResponse(response, turnLimit = 3) {
-  const turns = response?.result?.thread?.turns;
-  if (!Array.isArray(turns) || !turns.length) {
-    return [];
-  }
-
-  const recentTurns = turns.slice(-turnLimit);
-  const messages = [];
-
-  for (const turn of recentTurns) {
-    const userMessage = extractResumeTurnUserInput(turn);
-    if (userMessage) {
-      messages.push(userMessage);
-    }
-
-    const items = Array.isArray(turn?.items) ? turn.items : [];
-    for (const item of items) {
-      const normalized = normalizeResumedConversationItem(item);
-      if (normalized) {
-        messages.push(normalized);
-      }
-    }
-  }
-
-  return dedupeRecentConversationMessages(messages).slice(-6);
-}
-
-function extractResumeTurnUserInput(turn) {
-  if (!turn || typeof turn !== "object") {
-    return null;
-  }
-
-  const text = extractTextFromContent(turn.input);
-  if (!text) {
-    return null;
-  }
-
-  return {
-    role: "user",
-    text,
-  };
-}
-
-function dedupeRecentConversationMessages(messages) {
-  const deduped = [];
-  for (const message of messages) {
-    const previous = deduped[deduped.length - 1];
-    if (previous && previous.role === message.role && previous.text === message.text) {
-      continue;
-    }
-    deduped.push(message);
-  }
-  return deduped;
-}
-
-function normalizeResumedConversationItem(item) {
-  if (!item || typeof item !== "object") {
-    return null;
-  }
-
-  const itemType = String(item.type || item.kind || "").toLowerCase();
-  if (itemType === "usermessage") {
-    const text = extractTextFromResumeUserMessage(item);
-    return text ? { role: "user", text } : null;
-  }
-
-  if (itemType === "agentmessage") {
-    const text = extractTextFromResumeAgentMessage(item);
-    return text ? { role: "assistant", text } : null;
-  }
-
-  const role = String(
-    item.role
-      || item.author
-      || item.payload?.role
-      || item.payload?.author
-      || item.payload?.source
-      || item.source
-      || ""
-  ).toLowerCase();
-  const contentTypes = collectResumeContentTypes(item);
-  const text = extractTextFromContent(
-    item.text
-      || item.message
-      || item.content
-      || item.payload?.content
-      || item.payload?.text
-      || item.payload?.message
-  );
-
-  if (!text) {
-    return null;
-  }
-
-  const normalizedRole = resolveResumeItemRole({ itemType, role, contentTypes });
-
-  if (!normalizedRole) {
-    return null;
-  }
-
-  return {
-    role: normalizedRole,
-    text,
-  };
-}
-
-function collectResumeContentTypes(item) {
-  const content = [];
-
-  if (Array.isArray(item?.content)) {
-    content.push(...item.content);
-  }
-  if (Array.isArray(item?.payload?.content)) {
-    content.push(...item.payload.content);
-  }
-
-  return content
-    .map((entry) => String(entry?.type || "").toLowerCase())
-    .filter(Boolean);
-}
-
-function resolveResumeItemRole({ itemType, role, contentTypes }) {
-  const isAssistant = (
-    role.includes("assistant")
-    || role.includes("agent")
-    || itemType.includes("assistant")
-    || itemType.includes("agent")
-    || contentTypes.some((type) => (
-      type.includes("output_text")
-      || type.includes("assistant")
-      || type.includes("agent")
-    ))
-  );
-  if (isAssistant) {
-    return "assistant";
-  }
-
-  const isUser = (
-    role.includes("user")
-    || itemType.includes("user")
-    || contentTypes.some((type) => (
-      type.includes("input_text")
-      || type === "user_message"
-      || type === "user"
-      || type === "text"
-    ))
-  );
-  if (isUser) {
-    return "user";
-  }
-
-  if (itemType === "message") {
-    return "assistant";
-  }
-
-  return "";
-}
-
-function extractTextFromResumeUserMessage(item) {
-  const content = Array.isArray(item?.content) ? item.content : [];
-  if (content.length) {
-    const parts = [];
-    for (const entry of content) {
-      const entryType = String(entry?.type || "").toLowerCase();
-      if (entryType === "text" && typeof entry?.text === "string" && entry.text.trim()) {
-        parts.push(entry.text.trim());
-        continue;
-      }
-      if (entryType === "skill") {
-        const skillName = typeof entry?.name === "string" ? entry.name.trim() : "";
-        if (skillName) {
-          parts.push(`$${skillName}`);
-        }
-      }
-    }
-    const joined = parts.join(" ").trim();
-    if (joined) {
-      return joined;
-    }
-  }
-
-  return extractTextFromContent(item?.text || item?.message || item?.payload?.text || item?.payload?.message);
-}
-
-function extractTextFromResumeAgentMessage(item) {
-  return extractTextFromContent(
-    item?.text
-      || item?.message
-      || item?.content
-      || item?.payload?.text
-      || item?.payload?.message
-      || item?.payload?.content
-  );
-}
-
 function formatThreadLabel(thread) {
   if (!thread) {
     return "";
@@ -2895,80 +2304,6 @@ function truncateDisplayText(text, maxLength) {
     return input;
   }
   return `${chars.slice(0, maxLength).join("")}...`;
-}
-
-function extractCardAction(data) {
-  const action = data?.action || {};
-  const value = action.value || {};
-  if (!value.kind) {
-    console.log("[codex-im] card callback action missing kind", {
-      action,
-      hasValue: !!action.value,
-    });
-    return null;
-  }
-  if (value.kind === "approval") {
-    return {
-      kind: value.kind,
-      decision: value.decision,
-      scope: value.scope || "once",
-      requestId: value.requestId,
-      threadId: value.threadId,
-    };
-  }
-  if (value.kind === "panel") {
-    return {
-      kind: value.kind,
-      action: value.action || "",
-    };
-  }
-  if (value.kind === "thread") {
-    return {
-      kind: value.kind,
-      action: value.action || "",
-      threadId: value.threadId || "",
-    };
-  }
-  if (value.kind === "workspace") {
-    return {
-      kind: value.kind,
-      action: value.action || "",
-      workspaceRoot: value.workspaceRoot || "",
-    };
-  }
-  return null;
-}
-
-function normalizeCardActionContext(data, config) {
-  const openMessageId = data?.context?.open_message_id
-    || data?.context?.openMessageId
-    || data?.open_message_id
-    || data?.openMessageId
-    || data?.message_id
-    || "card-action";
-  const chatId = extractCardChatId(data);
-  if (!chatId) {
-    console.log("[codex-im] card callback missing chatId", {
-      context_open_message_id: data?.context?.open_message_id,
-      context_open_chat_id: data?.context?.open_chat_id,
-      open_message_id: data?.open_message_id,
-      open_chat_id: data?.open_chat_id,
-      message_id: data?.message_id,
-      chat_id: data?.chat_id,
-    });
-    return null;
-  }
-  return {
-    provider: "feishu",
-    workspaceId: config.defaultWorkspaceId,
-    chatId,
-    threadKey: "",
-    senderId: data?.operator?.open_id || data?.operator?.operator_id?.open_id || data?.user_id || "",
-    messageId: openMessageId,
-    text: "",
-    command: "",
-    receivedAt: new Date().toISOString(),
-  };
 }
 
 function buildPanelActionValue(action) {
@@ -3017,15 +2352,6 @@ function formatRelativeTimestamp(value) {
   return `${Math.floor(seconds / 86400)} 天前`;
 }
 
-function extractCardChatId(data) {
-  return data?.context?.open_chat_id
-    || data?.context?.openChatId
-    || data?.open_chat_id
-    || data?.openChatId
-    || data?.chat_id
-    || "";
-}
-
 function buildCardToast(text) {
   return buildCardResponse({ toast: text });
 }
@@ -3045,6 +2371,63 @@ function buildCardResponse({ toast, card }) {
     };
   }
   return response;
+}
+
+function resolveCreateMessageMethod(client) {
+  const fn = client?.im?.v1?.message?.create || client?.im?.message?.create;
+  if (typeof fn !== "function") {
+    throw new Error("Unsupported Feishu SDK shape: missing message.create");
+  }
+  return fn;
+}
+
+function resolveReplyMessageMethod(client) {
+  const fn = client?.im?.v1?.message?.reply || client?.im?.message?.reply;
+  if (typeof fn !== "function") {
+    throw new Error("Unsupported Feishu SDK shape: missing message.reply");
+  }
+  return fn;
+}
+
+function resolvePatchMessageMethod(client) {
+  const fn = client?.im?.v1?.message?.patch || client?.im?.message?.patch;
+  if (typeof fn !== "function") {
+    throw new Error("Unsupported Feishu SDK shape: missing message.patch");
+  }
+  return fn;
+}
+
+function normalizeMessageId(messageId) {
+  const normalized = typeof messageId === "string" ? messageId.trim() : "";
+  if (!normalized) {
+    return "";
+  }
+  return normalized.split(":")[0];
+}
+
+function resolveCreateReactionMethod(client) {
+  const fn = client?.im?.v1?.messageReaction?.create || client?.im?.messageReaction?.create;
+  if (typeof fn !== "function") {
+    throw new Error("Unsupported Feishu SDK shape: missing messageReaction.create");
+  }
+  return fn;
+}
+
+function resolveDeleteReactionMethod(client) {
+  const fn = client?.im?.v1?.messageReaction?.delete || client?.im?.messageReaction?.delete;
+  if (typeof fn !== "function") {
+    throw new Error("Unsupported Feishu SDK shape: missing messageReaction.delete");
+  }
+  return fn;
+}
+
+function extractCardChatId(data) {
+  return data?.context?.open_chat_id
+    || data?.context?.openChatId
+    || data?.open_chat_id
+    || data?.openChatId
+    || data?.chat_id
+    || "";
 }
 
 function patchWsClientForCardCallbacks(wsClient) {
@@ -3069,158 +2452,8 @@ function patchWsClientForCardCallbacks(wsClient) {
   };
 }
 
-function eventShouldClearPendingReaction(event) {
-  if (!event || typeof event !== "object") {
-    return false;
-  }
-
-  if (event.type === "im.run_state") {
-    const state = String(event.payload?.state || "").toLowerCase();
-    return state === "completed" || state === "failed";
-  }
-
-  if (event.type === "im.approval_request") {
-    return true;
-  }
-
-  return false;
-}
-
-function envelopeEventObject(params) {
-  if (!params || typeof params !== "object") {
-    return null;
-  }
-  if (params.msg && typeof params.msg === "object") {
-    return params.msg;
-  }
-  if (params.event && typeof params.event === "object") {
-    return params.event;
-  }
-  return null;
-}
-
-function extractThreadIdentifier(params) {
-  const eventObject = envelopeEventObject(params);
-  return normalizeIdentifier(
-    params?.threadId
-      || params?.thread_id
-      || params?.turn?.threadId
-      || params?.turn?.thread_id
-      || params?.item?.threadId
-      || params?.item?.thread_id
-      || eventObject?.threadId
-      || eventObject?.thread_id
-      || eventObject?.turn?.threadId
-      || eventObject?.turn?.thread_id
-      || eventObject?.item?.threadId
-      || eventObject?.item?.thread_id
-  );
-}
-
-function extractTurnIdentifier(params) {
-  const eventObject = envelopeEventObject(params);
-  return normalizeIdentifier(
-    params?.turnId
-      || params?.turn_id
-      || params?.turn?.id
-      || params?.item?.turnId
-      || params?.item?.turn_id
-      || eventObject?.turnId
-      || eventObject?.turn_id
-      || eventObject?.turn?.id
-      || eventObject?.item?.turnId
-      || eventObject?.item?.turn_id
-  );
-}
-
 function normalizeIdentifier(value) {
   return typeof value === "string" && value.trim() ? value.trim() : "";
-}
-
-function normalizeWorkspacePath(value) {
-  const normalized = String(value || "").trim();
-  if (!normalized) {
-    return "";
-  }
-
-  const withForwardSlashes = normalized.replace(/\\/g, "/");
-  if (/^[A-Za-z]:\/$/.test(withForwardSlashes)) {
-    return withForwardSlashes;
-  }
-  if (/^[A-Za-z]:\//.test(withForwardSlashes)) {
-    return withForwardSlashes.replace(/\/+$/g, "");
-  }
-  return withForwardSlashes.replace(/\/+$/g, "");
-}
-
-function isAbsoluteWorkspacePath(workspaceRoot) {
-  const normalized = normalizeWorkspacePath(workspaceRoot);
-  if (!normalized) {
-    return false;
-  }
-  if (/^[A-Za-z]:\//.test(normalized)) {
-    return true;
-  }
-  return path.posix.isAbsolute(normalized);
-}
-
-function pathMatchesWorkspaceRoot(candidatePath, workspaceRoot) {
-  const normalizedCandidate = normalizeWorkspacePath(candidatePath);
-  const normalizedWorkspaceRoot = normalizeWorkspacePath(workspaceRoot);
-  if (!normalizedCandidate || !normalizedWorkspaceRoot) {
-    return false;
-  }
-  return normalizedCandidate === normalizedWorkspaceRoot;
-}
-
-function extractTextFromContent(content) {
-  if (!content) {
-    return "";
-  }
-
-  if (typeof content === "string" && content.trim()) {
-    return content.trim();
-  }
-
-  if (Array.isArray(content)) {
-    const parts = [];
-    for (const item of content) {
-      const extracted = extractTextFromContent(item);
-      if (extracted) {
-        parts.push(extracted);
-      }
-    }
-    return parts.join("\n").trim();
-  }
-
-  if (typeof content === "object") {
-    if (typeof content.message === "string" && content.message.trim()) {
-      return content.message.trim();
-    }
-    if (typeof content.delta === "string" && content.delta.trim()) {
-      return content.delta.trim();
-    }
-    if (typeof content.text === "string" && content.text.trim()) {
-      return content.text.trim();
-    }
-    if (typeof content.summary === "string" && content.summary.trim()) {
-      return content.summary.trim();
-    }
-    if (typeof content.content === "string" && content.content.trim()) {
-      return content.content.trim();
-    }
-    if (content.data && typeof content.data === "object") {
-      const extractedFromData = extractTextFromContent(content.data);
-      if (extractedFromData) {
-        return extractedFromData;
-      }
-    }
-    if (Array.isArray(content.content)) {
-      return extractTextFromContent(content.content);
-    }
-  }
-
-  return "";
 }
 
 function shouldRecreateThread(error) {
@@ -3236,56 +2469,6 @@ function escapeCardMarkdown(text) {
   return String(text || "").replace(/\u0000/g, "");
 }
 
-function extractBindPath(text) {
-  const trimmed = String(text || "").trim();
-  const bindPrefix = "/codex bind ";
-  if (trimmed.toLowerCase().startsWith(bindPrefix)) {
-    return trimmed.slice(bindPrefix.length).trim();
-  }
-  return "";
-}
-
-function extractSwitchThreadId(text) {
-  const trimmed = String(text || "").trim();
-  const switchPrefix = "/codex switch ";
-  if (trimmed.toLowerCase().startsWith(switchPrefix)) {
-    return trimmed.slice(switchPrefix.length).trim();
-  }
-  return "";
-}
-
-function extractRemoveWorkspacePath(text) {
-  const trimmed = String(text || "").trim();
-  const removePrefix = "/codex remove ";
-  if (trimmed.toLowerCase().startsWith(removePrefix)) {
-    return trimmed.slice(removePrefix.length).trim();
-  }
-  return "";
-}
-
-function isWorkspaceAllowed(workspaceRoot, allowlist) {
-  if (!Array.isArray(allowlist) || allowlist.length === 0) {
-    return true;
-  }
-
-  const normalizedWorkspaceRoot = normalizeWorkspacePath(workspaceRoot);
-  const compareWorkspaceRoot = isWindowsStylePath(normalizedWorkspaceRoot)
-    ? normalizedWorkspaceRoot.toLowerCase()
-    : normalizedWorkspaceRoot;
-
-  return allowlist.some((allowedRoot) => {
-    const normalizedAllowedRoot = normalizeWorkspacePath(allowedRoot);
-    const compareAllowedRoot = isWindowsStylePath(normalizedAllowedRoot)
-      ? normalizedAllowedRoot.toLowerCase()
-      : normalizedAllowedRoot;
-    return compareWorkspaceRoot === compareAllowedRoot
-      || compareWorkspaceRoot.startsWith(`${compareAllowedRoot}/`);
-  });
-}
-
-function isWindowsStylePath(value) {
-  return /^[A-Za-z]:\//.test(String(value || ""));
-}
 
 function maskSecret(value) {
   if (!value) {
@@ -3298,3 +2481,6 @@ function maskSecret(value) {
 }
 
 module.exports = { FeishuBotRuntime };
+
+
+

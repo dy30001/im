@@ -2,6 +2,15 @@ const { spawn } = require("child_process");
 const os = require("os");
 const WebSocket = require("ws");
 
+const IS_WINDOWS = os.platform() === "win32";
+const DEFAULT_CODEX_COMMAND = "codex";
+const WINDOWS_EXECUTABLE_SUFFIX_RE = /\.(cmd|exe|bat)$/i;
+const CODEX_CLIENT_INFO = {
+  name: "codex_im_agent",
+  title: "Codex IM Agent",
+  version: "0.1.0",
+};
+
 const THREAD_SOURCE_KINDS = [
   "cli",
   "vscode",
@@ -131,11 +140,7 @@ class CodexRpcClient {
     }
 
     await this.sendRequest("initialize", {
-      clientInfo: {
-        name: "codex_im_mac_agent",
-        title: "Codex IM Mac Agent",
-        version: "0.1.0",
-      },
+      clientInfo: CODEX_CLIENT_INFO,
       capabilities: {
         experimentalApi: true,
       },
@@ -146,44 +151,30 @@ class CodexRpcClient {
 
   async sendUserMessage({ threadId, text }) {
     const input = buildTurnInputPayload(text);
-
-    if (!threadId) {
-      return this.sendRequest("thread/start", {
-        input,
-      });
-    }
-
-    return this.sendRequest("turn/start", {
-      threadId,
-      input,
-    });
+    return threadId
+      ? this.sendRequest("turn/start", { threadId, input })
+      : this.sendRequest("thread/start", { input });
   }
 
   async startThread({ cwd }) {
-    const params = {};
-    if (typeof cwd === "string" && cwd.trim()) {
-      params.cwd = cwd.trim();
-    }
-    return this.sendRequest("thread/start", params);
+    return this.sendRequest("thread/start", buildStartThreadParams(cwd));
   }
 
   async resumeThread({ threadId }) {
-    const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+    const normalizedThreadId = normalizeNonEmptyString(threadId);
     if (!normalizedThreadId) {
       throw new Error("thread/resume requires a non-empty threadId");
     }
-    return this.sendRequest("thread/resume", {
-      threadId: normalizedThreadId,
-    });
+    return this.sendRequest("thread/resume", { threadId: normalizedThreadId });
   }
 
-  async listThreads({ cursor = null, limit = 100, sortKey = "updated_at" } = {}) {
-    return this.sendRequest("thread/list", {
+  async listThreads({ cursor = null, limit = 100, sortKey = "updated_at", sourceKinds = THREAD_SOURCE_KINDS } = {}) {
+    return this.sendRequest("thread/list", buildListThreadsParams({
       cursor,
       limit,
       sortKey,
-      sourceKinds: THREAD_SOURCE_KINDS,
-    });
+      sourceKinds,
+    }));
   }
 
   async sendRequest(method, params) {
@@ -257,36 +248,32 @@ function tryParseJson(rawMessage) {
 }
 
 function resolveDefaultCodexCommand(env = process.env) {
-  const explicit = String(env.CODEX_IM_CODEX_COMMAND || "").trim();
-  if (explicit) {
-    return explicit;
-  }
-  return "codex";
+  return normalizeNonEmptyString(env.CODEX_IM_CODEX_COMMAND) || DEFAULT_CODEX_COMMAND;
 }
 
 function buildCodexCommandCandidates(configuredCommand) {
-  const explicit = String(configuredCommand || "").trim();
+  const explicit = normalizeNonEmptyString(configuredCommand);
   if (explicit) {
-    if (os.platform() !== "win32") {
+    if (!IS_WINDOWS) {
       return [explicit];
     }
 
     const candidates = [explicit];
-    if (!/\.(cmd|exe|bat)$/i.test(explicit)) {
+    if (!WINDOWS_EXECUTABLE_SUFFIX_RE.test(explicit)) {
       candidates.push(`${explicit}.cmd`, `${explicit}.exe`, `${explicit}.bat`);
     }
     return [...new Set(candidates)];
   }
 
-  if (os.platform() === "win32") {
-    return ["codex", "codex.cmd", "codex.exe", "codex.bat"];
+  if (IS_WINDOWS) {
+    return [DEFAULT_CODEX_COMMAND, `${DEFAULT_CODEX_COMMAND}.cmd`, `${DEFAULT_CODEX_COMMAND}.exe`, `${DEFAULT_CODEX_COMMAND}.bat`];
   }
 
-  return ["codex"];
+  return [DEFAULT_CODEX_COMMAND];
 }
 
 function buildSpawnSpec(command) {
-  if (os.platform() === "win32") {
+  if (IS_WINDOWS) {
     return {
       command: "cmd.exe",
       args: ["/c", command, "app-server"],
@@ -299,8 +286,34 @@ function buildSpawnSpec(command) {
   };
 }
 
+function normalizeNonEmptyString(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : "";
+}
+
+function buildStartThreadParams(cwd) {
+  const normalizedCwd = normalizeNonEmptyString(cwd);
+  return normalizedCwd ? { cwd: normalizedCwd } : {};
+}
+
+function buildListThreadsParams({ cursor, limit, sortKey, sourceKinds }) {
+  const params = { limit, sortKey };
+  const normalizedCursor = normalizeNonEmptyString(cursor);
+
+  if (normalizedCursor) {
+    params.cursor = normalizedCursor;
+  } else if (cursor != null) {
+    params.cursor = cursor;
+  }
+
+  if (Array.isArray(sourceKinds) && sourceKinds.length > 0) {
+    params.sourceKinds = sourceKinds;
+  }
+
+  return params;
+}
+
 function buildTurnInputPayload(text) {
-  const normalizedText = typeof text === "string" ? text.trim() : "";
+  const normalizedText = normalizeNonEmptyString(text);
   const items = [];
 
   if (normalizedText) {
