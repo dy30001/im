@@ -27,10 +27,11 @@ Codex 操作都留在 本地，飞书只负责消息交互。
 
 ## 安装
 
-全局安装（暂不支持）：
+npm安装和执行：
 
 ```sh
-npm install -g codex-im
+npm install -g @vdug/codex-im
+codex-im feishu-bot
 ```
 
 开发态运行：
@@ -38,6 +39,15 @@ npm install -g codex-im
 ```sh
 npm install
 npm run feishu-bot
+```
+
+### 执行脚本示例
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+npm install -g @vdug/codex-im
+codex-im feishu-bot
 ```
 
 ## 配置

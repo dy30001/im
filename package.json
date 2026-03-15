@@ -1,5 +1,5 @@
 {
-  "name": "codex-im",
+  "name": "@vdug/codex-im",
   "version": "0.1.0",
   "description": "Feishu-first local bridge for Codex.",
   "license": "MIT",
@@ -32,6 +32,9 @@
   },
   "bin": {
     "codex-im": "./bin/codex-im.js"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "feishu-bot": "node ./bin/codex-im.js",

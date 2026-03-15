@@ -252,6 +252,7 @@ function extractThreadsFromListResponse(response) {
         cwd: extractThreadWorkspaceRoot(thread),
         title: extractThreadDisplayName(thread),
         updatedAt: thread?.updated_at || thread?.updatedAt || 0,
+        sourceKind: extractThreadSourceKind(thread),
       }))
       .filter((thread) => thread.id);
   }
@@ -617,6 +618,11 @@ function extractThreadWorkspaceRoot(thread) {
   }
 
   return "";
+}
+
+function extractThreadSourceKind(thread) {
+  const source = typeof thread?.source === "string" ? thread.source.trim() : "";
+  return source || "unknown";
 }
 
 function extractPossiblePathValue(value) {

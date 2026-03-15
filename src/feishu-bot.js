@@ -3,7 +3,6 @@ const { SessionStore } = require("./session-store");
 const { CodexRpcClient } = require("./codex-rpc-client");
 const {
   filterThreadsByWorkspaceRoot,
-  getPreferredThreadSourceKinds,
   isAbsoluteWorkspacePath,
   isWorkspaceAllowed,
   normalizeWorkspacePath,
@@ -15,6 +14,20 @@ const {
 } = require("./command-parsing");
 const codexMessageUtils = require("./codex-message-utils");
 const fs = require("fs");
+
+const THREAD_SOURCE_KINDS = new Set([
+  "app",
+  "cli",
+  "vscode",
+  "exec",
+  "appServer",
+  "subAgent",
+  "subAgentReview",
+  "subAgentCompact",
+  "subAgentThreadSpawn",
+  "subAgentOther",
+  "unknown",
+]);
 
 class FeishuBotRuntime {
   constructor(config = readConfig()) {
@@ -611,22 +624,9 @@ class FeishuBotRuntime {
   }
 
   async listCodexThreadsForWorkspace(workspaceRoot) {
-    const preferredSourceKinds = getPreferredThreadSourceKinds();
-    let allThreads = await this.listCodexThreadsPaginated({ sourceKinds: preferredSourceKinds });
-    let matchedThreads = filterThreadsByWorkspaceRoot(allThreads, workspaceRoot);
-
-    if (matchedThreads.length > 0) {
-      return matchedThreads;
-    }
-
-    // Fallback: if filtered sources return nothing on non-Windows platforms,
-    // retry without sourceKinds to tolerate protocol/source-kind drift.
-    if (preferredSourceKinds !== null) {
-      allThreads = await this.listCodexThreadsPaginated({ sourceKinds: null });
-      matchedThreads = filterThreadsByWorkspaceRoot(allThreads, workspaceRoot);
-    }
-
-    return matchedThreads;
+    const allThreads = await this.listCodexThreadsPaginated({ sourceKinds: null });
+    const sourceFiltered = allThreads.filter((thread) => isSupportedThreadSourceKind(thread?.sourceKind));
+    return filterThreadsByWorkspaceRoot(sourceFiltered, workspaceRoot);
   }
 
   async listCodexThreadsPaginated({ sourceKinds = undefined } = {}) {
@@ -1513,6 +1513,11 @@ class FeishuBotRuntime {
       }
     );
   }
+}
+
+function isSupportedThreadSourceKind(sourceKind) {
+  const normalized = typeof sourceKind === "string" && sourceKind.trim() ? sourceKind.trim() : "unknown";
+  return THREAD_SOURCE_KINDS.has(normalized);
 }
 
 function buildApprovalCard(approval) {
