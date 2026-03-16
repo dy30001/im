@@ -1,31 +1,15 @@
-const { normalizeWorkspacePath } = require("./workspace-paths");
+const { normalizeWorkspacePath } = require("../../shared/workspace-paths");
 
-function normalizeFeishuTextEvent(event, config) {
-  const message = event?.message || {};
-  const sender = event?.sender || {};
-  if (message.message_type !== "text") {
-    return null;
-  }
-
-  const text = parseFeishuMessageText(message.content);
-  if (!text) {
-    return null;
-  }
-
-  const command = parseCommand(text);
-
-  return {
-    provider: "feishu",
-    workspaceId: config.defaultWorkspaceId,
-    chatId: message.chat_id || "",
-    threadKey: message.root_id || "",
-    senderId: sender?.sender_id?.open_id || sender?.sender_id?.user_id || "",
-    messageId: message.message_id || "",
-    text,
-    command,
-    receivedAt: new Date().toISOString(),
-  };
-}
+const APPROVAL_COMMAND_KEYS = [
+  "proposedExecpolicyAmendment",
+  "argv",
+  "args",
+  "command",
+  "cmd",
+  "exec",
+  "shellCommand",
+  "script",
+];
 
 function buildBindingMetadata(normalized) {
   return {
@@ -132,6 +116,7 @@ function trackPendingApproval(pendingApprovalByThreadId, message) {
   const method = message?.method;
   const params = message?.params || {};
   const threadId = extractTrackThreadId(params);
+  const commandTokens = extractApprovalCommandTokens(params);
 
   if (isApprovalRequestMethod(method) && threadId && message?.id != null) {
     pendingApprovalByThreadId.set(threadId, {
@@ -139,7 +124,8 @@ function trackPendingApproval(pendingApprovalByThreadId, message) {
       method,
       threadId,
       reason: params.reason || "",
-      command: params.command || "",
+      command: extractApprovalDisplayCommand(params, commandTokens),
+      commandTokens,
       chatId: "",
       replyToMessageId: "",
       resolution: "",
@@ -175,42 +161,11 @@ function trackRunKeyState(currentRunKeyByThreadId, activeTurnIdByThreadId, messa
 }
 
 function isApprovalRequestMethod(method) {
-  if (typeof method !== "string" || !method) {
-    return false;
-  }
-
-  return (
-    method === "item/commandExecution/requestApproval"
-    || method === "item/fileChange/requestApproval"
-    || method.endsWith("requestApproval")
-    || method === "approval/requested"
-  );
+  return typeof method === "string" && method.endsWith("requestApproval");
 }
 
-function resolveApprovalDecision(command, method, rawText) {
-  if (command !== "approve") {
-    return "decline";
-  }
-
-  const normalizedMethod = typeof method === "string" ? method.trim() : "";
-  const normalizedText = typeof rawText === "string" ? rawText.trim().toLowerCase() : "";
-  const isCommandApproval = isCommandApprovalMethod(normalizedMethod);
-  const wantsSession = normalizedText === "/codex approve session"
-    || normalizedText.endsWith(" approve session");
-
-  if (isCommandApproval && wantsSession) {
-    return "acceptForSession";
-  }
-
-  return "accept";
-}
-
-function buildApprovalResponsePayload(decision, method) {
-  const normalizedMethod = String(method || "").toLowerCase();
-  if (normalizedMethod.includes("requestapproval")) {
-    return { decision };
-  }
-  return decision;
+function buildApprovalResponsePayload(decision) {
+  return { decision };
 }
 
 function buildRunKey(threadId, turnId) {
@@ -271,74 +226,6 @@ function extractRecentConversationFromResumeResponse(response, turnLimit = 3) {
   return dedupeRecentConversationMessages(messages).slice(-6);
 }
 
-function extractCardAction(data) {
-  const action = data?.action || {};
-  const value = action.value || {};
-  if (!value.kind) {
-    console.log("[codex-im] card callback action missing kind", {
-      action,
-      hasValue: !!action.value,
-    });
-    return null;
-  }
-  if (value.kind === "approval") {
-    return {
-      kind: value.kind,
-      decision: value.decision,
-      scope: value.scope || "once",
-      requestId: value.requestId,
-      threadId: value.threadId,
-    };
-  }
-  if (value.kind === "panel") {
-    return {
-      kind: value.kind,
-      action: value.action || "",
-    };
-  }
-  if (value.kind === "thread") {
-    return {
-      kind: value.kind,
-      action: value.action || "",
-      threadId: value.threadId || "",
-    };
-  }
-  if (value.kind === "workspace") {
-    return {
-      kind: value.kind,
-      action: value.action || "",
-      workspaceRoot: value.workspaceRoot || "",
-    };
-  }
-  return null;
-}
-
-function normalizeCardActionContext(data, config) {
-  const messageId = normalizeIdentifier(data?.context?.open_message_id);
-  const chatId = extractCardChatId(data);
-  const senderId = normalizeIdentifier(data?.operator?.open_id);
-
-  if (!chatId || !messageId || !senderId) {
-    console.log("[codex-im] card callback missing required context", {
-      context_open_message_id: data?.context?.open_message_id,
-      context_open_chat_id: data?.context?.open_chat_id,
-      operator_open_id: data?.operator?.open_id,
-    });
-    return null;
-  }
-  return {
-    provider: "feishu",
-    workspaceId: config.defaultWorkspaceId,
-    chatId,
-    threadKey: "",
-    senderId,
-    messageId,
-    text: "",
-    command: "",
-    receivedAt: new Date().toISOString(),
-  };
-}
-
 function eventShouldClearPendingReaction(event) {
   if (!event || typeof event !== "object") {
     return false;
@@ -357,12 +244,9 @@ function eventShouldClearPendingReaction(event) {
 }
 
 function extractAssistantText(params) {
-  const eventObject = envelopeEventObject(params);
   const directText = [
     params?.delta,
-    eventObject?.delta,
     params?.item?.text,
-    eventObject?.message,
   ];
   for (const value of directText) {
     if (typeof value === "string" && value.trim()) {
@@ -372,9 +256,7 @@ function extractAssistantText(params) {
 
   const contentObjects = [
     params?.item?.content,
-    eventObject?.item?.content,
     params?.content,
-    eventObject?.content,
   ];
   for (const content of contentObjects) {
     const extracted = extractTextFromContent(content);
@@ -386,15 +268,6 @@ function extractAssistantText(params) {
   return "";
 }
 
-function parseFeishuMessageText(rawContent) {
-  try {
-    const parsed = JSON.parse(rawContent || "{}");
-    return typeof parsed.text === "string" ? parsed.text.trim() : "";
-  } catch {
-    return "";
-  }
-}
-
 function extractTrackThreadId(params) {
   return normalizeIdentifier(params?.threadId);
 }
@@ -403,71 +276,12 @@ function extractTrackTurnId(params) {
   return normalizeIdentifier(params?.turnId || params?.turn?.id);
 }
 
-function parseCommand(text) {
-  const normalized = text.trim().toLowerCase();
-  const prefixes = ["/codex "];
-  const exactPrefixes = ["/codex"];
-
-  const exactCommands = {
-    stop: ["stop"],
-    where: ["where"],
-    inspect_message: ["message"],
-    help: ["help"],
-    workspace: ["workspace"],
-    remove: ["remove"],
-    new: ["new"],
-    approve: ["approve", "approve session"],
-    reject: ["reject"],
-  };
-  for (const [command, suffixes] of Object.entries(exactCommands)) {
-    if (matchesExactCommand(normalized, suffixes)) {
-      return command;
-    }
-  }
-
-  if (matchesPrefixCommand(normalized, "switch")) {
-    return "switch";
-  }
-  if (matchesPrefixCommand(normalized, "remove")) {
-    return "remove";
-  }
-  if (matchesPrefixCommand(normalized, "bind")) {
-    return "bind";
-  }
-  if (prefixes.some((prefix) => normalized.startsWith(prefix))) {
-    return "unknown_command";
-  }
-  if (exactPrefixes.includes(normalized)) {
-    return "unknown_command";
-  }
-  if (text.trim()) {
-    return "message";
-  }
-
-  return "";
-}
-
-function matchesExactCommand(text, suffixes) {
-  return suffixes.some((suffix) => (
-    text === `/codex ${suffix}`
-  ));
-}
-
-function matchesPrefixCommand(text, command) {
-  return text.startsWith(`/codex ${command} `);
-}
-
 function isAssistantMessageMethod(method, params) {
-  if (
-    method === "item/agentMessage/delta"
-    || method === "codex/event/agent_message_content_delta"
-    || method === "codex/event/agent_message_delta"
-    || method === "codex/event/agent_message"
-  ) {
+  if (method === "item/agentMessage/delta") {
     return true;
   }
 
-  if (method === "item/completed" || method === "codex/event/item_completed") {
+  if (method === "item/completed") {
     return looksLikeAssistantPayload(params);
   }
 
@@ -475,15 +289,10 @@ function isAssistantMessageMethod(method, params) {
 }
 
 function looksLikeAssistantPayload(params) {
-  const eventObject = envelopeEventObject(params);
-  const typeValues = [
-    params?.item?.type,
-    eventObject?.item?.type,
-  ];
-  return typeValues.some((value) => {
-    const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
-    return normalized === "agentmessage";
-  });
+  const itemType = typeof params?.item?.type === "string"
+    ? params.item.type.trim().toLowerCase()
+    : "";
+  return itemType === "agentmessage";
 }
 
 function isCommandApprovalMethod(method) {
@@ -497,6 +306,151 @@ function isCommandApprovalMethod(method) {
     compact.includes("commandexecutionrequestapproval")
     || compact.includes("commandrequestapproval")
   );
+}
+
+function isWorkspaceApprovalCommand(rawText) {
+  const normalizedText = typeof rawText === "string" ? rawText.trim().toLowerCase() : "";
+  return (
+    normalizedText === "/codex approve workspace"
+    || normalizedText.endsWith(" approve workspace")
+  );
+}
+
+function extractApprovalCommandTokens(params) {
+  return normalizeCommandTokens(extractTokens(params));
+}
+
+function matchesCommandPrefix(command, allowlist) {
+  const normalizedCommand = normalizeCommandTokens(command);
+  if (!normalizedCommand.length || !Array.isArray(allowlist)) {
+    return false;
+  }
+
+  return allowlist.some((prefix) => {
+    const normalizedPrefix = normalizeCommandTokens(prefix);
+    if (!normalizedPrefix.length || normalizedPrefix.length > normalizedCommand.length) {
+      return false;
+    }
+
+    for (let index = 0; index < normalizedPrefix.length; index += 1) {
+      if (normalizedPrefix[index] !== normalizedCommand[index]) {
+        return false;
+      }
+    }
+    return true;
+  });
+}
+
+function normalizeCommandTokens(tokens) {
+  if (!Array.isArray(tokens)) {
+    return [];
+  }
+  return tokens
+    .map((token) => (typeof token === "string" ? token.trim() : ""))
+    .filter(Boolean);
+}
+
+function buildApprovalCommandPreview(tokens) {
+  const normalized = normalizeCommandTokens(tokens);
+  if (!normalized.length) {
+    return "";
+  }
+  return normalized.map((token) => (token.includes(" ") ? JSON.stringify(token) : token)).join(" ");
+}
+
+function extractApprovalDisplayCommand(params, commandTokens) {
+  const rawCommand = params?.command;
+  if (typeof rawCommand === "string" && rawCommand.trim()) {
+    return rawCommand.trim();
+  }
+  if (Array.isArray(rawCommand)) {
+    const normalized = normalizeCommandTokens(rawCommand);
+    if (normalized.length) {
+      return normalized.map((token) => (token.includes(" ") ? JSON.stringify(token) : token)).join(" ");
+    }
+  }
+  return buildApprovalCommandPreview(commandTokens);
+}
+
+function extractTokens(value) {
+  if (!value) {
+    return [];
+  }
+  if (Array.isArray(value)) {
+    return value.every((entry) => typeof entry === "string")
+      ? value.map((entry) => entry.trim()).filter(Boolean)
+      : [];
+  }
+  if (typeof value === "string") {
+    return splitCommandLine(value);
+  }
+  if (typeof value !== "object") {
+    return [];
+  }
+
+  const objectValue = value;
+  for (const key of APPROVAL_COMMAND_KEYS) {
+    const tokens = extractTokens(objectValue[key]);
+    if (tokens.length) {
+      return tokens;
+    }
+  }
+
+  for (const [key, nested] of Object.entries(objectValue)) {
+    const normalized = key.toLowerCase();
+    if (normalized.includes("execpolicy") || normalized.includes("exec_policy")) {
+      const tokens = extractTokens(nested);
+      if (tokens.length) {
+        return tokens;
+      }
+    }
+  }
+
+  return [];
+}
+
+function splitCommandLine(input) {
+  const tokens = [];
+  let current = "";
+  let quote = null;
+  let escaped = false;
+
+  for (const char of String(input || "")) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) {
+        quote = null;
+      } else {
+        current += char;
+      }
+      continue;
+    }
+    if (char === "\"" || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      if (current) {
+        tokens.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += char;
+  }
+
+  if (current) {
+    tokens.push(current);
+  }
+  return tokens;
 }
 
 
@@ -535,27 +489,12 @@ function normalizeResumedConversationItem(item) {
   return null;
 }
 
-function extractCardChatId(data) {
-  return normalizeIdentifier(data?.context?.open_chat_id);
-}
-
-function envelopeEventObject(params) {
-  return params?.msg && typeof params.msg === "object" ? params.msg : null;
-}
-
 function extractThreadIdentifier(params) {
-  return normalizeIdentifier(
-    params?.threadId
-      || params?.msg?.thread_id
-  );
+  return normalizeIdentifier(params?.threadId);
 }
 
 function extractTurnIdentifier(params) {
-  return normalizeIdentifier(
-    params?.turnId
-      || params?.turn?.id
-      || params?.msg?.turn_id
-  );
+  return normalizeIdentifier(params?.turnId || params?.turn?.id);
 }
 
 function normalizeIdentifier(value) {
@@ -605,18 +544,17 @@ module.exports = {
   buildBindingMetadata,
   buildRunKey,
   eventShouldClearPendingReaction,
-  extractCardAction,
   extractCreatedMessageId,
   extractThreadId,
   extractThreadListCursor,
   extractThreadsFromListResponse,
   extractTurnIdFromRunKey,
   extractRecentConversationFromResumeResponse,
-  isApprovalRequestMethod,
+  isCommandApprovalMethod,
+  isWorkspaceApprovalCommand,
   mapCodexMessageToImEvent,
-  normalizeCardActionContext,
-  normalizeFeishuTextEvent,
-  resolveApprovalDecision,
+  matchesCommandPrefix,
+  normalizeCommandTokens,
   trackPendingApproval,
   trackRunKeyState,
   trackRunningTurn,

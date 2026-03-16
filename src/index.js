@@ -3,8 +3,8 @@ const os = require("os");
 const fs = require("fs");
 const dotenv = require("dotenv");
 
-const { readConfig } = require("./config");
-const { FeishuBotRuntime } = require("./feishu-bot");
+const { readConfig } = require("./infra/config/config");
+const { FeishuBotRuntime } = require("./app/feishu-bot-runtime");
 
 function loadEnv() {
   ensureDefaultConfigDirectory();

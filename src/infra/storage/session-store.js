@@ -19,7 +19,12 @@ class SessionStore {
       const raw = fs.readFileSync(this.filePath, "utf8");
       const parsed = JSON.parse(raw);
       if (parsed && typeof parsed === "object" && parsed.bindings) {
-        this.state = parsed;
+        this.state = {
+          ...createEmptyState(),
+          ...parsed,
+          bindings: parsed.bindings || {},
+          approvalCommandAllowlistByWorkspaceRoot: parsed.approvalCommandAllowlistByWorkspaceRoot || {},
+        };
       }
     } catch {
       this.state = createEmptyState();
@@ -99,6 +104,42 @@ class SessionStore {
     });
   }
 
+  getApprovalCommandAllowlistForWorkspace(workspaceRoot) {
+    const normalizedWorkspaceRoot = normalizeValue(workspaceRoot);
+    if (!normalizedWorkspaceRoot) {
+      return [];
+    }
+    const allowlist = this.state.approvalCommandAllowlistByWorkspaceRoot?.[normalizedWorkspaceRoot];
+    if (!Array.isArray(allowlist)) {
+      return [];
+    }
+    return normalizeCommandAllowlist(allowlist);
+  }
+
+  rememberApprovalCommandPrefixForWorkspace(workspaceRoot, commandTokens) {
+    const normalizedWorkspaceRoot = normalizeValue(workspaceRoot);
+    const normalizedTokens = normalizeCommandTokens(commandTokens);
+    if (!normalizedWorkspaceRoot || !normalizedTokens.length) {
+      return null;
+    }
+
+    const currentAllowlist = this.getApprovalCommandAllowlistForWorkspace(normalizedWorkspaceRoot);
+    const exists = currentAllowlist.some((prefix) => (
+      prefix.length === normalizedTokens.length
+      && prefix.every((token, index) => token === normalizedTokens[index])
+    ));
+    if (exists) {
+      return currentAllowlist;
+    }
+
+    this.state.approvalCommandAllowlistByWorkspaceRoot = {
+      ...(this.state.approvalCommandAllowlistByWorkspaceRoot || {}),
+      [normalizedWorkspaceRoot]: [...currentAllowlist, normalizedTokens],
+    };
+    this.save();
+    return this.state.approvalCommandAllowlistByWorkspaceRoot[normalizedWorkspaceRoot];
+  }
+
   removeWorkspace(bindingKey, workspaceRoot) {
     const normalizedWorkspaceRoot = normalizeValue(workspaceRoot);
     if (!normalizedWorkspaceRoot) {
@@ -155,11 +196,32 @@ function normalizeValue(value) {
 }
 
 function createEmptyState() {
-  return { bindings: {} };
+  return {
+    bindings: {},
+    approvalCommandAllowlistByWorkspaceRoot: {},
+  };
 }
 
 function getThreadMap(binding) {
   return { ...(binding?.threadIdByWorkspaceRoot || {}) };
+}
+
+function normalizeCommandTokens(tokens) {
+  if (!Array.isArray(tokens)) {
+    return [];
+  }
+  return tokens
+    .map((token) => (typeof token === "string" ? token.trim() : ""))
+    .filter(Boolean);
+}
+
+function normalizeCommandAllowlist(allowlist) {
+  if (!Array.isArray(allowlist)) {
+    return [];
+  }
+  return allowlist
+    .map((tokens) => normalizeCommandTokens(tokens))
+    .filter((tokens) => tokens.length > 0);
 }
 
 module.exports = { SessionStore };
