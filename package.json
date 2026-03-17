@@ -1,6 +1,6 @@
 {
   "name": "@vdug/codex-im",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Feishu-first local bridge for Codex.",
   "license": "MIT",
   "repository": {

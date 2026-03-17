@@ -100,6 +100,11 @@ class FeishuBotRuntime {
     if (!String(this.config.defaultCodexEffort || "").trim()) {
       throw new Error("CODEX_IM_DEFAULT_CODEX_EFFORT is required");
     }
+    if (!String(this.config.defaultCodexAccessMode || "").trim()) {
+      throw new Error(
+        "CODEX_IM_DEFAULT_CODEX_ACCESS_MODE is required and must be one of: default, full-access"
+      );
+    }
   }
 
   initializeFeishuSdk() {

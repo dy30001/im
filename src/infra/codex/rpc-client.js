@@ -8,7 +8,7 @@ const WINDOWS_EXECUTABLE_SUFFIX_RE = /\.(cmd|exe|bat)$/i;
 const CODEX_CLIENT_INFO = {
   name: "codex_im_agent",
   title: "Codex IM Agent",
-  version: "0.1.0",
+  version: "0.2.0",
 };
 
 class CodexRpcClient {
@@ -139,10 +139,27 @@ class CodexRpcClient {
     this.isReady = true;
   }
 
-  async sendUserMessage({ threadId, text, model = null, effort = null }) {
+  async sendUserMessage({
+    threadId,
+    text,
+    model = null,
+    effort = null,
+    accessMode = null,
+    workspaceRoot = "",
+  }) {
     const input = buildTurnInputPayload(text);
     return threadId
-      ? this.sendRequest("turn/start", buildTurnStartParams({ threadId, input, model, effort }))
+      ? this.sendRequest(
+        "turn/start",
+        buildTurnStartParams({
+          threadId,
+          input,
+          model,
+          effort,
+          accessMode,
+          workspaceRoot,
+        })
+      )
       : this.sendRequest("thread/start", { input });
   }
 
@@ -343,17 +360,56 @@ function buildTurnInputPayload(text) {
   return items;
 }
 
-function buildTurnStartParams({ threadId, input, model, effort }) {
+function buildTurnStartParams({ threadId, input, model, effort, accessMode, workspaceRoot }) {
   const params = { threadId, input };
   const normalizedModel = normalizeNonEmptyString(model);
   const normalizedEffort = normalizeNonEmptyString(effort);
+  const normalizedAccessMode = normalizeAccessMode(accessMode);
+  const executionPolicies = buildExecutionPolicies(normalizedAccessMode, workspaceRoot);
   if (normalizedModel) {
     params.model = normalizedModel;
   }
   if (normalizedEffort) {
     params.effort = normalizedEffort;
   }
+  if (normalizedAccessMode) {
+    params.accessMode = normalizedAccessMode;
+  }
+  params.approvalPolicy = executionPolicies.approvalPolicy;
+  params.sandboxPolicy = executionPolicies.sandboxPolicy;
   return params;
+}
+
+function normalizeAccessMode(value) {
+  const normalized = normalizeNonEmptyString(value).toLowerCase();
+  if (normalized === "default") {
+    return "current";
+  }
+  return normalized === "full-access" ? normalized : "";
+}
+
+function buildExecutionPolicies(accessMode, workspaceRoot) {
+  if (accessMode === "full-access") {
+    return {
+      approvalPolicy: "never",
+      sandboxPolicy: { type: "dangerFullAccess" },
+    };
+  }
+  const normalizedWorkspaceRoot = normalizeNonEmptyString(workspaceRoot);
+  const sandboxPolicy = normalizedWorkspaceRoot
+    ? {
+      type: "workspaceWrite",
+      writableRoots: [normalizedWorkspaceRoot],
+      networkAccess: true,
+    }
+    : {
+      type: "workspaceWrite",
+      networkAccess: true,
+    };
+  return {
+    approvalPolicy: "on-request",
+    sandboxPolicy,
+  };
 }
 
 module.exports = { CodexRpcClient };
