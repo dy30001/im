@@ -8,18 +8,8 @@ const WINDOWS_EXECUTABLE_SUFFIX_RE = /\.(cmd|exe|bat)$/i;
 const CODEX_CLIENT_INFO = {
   name: "codex_im_agent",
   title: "Codex IM Agent",
-  version: "0.1.0",
+  version: "0.2.0",
 };
-
-const THREAD_SOURCE_KINDS = [
-  "cli",
-  "vscode",
-  "appServer",
-  "subAgentReview",
-  "subAgentCompact",
-  "subAgentThreadSpawn",
-  "unknown",
-];
 
 class CodexRpcClient {
   constructor({ endpoint = "", env = process.env, codexCommand = "" }) {
@@ -149,10 +139,27 @@ class CodexRpcClient {
     this.isReady = true;
   }
 
-  async sendUserMessage({ threadId, text }) {
+  async sendUserMessage({
+    threadId,
+    text,
+    model = null,
+    effort = null,
+    accessMode = null,
+    workspaceRoot = "",
+  }) {
     const input = buildTurnInputPayload(text);
     return threadId
-      ? this.sendRequest("turn/start", { threadId, input })
+      ? this.sendRequest(
+        "turn/start",
+        buildTurnStartParams({
+          threadId,
+          input,
+          model,
+          effort,
+          accessMode,
+          workspaceRoot,
+        })
+      )
       : this.sendRequest("thread/start", { input });
   }
 
@@ -168,13 +175,16 @@ class CodexRpcClient {
     return this.sendRequest("thread/resume", { threadId: normalizedThreadId });
   }
 
-  async listThreads({ cursor = null, limit = 100, sortKey = "updated_at", sourceKinds = THREAD_SOURCE_KINDS } = {}) {
+  async listThreads({ cursor = null, limit = 100, sortKey = "updated_at" } = {}) {
     return this.sendRequest("thread/list", buildListThreadsParams({
       cursor,
       limit,
       sortKey,
-      sourceKinds,
     }));
+  }
+
+  async listModels() {
+    return this.sendRequest("model/list", {});
   }
 
   async sendRequest(method, params) {
@@ -185,16 +195,21 @@ class CodexRpcClient {
       this.pending.set(id, { resolve, reject });
     });
 
+    logCodexOutboundMessage(`request:${method}`, payload);
     this.sendRaw(payload);
     return responsePromise;
   }
 
   async sendNotification(method, params) {
-    this.sendRaw(JSON.stringify({ method, params }));
+    const payload = JSON.stringify({ method, params });
+    logCodexOutboundMessage(`notification:${method}`, payload);
+    this.sendRaw(payload);
   }
 
   async sendResponse(id, result) {
-    this.sendRaw(JSON.stringify({ id, result }));
+    const payload = JSON.stringify({ id, result });
+    logCodexOutboundMessage("response", payload);
+    this.sendRaw(payload);
   }
 
   sendRaw(payload) {
@@ -215,8 +230,10 @@ class CodexRpcClient {
   handleIncoming(rawMessage) {
     const parsed = tryParseJson(rawMessage);
     if (!parsed) {
+      logCodexParseFailure(rawMessage);
       return;
     }
+    logCodexInboundMessage(parsed);
 
     if (parsed && parsed.id != null && this.pending.has(String(parsed.id))) {
       const { resolve, reject } = this.pending.get(String(parsed.id));
@@ -245,6 +262,27 @@ function tryParseJson(rawMessage) {
   } catch {
     return null;
   }
+}
+
+function logCodexOutboundMessage(operation, payload) {
+  try {
+    console.log(`[codex-im] codex=> op=${operation} ${payload}`);
+  } catch {
+    console.log(`[codex-im] codex=> op=${operation} <unserializable payload>`);
+  }
+}
+
+function logCodexInboundMessage(message) {
+  try {
+    console.log(`[codex-im] codex<= ${JSON.stringify(message)}`);
+  } catch {
+    console.log("[codex-im] codex<= <unserializable message>");
+  }
+}
+
+function logCodexParseFailure(rawMessage) {
+  const sample = String(rawMessage || "").slice(0, 300);
+  console.warn(`[codex-im] codex<= [parse_failed] raw=${JSON.stringify(sample)}`);
 }
 
 function resolveDefaultCodexCommand(env = process.env) {
@@ -295,7 +333,7 @@ function buildStartThreadParams(cwd) {
   return normalizedCwd ? { cwd: normalizedCwd } : {};
 }
 
-function buildListThreadsParams({ cursor, limit, sortKey, sourceKinds }) {
+function buildListThreadsParams({ cursor, limit, sortKey }) {
   const params = { limit, sortKey };
   const normalizedCursor = normalizeNonEmptyString(cursor);
 
@@ -303,10 +341,6 @@ function buildListThreadsParams({ cursor, limit, sortKey, sourceKinds }) {
     params.cursor = normalizedCursor;
   } else if (cursor != null) {
     params.cursor = cursor;
-  }
-
-  if (Array.isArray(sourceKinds) && sourceKinds.length > 0) {
-    params.sourceKinds = sourceKinds;
   }
 
   return params;
@@ -324,6 +358,58 @@ function buildTurnInputPayload(text) {
   }
 
   return items;
+}
+
+function buildTurnStartParams({ threadId, input, model, effort, accessMode, workspaceRoot }) {
+  const params = { threadId, input };
+  const normalizedModel = normalizeNonEmptyString(model);
+  const normalizedEffort = normalizeNonEmptyString(effort);
+  const normalizedAccessMode = normalizeAccessMode(accessMode);
+  const executionPolicies = buildExecutionPolicies(normalizedAccessMode, workspaceRoot);
+  if (normalizedModel) {
+    params.model = normalizedModel;
+  }
+  if (normalizedEffort) {
+    params.effort = normalizedEffort;
+  }
+  if (normalizedAccessMode) {
+    params.accessMode = normalizedAccessMode;
+  }
+  params.approvalPolicy = executionPolicies.approvalPolicy;
+  params.sandboxPolicy = executionPolicies.sandboxPolicy;
+  return params;
+}
+
+function normalizeAccessMode(value) {
+  const normalized = normalizeNonEmptyString(value).toLowerCase();
+  if (normalized === "default") {
+    return "current";
+  }
+  return normalized === "full-access" ? normalized : "";
+}
+
+function buildExecutionPolicies(accessMode, workspaceRoot) {
+  if (accessMode === "full-access") {
+    return {
+      approvalPolicy: "never",
+      sandboxPolicy: { type: "dangerFullAccess" },
+    };
+  }
+  const normalizedWorkspaceRoot = normalizeNonEmptyString(workspaceRoot);
+  const sandboxPolicy = normalizedWorkspaceRoot
+    ? {
+      type: "workspaceWrite",
+      writableRoots: [normalizedWorkspaceRoot],
+      networkAccess: true,
+    }
+    : {
+      type: "workspaceWrite",
+      networkAccess: true,
+    };
+  return {
+    approvalPolicy: "on-request",
+    sandboxPolicy,
+  };
 }
 
 module.exports = { CodexRpcClient };

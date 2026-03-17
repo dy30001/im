@@ -23,6 +23,8 @@ Codex 操作都留在 本地，飞书只负责消息交互。
 - `/codex message` 查看最近几轮消息
 - `/codex new` 新建线程
 - `/codex stop` 停止当前运行
+- `/codex model` / `/codex model update` / `/codex model <modelId>` 查看可用模型、刷新可用模型以及推理强度、设置模型
+- `/codex effort` / `/codex effort <low|medium|high|xhigh>` 设置推理强度
 - `/codex approve` / `/codex reject` 审批卡片
 
 ## 安装
@@ -73,6 +75,9 @@ codex-im feishu-bot
 
 - `FEISHU_APP_ID`
 - `FEISHU_APP_SECRET`
+- `CODEX_IM_DEFAULT_CODEX_MODEL` 新绑定项目时默认写入的模型（启动时会基于 Codex 可用模型列表校验，不合法则启动失败）
+- `CODEX_IM_DEFAULT_CODEX_EFFORT` 新绑定项目时默认写入的推理强度（启动时会基于对应模型可用推理强度校验，不合法则启动失败）
+- `CODEX_IM_DEFAULT_CODEX_ACCESS_MODE` 默认访问模式（必填：`default` / `full-access`）
 
 可选环境变量：
 
@@ -81,6 +86,7 @@ codex-im feishu-bot
 - `CODEX_IM_WORKSPACE_ALLOWLIST`允许绑定的项目白名单
 - `CODEX_IM_CODEX_ENDPOINT` 用来指定 Codex 的远程 WebSocket RPC 地址，默认是启动本地服务
 - `CODEX_IM_SESSIONS_FILE` session文件路径
+
 
 
 
@@ -100,6 +106,9 @@ npm run feishu-bot
 - `/codex message`
 - `/codex new`
 - `/codex stop`
+- `/codex model`
+- `/codex model update`
+- `/codex effort`
 - `/codex approve`
 - `/codex approve session`
 - `/codex reject`
@@ -127,19 +136,6 @@ npm run feishu-bot
 - `src/session-store.js`: 会话绑定持久化
 - `src/config.js`: 环境变量配置
 
-## 发布
-
-发布到 npm 前，你还需要自己确认：
-
-- `package.json` 的 `license`
-- `package.json` 的 `repository`
-
-发布命令（暂未支持）：
-
-```sh
-npm login
-npm publish
-```
 
 # 飞书配置
 

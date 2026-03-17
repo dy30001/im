@@ -3,6 +3,7 @@ const os = require("os");
 
 const TRUE_ENV_VALUES = new Set(["1", "true", "yes", "on"]);
 const FALSE_ENV_VALUES = new Set(["0", "false", "no", "off"]);
+const ALLOWED_ACCESS_MODES = new Set(["default", "full-access"]);
 
 function readConfig() {
   const mode = process.argv[2] || "";
@@ -12,6 +13,9 @@ function readConfig() {
     workspaceAllowlist: readListEnv("CODEX_IM_WORKSPACE_ALLOWLIST"),
     codexEndpoint: process.env.CODEX_IM_CODEX_ENDPOINT || "",
     codexCommand: process.env.CODEX_IM_CODEX_COMMAND || "",
+    defaultCodexModel: readTextEnv("CODEX_IM_DEFAULT_CODEX_MODEL"),
+    defaultCodexEffort: readTextEnv("CODEX_IM_DEFAULT_CODEX_EFFORT"),
+    defaultCodexAccessMode: readAccessModeEnv("CODEX_IM_DEFAULT_CODEX_ACCESS_MODE"),
     feishu: {
       appId: process.env.FEISHU_APP_ID || "",
       appSecret: process.env.FEISHU_APP_SECRET || "",
@@ -44,6 +48,16 @@ function readBooleanEnv(name, defaultValue) {
     return false;
   }
   return defaultValue;
+}
+
+function readTextEnv(name) {
+  const value = process.env[name];
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function readAccessModeEnv(name) {
+  const value = readTextEnv(name).toLowerCase();
+  return ALLOWED_ACCESS_MODES.has(value) ? value : "";
 }
 
 module.exports = { readConfig };

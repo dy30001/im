@@ -1,6 +1,5 @@
 const path = require("path");
 
-const IS_WINDOWS = process.platform === "win32";
 const WINDOWS_DRIVE_PATH_RE = /^[A-Za-z]:\//;
 const WINDOWS_DRIVE_ROOT_RE = /^[A-Za-z]:\/$/;
 const WINDOWS_UNC_PREFIX_RE = /^\/\/\?\//;
@@ -56,10 +55,6 @@ function pathMatchesWorkspaceRoot(candidatePath, workspaceRoot) {
   // - Windows: case-insensitive
   // - macOS/Linux: case-sensitive
   return workspacePathStartsWith(compareCandidate, compareWorkspaceRoot);
-}
-
-function getPreferredThreadSourceKinds() {
-  return IS_WINDOWS ? null : undefined;
 }
 
 function isWorkspaceAllowed(workspaceRoot, allowlist) {
@@ -121,7 +116,6 @@ function workspacePathStartsWith(candidatePath, workspaceRoot) {
 
 module.exports = {
   filterThreadsByWorkspaceRoot,
-  getPreferredThreadSourceKinds,
   isAbsoluteWorkspacePath,
   isWorkspaceAllowed,
   normalizeWorkspacePath,
