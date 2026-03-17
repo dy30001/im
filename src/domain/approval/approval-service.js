@@ -1,5 +1,6 @@
 const codexMessageUtils = require("../../infra/codex/message-utils");
 const { extractCardChatId } = require("../../infra/feishu/client-adapter");
+const { formatFailureText } = require("../../shared/error-text");
 
 function buildApprovalRequestKey(threadId, requestId) {
   const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
@@ -85,7 +86,7 @@ function buildApprovalResultText({ decision, scope, method }) {
     return "已拒绝本次请求。";
   }
   if (scope === "workspace" && codexMessageUtils.isCommandApprovalMethod(method)) {
-    return "已工作区允许该命令，后续同工作区下同前缀命令将自动放行。";
+    return "已自动允许该命令，后续同工作区下相同前缀命令将自动放行。";
   }
   return "已允许本次请求。";
 }
@@ -134,7 +135,7 @@ async function handleApprovalCommand(runtime, normalized) {
     await runtime.sendInfoCardMessage({
       chatId: normalized.chatId,
       replyToMessageId: normalized.messageId,
-      text: `处理授权失败: ${error.message}`,
+      text: formatFailureText("处理授权失败", error),
     });
   }
 }
@@ -193,7 +194,7 @@ async function handleApprovalCardActionAsync(runtime, action, data) {
       return;
     }
   } catch (error) {
-    await runtime.sendCardActionFeedback(data, `处理失败: ${error.message}`, "error");
+    await runtime.sendCardActionFeedback(data, formatFailureText("处理失败", error), "error");
   }
 }
 

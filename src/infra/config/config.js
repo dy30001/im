@@ -12,6 +12,8 @@ function readConfig() {
     workspaceAllowlist: readListEnv("CODEX_IM_WORKSPACE_ALLOWLIST"),
     codexEndpoint: process.env.CODEX_IM_CODEX_ENDPOINT || "",
     codexCommand: process.env.CODEX_IM_CODEX_COMMAND || "",
+    defaultCodexModel: readTextEnv("CODEX_IM_DEFAULT_CODEX_MODEL"),
+    defaultCodexEffort: readTextEnv("CODEX_IM_DEFAULT_CODEX_EFFORT"),
     feishu: {
       appId: process.env.FEISHU_APP_ID || "",
       appSecret: process.env.FEISHU_APP_SECRET || "",
@@ -44,6 +46,11 @@ function readBooleanEnv(name, defaultValue) {
     return false;
   }
   return defaultValue;
+}
+
+function readTextEnv(name) {
+  const value = process.env[name];
+  return typeof value === "string" ? value.trim() : "";
 }
 
 module.exports = { readConfig };

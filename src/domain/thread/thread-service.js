@@ -41,6 +41,8 @@ async function resolveWorkspaceThreadState(runtime, {
 }
 
 async function ensureThreadAndSendMessage(runtime, { bindingKey, workspaceRoot, normalized, threadId }) {
+  const codexParams = runtime.getCodexParamsForWorkspace(bindingKey, workspaceRoot);
+
   if (!threadId) {
     const createdThreadId = await createWorkspaceThread(runtime, {
       bindingKey,
@@ -51,6 +53,8 @@ async function ensureThreadAndSendMessage(runtime, { bindingKey, workspaceRoot, 
     await runtime.codex.sendUserMessage({
       threadId: createdThreadId,
       text: normalized.text,
+      model: codexParams.model || null,
+      effort: codexParams.effort || null,
     });
     runtime.setThreadBindingKey(createdThreadId, bindingKey);
     runtime.setThreadWorkspaceRoot(createdThreadId, workspaceRoot);
@@ -62,6 +66,8 @@ async function ensureThreadAndSendMessage(runtime, { bindingKey, workspaceRoot, 
     await runtime.codex.sendUserMessage({
       threadId,
       text: normalized.text,
+      model: codexParams.model || null,
+      effort: codexParams.effort || null,
     });
     console.log(`[codex-im] turn/start ok workspace=${workspaceRoot} thread=${threadId}`);
     runtime.setThreadBindingKey(threadId, bindingKey);
@@ -84,6 +90,8 @@ async function ensureThreadAndSendMessage(runtime, { bindingKey, workspaceRoot, 
     await runtime.codex.sendUserMessage({
       threadId: recreatedThreadId,
       text: normalized.text,
+      model: codexParams.model || null,
+      effort: codexParams.effort || null,
     });
     runtime.setThreadBindingKey(recreatedThreadId, bindingKey);
     runtime.setThreadWorkspaceRoot(recreatedThreadId, workspaceRoot);

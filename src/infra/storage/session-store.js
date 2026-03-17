@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const { normalizeModelCatalog } = require("../../shared/model-catalog");
 
 class SessionStore {
   constructor({ filePath }) {
@@ -24,6 +25,10 @@ class SessionStore {
           ...parsed,
           bindings: parsed.bindings || {},
           approvalCommandAllowlistByWorkspaceRoot: parsed.approvalCommandAllowlistByWorkspaceRoot || {},
+          availableModelCatalog: parsed.availableModelCatalog || {
+            models: [],
+            updatedAt: "",
+          },
         };
       }
     } catch {
@@ -104,6 +109,42 @@ class SessionStore {
     });
   }
 
+  getCodexParamsForWorkspace(bindingKey, workspaceRoot) {
+    const normalizedWorkspaceRoot = normalizeValue(workspaceRoot);
+    if (!normalizedWorkspaceRoot) {
+      return { model: "", effort: "" };
+    }
+    const raw = this.state.bindings[bindingKey]?.codexParamsByWorkspaceRoot?.[normalizedWorkspaceRoot];
+    if (!raw || typeof raw !== "object") {
+      return { model: "", effort: "" };
+    }
+    return {
+      model: normalizeValue(raw.model),
+      effort: normalizeValue(raw.effort),
+    };
+  }
+
+  setCodexParamsForWorkspace(bindingKey, workspaceRoot, { model, effort }) {
+    const normalizedWorkspaceRoot = normalizeValue(workspaceRoot);
+    if (!normalizedWorkspaceRoot) {
+      return this.getBinding(bindingKey);
+    }
+
+    const current = this.getBinding(bindingKey) || {};
+    const codexParamsByWorkspaceRoot = {
+      ...getCodexParamsMap(current),
+      [normalizedWorkspaceRoot]: {
+        model: normalizeValue(model),
+        effort: normalizeValue(effort),
+      },
+    };
+
+    return this.updateBinding(bindingKey, {
+      ...current,
+      codexParamsByWorkspaceRoot,
+    });
+  }
+
   getApprovalCommandAllowlistForWorkspace(workspaceRoot) {
     const normalizedWorkspaceRoot = normalizeValue(workspaceRoot);
     if (!normalizedWorkspaceRoot) {
@@ -114,6 +155,36 @@ class SessionStore {
       return [];
     }
     return normalizeCommandAllowlist(allowlist);
+  }
+
+  getAvailableModelCatalog() {
+    const raw = this.state.availableModelCatalog;
+    if (!raw || typeof raw !== "object") {
+      return null;
+    }
+    const models = normalizeModelCatalog(raw.models);
+    if (!models.length) {
+      return null;
+    }
+    const updatedAt = normalizeValue(raw.updatedAt);
+    return {
+      models,
+      updatedAt,
+    };
+  }
+
+  setAvailableModelCatalog(models) {
+    const normalizedModels = normalizeModelCatalog(models);
+    if (!normalizedModels.length) {
+      return null;
+    }
+
+    this.state.availableModelCatalog = {
+      models: normalizedModels,
+      updatedAt: new Date().toISOString(),
+    };
+    this.save();
+    return this.state.availableModelCatalog;
   }
 
   rememberApprovalCommandPrefixForWorkspace(workspaceRoot, commandTokens) {
@@ -148,6 +219,7 @@ class SessionStore {
 
     const current = this.getBinding(bindingKey) || {};
     const threadIdByWorkspaceRoot = getThreadMap(current);
+    const codexParamsByWorkspaceRoot = getCodexParamsMap(current);
     const hasWorkspaceEntry = Object.prototype.hasOwnProperty.call(
       threadIdByWorkspaceRoot,
       normalizedWorkspaceRoot
@@ -158,6 +230,7 @@ class SessionStore {
     }
 
     delete threadIdByWorkspaceRoot[normalizedWorkspaceRoot];
+    delete codexParamsByWorkspaceRoot[normalizedWorkspaceRoot];
 
     const nextActiveWorkspaceRoot = activeWorkspaceRoot === normalizedWorkspaceRoot
       ? (Object.keys(threadIdByWorkspaceRoot).sort((left, right) => left.localeCompare(right))[0] || "")
@@ -166,6 +239,7 @@ class SessionStore {
     return this.updateBinding(bindingKey, {
       ...current,
       activeWorkspaceRoot: nextActiveWorkspaceRoot,
+      codexParamsByWorkspaceRoot,
       threadIdByWorkspaceRoot,
     });
   }
@@ -189,6 +263,7 @@ class SessionStore {
     }
     return `${workspaceId}:${chatId}:sender:${senderId}`;
   }
+
 }
 
 function normalizeValue(value) {
@@ -199,11 +274,19 @@ function createEmptyState() {
   return {
     bindings: {},
     approvalCommandAllowlistByWorkspaceRoot: {},
+    availableModelCatalog: {
+      models: [],
+      updatedAt: "",
+    },
   };
 }
 
 function getThreadMap(binding) {
   return { ...(binding?.threadIdByWorkspaceRoot || {}) };
+}
+
+function getCodexParamsMap(binding) {
+  return { ...(binding?.codexParamsByWorkspaceRoot || {}) };
 }
 
 function normalizeCommandTokens(tokens) {

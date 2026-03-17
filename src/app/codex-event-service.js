@@ -1,4 +1,5 @@
 const codexMessageUtils = require("../infra/codex/message-utils");
+const { formatFailureText } = require("../shared/error-text");
 
 async function handleStopCommand(runtime, normalized) {
   const bindingKey = runtime.sessionStore.buildBindingKey(normalized);
@@ -29,7 +30,7 @@ async function handleStopCommand(runtime, normalized) {
     await runtime.sendInfoCardMessage({
       chatId: normalized.chatId,
       replyToMessageId: normalized.messageId,
-      text: `停止失败: ${error.message}`,
+      text: formatFailureText("停止失败", error),
     });
   }
 }
@@ -115,6 +116,7 @@ async function deliverToFeishu(runtime, event) {
         threadId: event.payload.threadId,
         turnId: event.payload.turnId,
         chatId: event.payload.chatId,
+        text: event.payload.text || "执行失败",
         state: "failed",
       });
     }

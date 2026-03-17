@@ -57,6 +57,19 @@ function mapCodexMessageToImEvent(message) {
   }
 
   if (method === "turn/completed") {
+    const turnStatus = normalizeIdentifier(params?.turn?.status).toLowerCase();
+    const isFailed = turnStatus === "failed" || !!params?.turn?.error || !!params?.error;
+    if (isFailed) {
+      return {
+        type: "im.run_state",
+        payload: {
+          threadId,
+          turnId,
+          state: "failed",
+          text: extractTurnFailureText(params),
+        },
+      };
+    }
     return {
       type: "im.run_state",
       payload: {
@@ -74,6 +87,7 @@ function mapCodexMessageToImEvent(message) {
         threadId,
         turnId,
         state: "failed",
+        text: extractTurnFailureText(params),
       },
     };
   }
@@ -266,6 +280,36 @@ function extractAssistantText(params) {
   }
 
   return "";
+}
+
+function extractTurnFailureText(params) {
+  const errorObj = params?.turn?.error || params?.error || {};
+  const rawMessage = normalizeIdentifier(errorObj?.message);
+  const parsed = parseEmbeddedErrorMessage(rawMessage);
+  const detail = normalizeIdentifier(parsed?.detail || parsed?.message || parsed?.error);
+  if (detail) {
+    return `执行失败：${detail}`;
+  }
+  if (rawMessage) {
+    return `执行失败：${rawMessage}`;
+  }
+  return "执行失败";
+}
+
+function parseEmbeddedErrorMessage(raw) {
+  const message = normalizeIdentifier(raw);
+  if (!message) {
+    return null;
+  }
+  if (!(message.startsWith("{") && message.endsWith("}"))) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(message);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 function extractTrackThreadId(params) {

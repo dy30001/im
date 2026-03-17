@@ -46,9 +46,11 @@ function extractCardAction(data) {
     };
   }
   if (value.kind === "panel") {
+    const selectedValue = extractCardSelectedValue(action, value);
     return {
       kind: value.kind,
       action: value.action || "",
+      selectedValue,
     };
   }
   if (value.kind === "thread") {
@@ -121,6 +123,8 @@ function parseCommand(text) {
     workspace: ["workspace"],
     remove: ["remove"],
     new: ["new"],
+    model: ["model"],
+    effort: ["effort"],
     approve: ["approve", "approve workspace"],
     reject: ["reject"],
   };
@@ -139,6 +143,12 @@ function parseCommand(text) {
   }
   if (matchesPrefixCommand(normalized, "bind")) {
     return "bind";
+  }
+  if (matchesPrefixCommand(normalized, "model")) {
+    return "model";
+  }
+  if (matchesPrefixCommand(normalized, "effort")) {
+    return "effort";
   }
   if (prefixes.some((prefix) => normalized.startsWith(prefix))) {
     return "unknown_command";
@@ -163,6 +173,16 @@ function matchesPrefixCommand(text, command) {
 
 function extractCardChatId(data) {
   return normalizeIdentifier(data?.context?.open_chat_id);
+}
+
+function extractCardSelectedValue(action, value) {
+  if (typeof action?.option?.value === "string" && action.option.value.trim()) {
+    return action.option.value.trim();
+  }
+  if (typeof action?.option === "string" && action.option.trim()) {
+    return action.option.trim();
+  }
+  return typeof value?.selectedValue === "string" ? value.selectedValue.trim() : "";
 }
 
 function normalizeIdentifier(value) {

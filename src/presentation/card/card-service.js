@@ -1,6 +1,7 @@
 const codexMessageUtils = require("../../infra/codex/message-utils");
 const messageNormalizers = require("../message/normalizers");
 const reactionRepo = require("../../infra/feishu/reaction-repo");
+const { formatFailureText } = require("../../shared/error-text");
 const {
   buildApprovalCard,
   buildApprovalResolvedCard,
@@ -81,7 +82,7 @@ async function handleCardAction(runtime, data) {
   const action = messageNormalizers.extractCardAction(data);
   console.log(
     `[codex-im] card callback kind=${action?.kind || "-"} action=${action?.action || "-"} `
-    + `thread=${action?.threadId || "-"} request=${action?.requestId || "-"}`
+    + `thread=${action?.threadId || "-"} request=${action?.requestId || "-"} selected=${action?.selectedValue || "-"}`
   );
   if (!action) {
     runCardActionTask(runtime, sendCardActionFeedback(runtime, data, "无法识别卡片操作。", "error"));
@@ -107,7 +108,7 @@ async function handleCardAction(runtime, data) {
   } catch (error) {
     runCardActionTask(
       runtime,
-      sendCardActionFeedbackByContext(runtime, normalized, `处理失败: ${error.message}`, "error")
+      sendCardActionFeedbackByContext(runtime, normalized, formatFailureText("处理失败", error), "error")
     );
     return buildCardResponse({});
   }

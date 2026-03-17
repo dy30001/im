@@ -1,4 +1,7 @@
 
+const { sanitizeAssistantMarkdown } = require("../../shared/assistant-markdown");
+const { normalizeText, resolveEffectiveModelForEffort } = require("../../shared/model-catalog");
+
 // UI card builders extracted from feishu-bot runtime
 function buildApprovalCard(approval) {
   const requestType = approval?.method && approval.method.includes("command") ? "命令执行" : "敏感操作";
@@ -21,7 +24,7 @@ function buildApprovalCard(approval) {
           tag: "markdown",
           content: [
             `请求类型：${requestType}`,
-            approval.reason ? `原因：${escapeLarkMd(approval.reason)}` : "",
+            approval.reason ? `原因：${escapeCardMarkdown(approval.reason)}` : "",
             commandLine ? `命令：\`${commandLine}\`` : "",
             "请选择处理方式：",
           ].filter(Boolean).join("\n"),
@@ -57,7 +60,7 @@ function buildApprovalCard(approval) {
               elements: [
                 {
                   tag: "button",
-                  text: { tag: "plain_text", content: "工作区允许" },
+                  text: { tag: "plain_text", content: "自动允许" },
                   value: {
                     kind: "approval",
                     decision: "approve",
@@ -91,7 +94,7 @@ function buildApprovalCard(approval) {
         },
         {
           tag: "markdown",
-          content: "`工作区允许` 对当前工作区生效，重启后仍保留。",
+          content: "`自动允许` 对当前项目生效，相同命令自动允许，重启后仍保留。",
           text_size: "notation",
         },
       ],
@@ -130,7 +133,7 @@ function buildAssistantReplyCard({ text, state }) {
         { tag: "hr" },
         {
           tag: "markdown",
-          content: escapeCardMarkdown(content),
+          content: sanitizeAssistantMarkdown(content),
           text_size: "normal",
         },
       ],
@@ -239,6 +242,9 @@ function buildThreadRow({ thread, isCurrent, currentThreadStatusText = "" }) {
 
 function buildStatusPanelCard({
   workspaceRoot,
+  codexParams,
+  modelOptions,
+  effortOptions,
   threadId,
   currentThread,
   recentThreads,
@@ -284,7 +290,7 @@ function buildStatusPanelCard({
         {
           tag: "column",
           width: "weighted",
-          weight: 5,
+          weight: 1,
           vertical_align: "top",
           elements: [
             {
@@ -295,21 +301,33 @@ function buildStatusPanelCard({
             },
           ],
         },
-        {
-          tag: "column",
-          width: "auto",
-          vertical_align: "top",
-          elements: [
-            {
-              tag: "button",
-              text: { tag: "plain_text", content: "新建" },
-              value: buildPanelActionValue("new_thread"),
-            },
-          ],
-        },
       ],
     }
   );
+  elements.push({
+    tag: "column_set",
+    flex_mode: "none",
+    columns: [
+      {
+        tag: "column",
+        width: "weighted",
+        weight: 1,
+        vertical_align: "top",
+        elements: [
+          buildModelSelectElement(codexParams, modelOptions),
+        ],
+      },
+      {
+        tag: "column",
+        width: "weighted",
+        weight: 1,
+        vertical_align: "top",
+        elements: [
+          buildEffortSelectElement(codexParams, effortOptions),
+        ],
+      },
+    ],
+  });
   elements.push({ tag: "hr" });
 
   if (threadRows.length) {
@@ -338,33 +356,21 @@ function buildStatusPanelCard({
 
   const footerColumns = [];
   if (shouldShowAllThreadsButton) {
-    footerColumns.push({
-      tag: "column",
-      width: "weighted",
-      weight: 1,
-      elements: [
-        {
-          tag: "button",
-          text: { tag: "plain_text", content: "全部线程" },
-          value: buildPanelActionValue("open_threads"),
-        },
-      ],
-    });
+    footerColumns.push(buildFooterButtonColumn({
+      text: "全部线程",
+      value: buildPanelActionValue("open_threads"),
+    }));
   }
+  footerColumns.push(buildFooterButtonColumn({
+    text: "新建",
+    value: buildPanelActionValue("new_thread"),
+  }));
   if (isRunning) {
-    footerColumns.push({
-      tag: "column",
-      width: "weighted",
-      weight: 1,
-      elements: [
-        {
-          tag: "button",
-          text: { tag: "plain_text", content: "停止" },
-          type: "danger",
-          value: buildPanelActionValue("stop"),
-        },
-      ],
-    });
+    footerColumns.push(buildFooterButtonColumn({
+      text: "停止",
+      value: buildPanelActionValue("stop"),
+      type: "danger",
+    }));
   }
   if (footerColumns.length) {
     elements.push(
@@ -481,6 +487,19 @@ function buildHelpCardText() {
       "**中断运行**",
       "`/codex stop`",
       "停止当前线程里正在执行的任务。",
+    ],
+    [
+      "**设置模型**",
+      "`/codex model`",
+      "`/codex model update`",
+      "`/codex model <modelId>`",
+      "查看/设置当前项目的模型覆盖。",
+    ],
+    [
+      "**设置推理强度**",
+      "`/codex effort`",
+      "`/codex effort <low|medium|high|xhigh>`",
+      "查看/设置当前项目的推理强度覆盖。",
     ],
     [
       "**审批命令**",
@@ -652,8 +671,8 @@ function buildThreadMessagesSummary({ workspaceRoot, thread, recentMessages }) {
 
   const normalizedTranscript = recentMessages.map((message) => (
     message.role === "user"
-      ? `😄 **你**\n> ${escapeCardMarkdown(message.text).replace(/\n/g, "\n> ")}`
-      : `🤖 <font color='blue'>**Codex**</font>\n> ${escapeCardMarkdown(message.text).replace(/\n/g, "\n> ")}`
+      ? `😄 **你**\n> ${sanitizeAssistantMarkdown(message.text).replace(/\n/g, "\n> ")}`
+      : `🤖 <font color='blue'>**Codex**</font>\n> ${sanitizeAssistantMarkdown(message.text).replace(/\n/g, "\n> ")}`
   ));
   sections.push(normalizedTranscript.join("\n\n---\n\n"));
   return sections.join("\n\n");
@@ -697,7 +716,7 @@ function buildApprovalResolvedCard(approval) {
         {
           tag: "markdown",
           content: [
-            approval.reason ? `原因：${escapeLarkMd(approval.reason)}` : "",
+            approval.reason ? `原因：${escapeCardMarkdown(approval.reason)}` : "",
             commandLine ? `命令：\`${commandLine}\`` : "",
           ].filter(Boolean).join("\n"),
           text_size: "normal",
@@ -749,6 +768,95 @@ function buildPanelActionValue(action) {
     kind: "panel",
     action,
   };
+}
+
+function buildFooterButtonColumn({ text, value, type = "" }) {
+  const button = {
+    tag: "button",
+    text: { tag: "plain_text", content: text },
+    value,
+  };
+  if (type) {
+    button.type = type;
+  }
+  return {
+    tag: "column",
+    width: "auto",
+    elements: [button],
+  };
+}
+
+function buildModelSelectElement(codexParams, modelOptions) {
+  const options = normalizeSelectOptions(modelOptions);
+  if (!options.length) {
+    return {
+      tag: "markdown",
+      content: "暂无可用模型（等待启动同步或执行 `/codex model update`）",
+      text_size: "notation",
+    };
+  }
+  const selectedValue = String(codexParams?.model || "").trim();
+  const initialOption = findOptionByValue(options, selectedValue);
+  return {
+    tag: "select_static",
+    placeholder: {
+      tag: "plain_text",
+      content: `选择模型（当前：${formatCodexParam(codexParams?.model)}）`,
+    },
+    options,
+    initial_option: initialOption?.value || undefined,
+    value: buildPanelActionValue("set_model"),
+  };
+}
+
+function buildEffortSelectElement(codexParams, effortOptions) {
+  const options = normalizeSelectOptions(effortOptions);
+  if (!options.length) {
+    return {
+      tag: "markdown",
+      content: "当前模型没有可用推理强度",
+      text_size: "notation",
+    };
+  }
+  const selectedValue = String(codexParams?.effort || "").trim();
+  const initialOption = findOptionByValue(options, selectedValue);
+  return {
+    tag: "select_static",
+    placeholder: {
+      tag: "plain_text",
+      content: `选择推理强度（当前：${formatCodexParam(codexParams?.effort)}）`,
+    },
+    options,
+    initial_option: initialOption?.value || undefined,
+    value: buildPanelActionValue("set_effort"),
+  };
+}
+
+function normalizeSelectOptions(input) {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+  const options = [];
+  for (const item of input) {
+    const label = truncateDisplayText(String(item?.label || item?.value || "").trim(), 60);
+    const value = String(item?.value || "").trim();
+    if (!label || !value) {
+      continue;
+    }
+    options.push({
+      text: { tag: "plain_text", content: label },
+      value,
+    });
+  }
+  return options.slice(0, 100);
+}
+
+function findOptionByValue(options, selectedValue) {
+  const normalized = String(selectedValue || "").trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+  return options.find((option) => String(option?.value || "").trim().toLowerCase() === normalized) || null;
 }
 
 function buildThreadActionValue(action, threadId) {
@@ -811,11 +919,8 @@ function buildCardResponse({ toast, card }) {
   return response;
 }
 
-function escapeCardMarkdown(text) {
-  return escapeLarkMd(text);
-}
 
-function escapeLarkMd(text) {
+function escapeCardMarkdown(text) {
   const input = String(text || "");
   return input
     .replace(/\\/g, "\\\\")
@@ -826,6 +931,215 @@ function normalizeIdentifier(value) {
   return typeof value === "string" && value.trim() ? value.trim() : "";
 }
 
+function formatCodexParam(value) {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return normalized || "默认";
+}
+
+function buildModelInfoText(workspaceRoot, current, availableModelsResult) {
+  const model = current?.model || "默认";
+  const effort = current?.effort || "默认";
+  const modelLines = buildAvailableModelLines(availableModelsResult, { limit: 10 });
+  const canLoadModels = !availableModelsResult?.error;
+  return [
+    `当前项目：\`${workspaceRoot}\``,
+    `模型：${model}`,
+    `推理强度：${effort}`,
+    "",
+    ...modelLines,
+    "",
+    "用法：",
+    "`/codex model`",
+    "`/codex model update`",
+    "`/codex model <modelId>`",
+    canLoadModels ? "" : "提示：当前无法拉取模型列表，设置模型会被拒绝。",
+  ].join("\n");
+}
+
+function buildEffortInfoText(workspaceRoot, current, availableModelsResult) {
+  const model = current?.model || "默认";
+  const effort = current?.effort || "默认";
+  const effectiveModel = resolveEffectiveModelForEffort(
+    availableModelsResult?.models || [],
+    current?.model || ""
+  );
+  const effortLines = buildAvailableEffortLines(effectiveModel, availableModelsResult);
+  return [
+    `当前项目：\`${workspaceRoot}\``,
+    `模型：${model}`,
+    `推理强度：${effort}`,
+    "",
+    ...effortLines,
+    "",
+    "用法：",
+    "`/codex effort`",
+    "`/codex model update`",
+    "`/codex effort <low|medium|high|xhigh>`",
+  ].join("\n");
+}
+
+function buildModelListText(workspaceRoot, availableModelsResult, { refreshed = false } = {}) {
+  const cacheMeta = buildCacheMetaLine(availableModelsResult, { refreshed });
+  const lines = [
+    `当前项目：\`${workspaceRoot}\``,
+    cacheMeta,
+    "",
+    "**可用模型**",
+  ];
+  lines.push(...buildAvailableModelLines(availableModelsResult, { limit: 60 }));
+  lines.push("", "用法：", "`/codex model update`", "`/codex model <modelId>`");
+  return lines.join("\n");
+}
+
+function buildModelValidationErrorText(workspaceRoot, rawModel, models) {
+  const suggestions = suggestModels(models, rawModel, 3);
+  const lines = [
+    `当前项目：\`${workspaceRoot}\``,
+    "",
+    `未找到可用模型：\`${normalizeText(rawModel)}\``,
+  ];
+  if (suggestions.length) {
+    lines.push("", "你可能想设置：");
+    for (const item of suggestions) {
+      lines.push(`- \`${item.model}\``);
+    }
+  }
+  lines.push("", "请执行 `/codex model` 查看可用模型。");
+  return lines.join("\n");
+}
+
+function buildEffortListText(workspaceRoot, current, availableModelsResult, { refreshed = false } = {}) {
+  const effectiveModel = resolveEffectiveModelForEffort(
+    availableModelsResult?.models || [],
+    current?.model || ""
+  );
+  const cacheMeta = buildCacheMetaLine(availableModelsResult, { refreshed });
+  const lines = [
+    `当前项目：\`${workspaceRoot}\``,
+    cacheMeta,
+    `当前模型：\`${effectiveModel?.model || current?.model || "默认"}\``,
+    "",
+    "**可用推理强度**",
+    ...buildAvailableEffortLines(effectiveModel, availableModelsResult),
+    "",
+    "用法：",
+    "`/codex effort`",
+    "`/codex model update`",
+    "`/codex effort <low|medium|high|xhigh>`",
+  ];
+  return lines.join("\n");
+}
+
+function buildEffortValidationErrorText(workspaceRoot, modelEntry, rawEffort) {
+  const supportedLines = buildAvailableEffortLines(modelEntry, { models: [modelEntry], error: "" });
+  return [
+    `当前项目：\`${workspaceRoot}\``,
+    `当前模型：\`${modelEntry?.model || "未知"}\``,
+    "",
+    `该模型不支持推理强度：\`${normalizeText(rawEffort)}\``,
+    "",
+    "可用推理强度：",
+    ...supportedLines,
+    "",
+    "请执行 `/codex effort` 查看可用推理强度。",
+  ].join("\n");
+}
+
+function buildAvailableModelLines(availableModelsResult, { limit = 10 } = {}) {
+  if (availableModelsResult?.error) {
+    return [`获取可用模型失败：${availableModelsResult.error}`];
+  }
+  const models = Array.isArray(availableModelsResult?.models) ? availableModelsResult.models : [];
+  if (!models.length) {
+    return ["暂无可用模型。"];
+  }
+
+  const lines = [`共 ${models.length} 个模型：`];
+  const display = models.slice(0, Math.max(1, limit));
+  for (const item of display) {
+    lines.push(`- \`${item.model}\``);
+  }
+  if (models.length > display.length) {
+    lines.push(`- ... 还有 ${models.length - display.length} 个，执行 \`/codex model\` 查看全部`);
+  }
+  return lines;
+}
+
+function buildAvailableEffortLines(effectiveModel, availableModelsResult) {
+  if (availableModelsResult?.error) {
+    return [`获取可用推理强度失败：${availableModelsResult.error}`];
+  }
+  if (!effectiveModel) {
+    return ["暂无可用推理强度（未解析到可用模型）。"];
+  }
+  const supported = Array.isArray(effectiveModel.supportedReasoningEfforts)
+    ? effectiveModel.supportedReasoningEfforts
+    : [];
+  if (supported.length) {
+    return supported.map((effort) => `- \`${effort}\``);
+  }
+  const defaultEffort = normalizeText(effectiveModel.defaultReasoningEffort);
+  if (defaultEffort) {
+    return [`- \`${defaultEffort}\``];
+  }
+  return ["该模型未声明可用推理强度。"];
+}
+
+function buildCacheMetaLine(availableModelsResult, { refreshed = false } = {}) {
+  const source = availableModelsResult?.source || "";
+  const updatedAt = normalizeText(availableModelsResult?.updatedAt);
+  const warning = normalizeText(availableModelsResult?.warning);
+  let sourceLabel = "来源：未知";
+  if (source === "cache") {
+    sourceLabel = "来源：本地缓存";
+  } else if (source === "live") {
+    sourceLabel = "来源：实时拉取";
+  } else if (source === "refresh") {
+    sourceLabel = "来源：强制刷新";
+  }
+  const timeLabel = updatedAt ? `，更新时间：${updatedAt}` : "";
+  const refreshLabel = refreshed ? "（已执行刷新）" : "";
+  const warningLabel = warning ? `\n提示：${warning}` : "";
+  return `${sourceLabel}${timeLabel}${refreshLabel}${warningLabel}`;
+}
+
+function suggestModels(models, rawInput, limit = 3) {
+  const query = normalizeText(rawInput).toLowerCase();
+  if (!query) {
+    return models.slice(0, limit);
+  }
+  const startsWith = [];
+  const includes = [];
+  for (const item of models) {
+    const model = normalizeText(item.model).toLowerCase();
+    const id = normalizeText(item.id).toLowerCase();
+    if (model.startsWith(query) || id.startsWith(query)) {
+      startsWith.push(item);
+      continue;
+    }
+    if (model.includes(query) || id.includes(query)) {
+      includes.push(item);
+    }
+  }
+  const merged = [...startsWith, ...includes];
+  if (merged.length >= limit) {
+    return merged.slice(0, limit);
+  }
+  const seen = new Set(merged.map((item) => normalizeText(item.model).toLowerCase()));
+  for (const item of models) {
+    const key = normalizeText(item.model).toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+    merged.push(item);
+    seen.add(key);
+    if (merged.length >= limit) {
+      break;
+    }
+  }
+  return merged;
+}
+
 module.exports = {
   buildApprovalCard,
   buildApprovalResolvedCard,
@@ -834,7 +1148,13 @@ module.exports = {
   buildCardToast,
   buildHelpCardText,
   buildInfoCard,
+  buildModelInfoText,
+  buildModelListText,
+  buildModelValidationErrorText,
   buildStatusPanelCard,
+  buildEffortInfoText,
+  buildEffortListText,
+  buildEffortValidationErrorText,
   buildThreadMessagesSummary,
   buildThreadPickerCard,
   buildWorkspaceBindingsCard,

@@ -1,4 +1,9 @@
 const { normalizeWorkspacePath } = require("../shared/workspace-paths");
+const {
+  PANEL_ACTION_CONFIG,
+  THREAD_ACTION_CONFIG,
+  WORKSPACE_ACTION_CONFIG,
+} = require("./card-action-config");
 
 const TEXT_COMMAND_HANDLER_METHODS = {
   stop: "handleStopCommand",
@@ -11,6 +16,8 @@ const TEXT_COMMAND_HANDLER_METHODS = {
   switch: "handleSwitchCommand",
   remove: "handleRemoveCommand",
   new: "handleNewCommand",
+  model: "handleModelCommand",
+  effort: "handleEffortCommand",
   approve: "handleApprovalCommand",
   reject: "handleApprovalCommand",
 };
@@ -23,34 +30,36 @@ const CARD_ACTION_KIND_METHODS = {
 
 const PANEL_CARD_ACTIONS = {
   open_threads: {
-    feedback: "正在打开线程列表...",
+    feedback: PANEL_ACTION_CONFIG.open_threads.feedback,
     run: (runtime, normalized) => runtime.showThreadPicker(normalized, { replyToMessageId: normalized.messageId }),
   },
   new_thread: {
-    feedback: "正在创建新线程...",
+    feedback: PANEL_ACTION_CONFIG.new_thread.feedback,
     run: (runtime, normalized) => runtime.handleNewCommand(normalized),
   },
   show_messages: {
-    feedback: "正在获取最近消息...",
+    feedback: PANEL_ACTION_CONFIG.show_messages.feedback,
     run: (runtime, normalized) => runtime.handleMessageCommand(normalized),
   },
   stop: {
-    feedback: "正在发送停止请求...",
+    feedback: PANEL_ACTION_CONFIG.stop.feedback,
     run: (runtime, normalized) => runtime.handleStopCommand(normalized),
   },
   status: {
-    feedback: "正在刷新状态...",
+    feedback: PANEL_ACTION_CONFIG.status.feedback,
     run: (runtime, normalized) => runtime.showStatusPanel(normalized, { replyToMessageId: normalized.messageId }),
   },
+  set_model: buildPanelSelectAction(PANEL_ACTION_CONFIG.set_model),
+  set_effort: buildPanelSelectAction(PANEL_ACTION_CONFIG.set_effort),
 };
 
 const THREAD_CARD_ACTIONS = {
   switch: {
-    feedback: "正在切换线程...",
+    feedback: THREAD_ACTION_CONFIG.switch.feedback,
     validate: (runtime, normalized, action) => {
       const { threadId: currentThreadId } = runtime.getCurrentThreadContext(normalized);
       if (currentThreadId && currentThreadId === action.threadId) {
-        return { text: "已经是当前线程，无需切换。", kind: "info" };
+        return { text: THREAD_ACTION_CONFIG.switch.alreadyCurrentText, kind: "info" };
       }
       return null;
     },
@@ -59,11 +68,11 @@ const THREAD_CARD_ACTIONS = {
     ),
   },
   messages: {
-    feedback: "正在获取最近消息...",
+    feedback: THREAD_ACTION_CONFIG.messages.feedback,
     validate: (runtime, normalized, action) => {
       const { threadId: currentThreadId } = runtime.getCurrentThreadContext(normalized);
       if (!currentThreadId || currentThreadId !== action.threadId) {
-        return { text: "非当前线程，请先切换到该线程。", kind: "error" };
+        return { text: THREAD_ACTION_CONFIG.messages.notCurrentText, kind: "error" };
       }
       return null;
     },
@@ -73,22 +82,22 @@ const THREAD_CARD_ACTIONS = {
 
 const WORKSPACE_CARD_ACTIONS = {
   status: {
-    feedback: "正在查看线程列表...",
+    feedback: WORKSPACE_ACTION_CONFIG.status.feedback,
     run: (runtime, normalized) => runtime.showStatusPanel(normalized, { replyToMessageId: normalized.messageId }),
   },
   remove: {
-    feedback: "正在移除项目...",
+    feedback: WORKSPACE_ACTION_CONFIG.remove.feedback,
     run: (runtime, normalized, action) => (
       runtime.removeWorkspaceByPath(normalized, action.workspaceRoot, { replyToMessageId: normalized.messageId })
     ),
   },
   switch: {
-    feedback: "正在切换项目...",
+    feedback: WORKSPACE_ACTION_CONFIG.switch.feedback,
     validate: (runtime, normalized, action) => {
       const { workspaceRoot: currentWorkspaceRoot } = runtime.getBindingContext(normalized);
       const targetWorkspaceRoot = normalizeWorkspacePath(action.workspaceRoot);
       if (currentWorkspaceRoot && targetWorkspaceRoot && currentWorkspaceRoot === targetWorkspaceRoot) {
-        return { text: "已经是当前项目，无需切换。", kind: "info" };
+        return { text: WORKSPACE_ACTION_CONFIG.switch.alreadyCurrentText, kind: "info" };
       }
       return null;
     },
@@ -151,6 +160,48 @@ function executeMappedCardAction(runtime, normalized, action, actionMap) {
     handler.feedback,
     () => handler.run(runtime, normalized, action)
   );
+}
+
+async function runCodexCommandFromCard(runtime, normalized, command, value) {
+  const normalizedValue = String(value || "").trim();
+  if (!normalizedValue) {
+    return;
+  }
+  const synthetic = {
+    ...normalized,
+    text: `/codex ${command} ${normalizedValue}`,
+    command,
+  };
+  if (command === "model") {
+    await runtime.handleModelCommand(synthetic);
+    return;
+  }
+  if (command === "effort") {
+    await runtime.handleEffortCommand(synthetic);
+  }
+}
+
+function buildPanelSelectAction({ command, feedback, missingValueText }) {
+  return {
+    feedback,
+    validate: (_runtime, _normalized, action) => {
+      if (!action.selectedValue) {
+        console.warn(`[codex-im] panel ${command} missing selectedValue`, {
+          actionKind: action.kind,
+          actionName: action.action,
+          selectedValue: action.selectedValue || "",
+        });
+        return { text: missingValueText, kind: "error" };
+      }
+      return null;
+    },
+    run: (runtime, normalized, action) => runCodexCommandFromCard(
+      runtime,
+      normalized,
+      command,
+      action.selectedValue
+    ),
+  };
 }
 
 module.exports = {

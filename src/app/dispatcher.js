@@ -1,5 +1,6 @@
 const messageNormalizers = require("../presentation/message/normalizers");
 const eventsRuntime = require("./codex-event-service");
+const { formatFailureText } = require("../shared/error-text");
 
 async function onFeishuTextEvent(runtime, event) {
   const normalized = messageNormalizers.normalizeFeishuTextEvent(event, runtime.config);
@@ -46,7 +47,7 @@ async function onFeishuTextEvent(runtime, event) {
     await runtime.sendInfoCardMessage({
       chatId: normalized.chatId,
       replyToMessageId: normalized.messageId,
-      text: `处理失败: ${error.message}`,
+      text: formatFailureText("处理失败", error),
     });
     throw error;
   }
@@ -57,7 +58,7 @@ async function onFeishuCardAction(runtime, data) {
     return await runtime.handleCardAction(data);
   } catch (error) {
     console.error(`[codex-im] failed to process card action: ${error.message}`);
-    return runtime.buildCardToast(`处理失败: ${error.message}`);
+    return runtime.buildCardToast(formatFailureText("处理失败", error));
   }
 }
 

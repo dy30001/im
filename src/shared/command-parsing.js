@@ -10,6 +10,14 @@ function extractRemoveWorkspacePath(text) {
   return extractCommandArgument(text, "/codex remove ");
 }
 
+function extractModelValue(text) {
+  return extractCommandArgument(text, "/codex model ");
+}
+
+function extractEffortValue(text) {
+  return extractCommandArgument(text, "/codex effort ");
+}
+
 function extractCommandArgument(text, prefix) {
   const trimmed = String(text || "").trim();
   const normalizedPrefix = String(prefix || "").toLowerCase();
@@ -21,6 +29,8 @@ function extractCommandArgument(text, prefix) {
 
 module.exports = {
   extractBindPath,
+  extractEffortValue,
+  extractModelValue,
   extractRemoveWorkspacePath,
   extractSwitchThreadId,
 };

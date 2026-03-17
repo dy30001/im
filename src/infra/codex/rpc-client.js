@@ -139,10 +139,10 @@ class CodexRpcClient {
     this.isReady = true;
   }
 
-  async sendUserMessage({ threadId, text }) {
+  async sendUserMessage({ threadId, text, model = null, effort = null }) {
     const input = buildTurnInputPayload(text);
     return threadId
-      ? this.sendRequest("turn/start", { threadId, input })
+      ? this.sendRequest("turn/start", buildTurnStartParams({ threadId, input, model, effort }))
       : this.sendRequest("thread/start", { input });
   }
 
@@ -164,6 +164,10 @@ class CodexRpcClient {
       limit,
       sortKey,
     }));
+  }
+
+  async listModels() {
+    return this.sendRequest("model/list", {});
   }
 
   async sendRequest(method, params) {
@@ -337,6 +341,19 @@ function buildTurnInputPayload(text) {
   }
 
   return items;
+}
+
+function buildTurnStartParams({ threadId, input, model, effort }) {
+  const params = { threadId, input };
+  const normalizedModel = normalizeNonEmptyString(model);
+  const normalizedEffort = normalizeNonEmptyString(effort);
+  if (normalizedModel) {
+    params.model = normalizedModel;
+  }
+  if (normalizedEffort) {
+    params.effort = normalizedEffort;
+  }
+  return params;
 }
 
 module.exports = { CodexRpcClient };
