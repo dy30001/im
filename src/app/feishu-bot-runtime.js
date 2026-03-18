@@ -268,6 +268,7 @@ function attachRuntimeForwarders() {
     handleNewCommand: threadRuntime.handleNewCommand,
     handleSwitchCommand: threadRuntime.handleSwitchCommand,
     handleRemoveCommand: workspaceRuntime.handleRemoveCommand,
+    handleSendCommand: workspaceRuntime.handleSendCommand,
     handleModelCommand: workspaceRuntime.handleModelCommand,
     handleEffortCommand: workspaceRuntime.handleEffortCommand,
     refreshWorkspaceThreads: threadRuntime.refreshWorkspaceThreads,
@@ -315,6 +316,10 @@ function attachRuntimeForwarders() {
 }
 
 attachRuntimeForwarders();
+
+FeishuBotRuntime.prototype.sendFileMessage = function sendFileMessage(args) {
+  return this.requireFeishuAdapter().sendFileMessage(args);
+};
 
 function maskSecret(value) {
   if (!value) {

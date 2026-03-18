@@ -10,6 +10,10 @@ function extractRemoveWorkspacePath(text) {
   return extractCommandArgument(text, "/codex remove ");
 }
 
+function extractSendPath(text) {
+  return extractCommandArgument(text, "/codex send ");
+}
+
 function extractModelValue(text) {
   return extractCommandArgument(text, "/codex model ");
 }
@@ -32,5 +36,6 @@ module.exports = {
   extractEffortValue,
   extractModelValue,
   extractRemoveWorkspacePath,
+  extractSendPath,
   extractSwitchThreadId,
 };

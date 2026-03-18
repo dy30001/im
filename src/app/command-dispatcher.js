@@ -15,6 +15,7 @@ const TEXT_COMMAND_HANDLER_METHODS = {
   workspace: "handleWorkspacesCommand",
   switch: "handleSwitchCommand",
   remove: "handleRemoveCommand",
+  send: "handleSendCommand",
   new: "handleNewCommand",
   model: "handleModelCommand",
   effort: "handleEffortCommand",
