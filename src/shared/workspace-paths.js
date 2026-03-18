@@ -119,4 +119,5 @@ module.exports = {
   isAbsoluteWorkspacePath,
   isWorkspaceAllowed,
   normalizeWorkspacePath,
+  pathMatchesWorkspaceRoot,
 };

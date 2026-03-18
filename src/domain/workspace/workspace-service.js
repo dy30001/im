@@ -1,13 +1,17 @@
+const fs = require("fs");
+const path = require("path");
 const {
   isAbsoluteWorkspacePath,
   isWorkspaceAllowed,
   normalizeWorkspacePath,
+  pathMatchesWorkspaceRoot,
 } = require("../../shared/workspace-paths");
 const {
   extractBindPath,
   extractEffortValue,
   extractModelValue,
   extractRemoveWorkspacePath,
+  extractSendPath,
 } = require("../../shared/command-parsing");
 const {
   extractModelCatalogFromListResponse,
@@ -16,6 +20,9 @@ const {
   resolveEffectiveModelForEffort,
 } = require("../../shared/model-catalog");
 const codexMessageUtils = require("../../infra/codex/message-utils");
+const { formatFailureText } = require("../../shared/error-text");
+
+const MAX_FEISHU_UPLOAD_FILE_BYTES = 30 * 1024 * 1024;
 
 async function resolveWorkspaceContext(
   runtime,
@@ -200,6 +207,98 @@ async function handleUnknownCommand(runtime, normalized) {
     replyToMessageId: normalized.messageId,
     text: "无效的 Codex 命令。\n\n可使用 `/codex help` 查看命令教程。",
   });
+}
+
+async function handleSendCommand(runtime, normalized) {
+  const workspaceContext = await resolveWorkspaceContext(runtime, normalized, {
+    replyToMessageId: normalized.messageId,
+  });
+  if (!workspaceContext) {
+    return;
+  }
+  const { workspaceRoot } = workspaceContext;
+
+  const requestedPath = extractSendPath(normalized.text);
+  if (!requestedPath) {
+    await runtime.sendInfoCardMessage({
+      chatId: normalized.chatId,
+      replyToMessageId: normalized.messageId,
+      text: "用法: `/codex send <当前项目下的相对文件路径>`",
+    });
+    return;
+  }
+
+  const resolvedTarget = resolveWorkspaceSendTarget(workspaceRoot, requestedPath);
+  if (resolvedTarget.errorText) {
+    await runtime.sendInfoCardMessage({
+      chatId: normalized.chatId,
+      replyToMessageId: normalized.messageId,
+      text: resolvedTarget.errorText,
+    });
+    return;
+  }
+
+  let fileStats;
+  try {
+    fileStats = await fs.promises.stat(resolvedTarget.filePath);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      await runtime.sendInfoCardMessage({
+        chatId: normalized.chatId,
+        replyToMessageId: normalized.messageId,
+        text: `文件不存在: ${resolvedTarget.displayPath}`,
+      });
+      return;
+    }
+    throw error;
+  }
+
+  if (!fileStats.isFile()) {
+    await runtime.sendInfoCardMessage({
+      chatId: normalized.chatId,
+      replyToMessageId: normalized.messageId,
+      text: `只支持发送文件，不支持目录: ${resolvedTarget.displayPath}`,
+    });
+    return;
+  }
+
+  if (fileStats.size <= 0) {
+    await runtime.sendInfoCardMessage({
+      chatId: normalized.chatId,
+      replyToMessageId: normalized.messageId,
+      text: `文件为空，无法发送: ${resolvedTarget.displayPath}`,
+    });
+    return;
+  }
+
+  if (fileStats.size > MAX_FEISHU_UPLOAD_FILE_BYTES) {
+    await runtime.sendInfoCardMessage({
+      chatId: normalized.chatId,
+      replyToMessageId: normalized.messageId,
+      text: `文件过大，飞书当前只支持发送 30MB 以内文件: ${resolvedTarget.displayPath}`,
+    });
+    return;
+  }
+
+  try {
+    const fileBuffer = await fs.promises.readFile(resolvedTarget.filePath);
+    await runtime.sendFileMessage({
+      chatId: normalized.chatId,
+      replyToMessageId: normalized.messageId,
+      fileName: path.basename(resolvedTarget.filePath),
+      fileBuffer,
+    });
+    console.log(`[codex-im] file/send ok workspace=${workspaceRoot} path=${resolvedTarget.displayPath}`);
+  } catch (error) {
+    console.warn(
+      `[codex-im] file/send failed workspace=${workspaceRoot} path=${resolvedTarget.displayPath}: ${error.message}`
+    );
+    await runtime.sendInfoCardMessage({
+      chatId: normalized.chatId,
+      replyToMessageId: normalized.messageId,
+      text: formatFailureText("发送文件失败", error),
+    });
+  }
 }
 
 async function handleModelCommand(runtime, normalized) {
@@ -497,6 +596,7 @@ module.exports = {
   handleMessageCommand,
   handleModelCommand,
   handleRemoveCommand,
+  handleSendCommand,
   handleUnknownCommand,
   handleWhereCommand,
   handleWorkspacesCommand,
@@ -507,6 +607,27 @@ module.exports = {
   switchWorkspaceByPath,
   validateDefaultCodexParamsConfig,
 };
+
+function resolveWorkspaceSendTarget(workspaceRoot, requestedPath) {
+  const normalizedInput = normalizeWorkspacePath(requestedPath);
+  if (!normalizedInput) {
+    return { errorText: "用法: `/codex send <当前项目下的相对文件路径>`" };
+  }
+  if (isAbsoluteWorkspacePath(normalizedInput)) {
+    return { errorText: "只支持当前项目下的相对路径，不支持绝对路径。" };
+  }
+
+  const filePath = path.resolve(workspaceRoot, requestedPath);
+  const normalizedResolvedPath = normalizeWorkspacePath(filePath);
+  if (!pathMatchesWorkspaceRoot(normalizedResolvedPath, workspaceRoot)) {
+    return { errorText: "文件路径超出了当前项目根目录。" };
+  }
+
+  return {
+    filePath,
+    displayPath: normalizeWorkspacePath(path.relative(workspaceRoot, filePath)) || path.basename(filePath),
+  };
+}
 
 function parseUpdateDirective(value) {
   const normalized = String(value || "").trim().toLowerCase().replace(/\s+/g, " ");

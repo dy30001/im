@@ -19,6 +19,7 @@ Codex 操作都留在 本地，飞书只负责消息交互。
 - `/codex where` 查看当前项目/线程
 - `/codex workspace` 查看当前会话已记录项目和线程
 - `/codex remove /绝对路径` 移除会话绑定项目
+- `/codex send <相对文件路径>` 发送当前绑定项目内的文件
 - `/codex switch <threadId>` 切换线程
 - `/codex message` 查看最近几轮消息
 - `/codex new` 新建线程
@@ -102,6 +103,7 @@ npm run feishu-bot
 - `/codex where`
 - `/codex workspace`
 - `/codex remove /绝对路径`
+- `/codex send <相对文件路径>`
 - `/codex switch <threadId>`
 - `/codex message`
 - `/codex new`
@@ -165,6 +167,7 @@ npm run feishu-bot
 | 读取用户发给机器人的单聊消息 | `im:message.p2p_msg:readonly` |
 | 以应用身份发消息 | `im:message:send_as_bot` |
 | 发送删除表情回复 | `im:message.reactions:write_only` |
+| 获取与上传图片或文件资源 | `im:resource` |
 
 
 

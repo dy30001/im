@@ -122,6 +122,7 @@ function parseCommand(text) {
     help: ["help"],
     workspace: ["workspace"],
     remove: ["remove"],
+    send: ["send"],
     new: ["new"],
     model: ["model"],
     effort: ["effort"],
@@ -140,6 +141,9 @@ function parseCommand(text) {
   }
   if (matchesPrefixCommand(normalized, "remove")) {
     return "remove";
+  }
+  if (matchesPrefixCommand(normalized, "send")) {
+    return "send";
   }
   if (matchesPrefixCommand(normalized, "bind")) {
     return "bind";
