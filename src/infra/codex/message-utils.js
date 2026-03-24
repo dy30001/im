@@ -240,6 +240,18 @@ function extractRecentConversationFromResumeResponse(response, turnLimit = 3) {
   return dedupeRecentConversationMessages(messages).slice(-6);
 }
 
+function buildRecentConversationSignature(recentMessages) {
+  if (!Array.isArray(recentMessages) || recentMessages.length === 0) {
+    return "";
+  }
+
+  const normalized = recentMessages.map((message) => ({
+    role: normalizeIdentifier(message?.role),
+    text: normalizeIdentifier(message?.text),
+  }));
+  return JSON.stringify(normalized);
+}
+
 function eventShouldClearPendingReaction(event) {
   if (!event || typeof event !== "object") {
     return false;
@@ -584,6 +596,7 @@ function extractTextFromContent(content) {
 }
 
 module.exports = {
+  buildRecentConversationSignature,
   buildApprovalResponsePayload,
   buildBindingMetadata,
   buildRunKey,

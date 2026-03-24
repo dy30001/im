@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { buildThreadPickerCard } = require("../src/presentation/card/builders");
+const { buildThreadPickerCard, buildThreadPickerText } = require("../src/presentation/card/builders");
 const { normalizeFeishuTextEvent, extractCardAction } = require("../src/presentation/message/normalizers");
 const { showThreadPicker } = require("../src/domain/workspace/workspace-service");
 
@@ -155,4 +155,36 @@ test("showThreadPicker renders cached threads when refresh falls back", async ()
 
   assert.equal(cards.length, 1);
   assert.match(JSON.stringify(cards[0].card), /最近一次成功结果/);
+});
+
+test("showThreadPicker uses a text summary for providers without interactive cards", async () => {
+  const infoMessages = [];
+  const runtime = {
+    resolveReplyToMessageId: (_normalized, replyToMessageId = "") => replyToMessageId || "reply-1",
+    getBindingContext: () => ({ bindingKey: "binding-1", workspaceRoot: "/repo" }),
+    refreshWorkspaceThreads: async () => [
+      { id: "thread-1", title: "Desktop Thread", updatedAt: 1, cwd: "/repo" },
+    ],
+    getWorkspaceThreadRefreshState: () => ({ ok: true, fromCache: false, error: "" }),
+    resolveThreadIdForBinding: () => "thread-1",
+    buildThreadPickerCard,
+    buildThreadPickerText,
+    supportsInteractiveCards: () => false,
+    sendInteractiveCard: async () => {
+      throw new Error("should not render interactive cards");
+    },
+    sendInfoCardMessage: async (payload) => {
+      infoMessages.push(payload);
+    },
+  };
+  const normalized = {
+    chatId: "chat-1",
+    messageId: "msg-1",
+  };
+
+  await showThreadPicker(runtime, normalized, { replyToMessageId: "reply-1", page: 0 });
+
+  assert.equal(infoMessages.length, 1);
+  assert.match(infoMessages[0].text, /thread-1/);
+  assert.match(infoMessages[0].text, /\/codex switch <threadId>/);
 });

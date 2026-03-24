@@ -14,6 +14,8 @@ const {
   buildStatusPanelCard,
   buildThreadMessagesSummary,
   buildThreadPickerCard,
+  buildThreadPickerText,
+  buildThreadSyncText,
   buildWorkspaceBrowserCard,
   buildWorkspaceBindingsCard,
   listBoundWorkspaces,
@@ -53,10 +55,12 @@ const workspaceRuntime = require("../domain/workspace/workspace-service");
 const eventsRuntime = require("./codex-event-service");
 const approvalPolicyRuntime = require("../domain/approval/approval-policy");
 const appDispatcher = require("./dispatcher");
+const codexMessageUtils = require("../infra/codex/message-utils");
 const { extractModelCatalogFromListResponse } = require("../shared/model-catalog");
 const fs = require("fs");
 
 const MAX_MESSAGE_CONTEXT_ENTRIES = 1_000;
+const THREAD_SYNC_POLL_INTERVAL_MS = 5_000;
 
 class OpenClawBotRuntime {
   constructor(config = readConfig()) {
@@ -95,8 +99,10 @@ class OpenClawBotRuntime {
     this.latestMessageContextByChatId = new Map();
     this.workspaceThreadListCache = new Map();
     this.workspaceThreadRefreshStateByKey = new Map();
+    this.threadSyncStateByKey = new Map();
     this.isStopping = false;
     this.stopPromise = null;
+    this.threadSyncLoopPromise = null;
     this.codex.onMessage((message) => appDispatcher.onCodexMessage(this, message));
   }
 
@@ -107,6 +113,7 @@ class OpenClawBotRuntime {
     await this.codex.initialize();
     await this.refreshAvailableModelCatalogAtStartup();
     this.startPolling();
+    this.startThreadSyncLoop();
     console.log(`[codex-im] openclaw-bot runtime ready for ${maskUrl(this.config.openclaw.baseUrl)}`);
   }
 
@@ -130,6 +137,14 @@ class OpenClawBotRuntime {
         await this.pollLoopPromise.catch((error) => {
           if (error?.name !== "AbortError") {
             console.error(`[codex-im] openclaw poll loop stopped with error: ${error.message}`);
+          }
+        });
+      }
+
+      if (this.threadSyncLoopPromise) {
+        await this.threadSyncLoopPromise.catch((error) => {
+          if (error?.name !== "AbortError") {
+            console.error(`[codex-im] openclaw thread sync loop stopped with error: ${error.message}`);
           }
         });
       }
@@ -279,6 +294,13 @@ class OpenClawBotRuntime {
     this.pollLoopPromise = this.pollLoop(this.pollAbortController.signal);
   }
 
+  startThreadSyncLoop() {
+    if (this.threadSyncLoopPromise || !this.pollAbortController) {
+      return;
+    }
+    this.threadSyncLoopPromise = this.threadSyncLoop(this.pollAbortController.signal);
+  }
+
   async pollLoop(signal) {
     while (!signal.aborted && !this.isStopping) {
       try {
@@ -330,6 +352,164 @@ class OpenClawBotRuntime {
         await delay(1_000, signal);
       }
     }
+  }
+
+  rememberSelectedThreadForSync(bindingKey, workspaceRoot, threadId) {
+    const syncKey = buildThreadSyncKey(bindingKey, workspaceRoot);
+    const normalizedThreadId = String(threadId || "").trim();
+    if (!syncKey || !normalizedThreadId) {
+      return;
+    }
+
+    const current = this.threadSyncStateByKey.get(syncKey) || null;
+    if (current?.threadId === normalizedThreadId) {
+      return;
+    }
+    this.threadSyncStateByKey.set(syncKey, {
+      threadId: normalizedThreadId,
+      lastUpdatedAt: 0,
+      lastMessageSignature: "",
+      needsBaseline: true,
+      skipNextSync: false,
+      lastError: "",
+    });
+  }
+
+  markThreadSyncLocalActivity(threadId) {
+    const normalizedThreadId = String(threadId || "").trim();
+    if (!normalizedThreadId) {
+      return;
+    }
+
+    for (const state of this.threadSyncStateByKey.values()) {
+      if (state?.threadId === normalizedThreadId) {
+        state.skipNextSync = true;
+      }
+    }
+  }
+
+  async threadSyncLoop(signal) {
+    await delay(THREAD_SYNC_POLL_INTERVAL_MS, signal);
+    while (!signal.aborted && !this.isStopping) {
+      try {
+        await this.syncSelectedThreads(signal);
+      } catch (error) {
+        if (signal.aborted || this.isStopping) {
+          break;
+        }
+        console.error(`[codex-im] openclaw thread sync failed: ${error.message}`);
+      }
+      await delay(THREAD_SYNC_POLL_INTERVAL_MS, signal);
+    }
+  }
+
+  async syncSelectedThreads(signal) {
+    const bindings = typeof this.sessionStore.listBindings === "function"
+      ? this.sessionStore.listBindings()
+      : [];
+
+    for (const entry of bindings) {
+      if (signal.aborted || this.isStopping) {
+        break;
+      }
+      await this.syncSelectedThreadBinding(entry).catch((error) => {
+        console.error(`[codex-im] failed to sync selected thread: ${error.message}`);
+      });
+    }
+  }
+
+  async syncSelectedThreadBinding({ bindingKey, binding }) {
+    const workspaceRoot = String(binding?.activeWorkspaceRoot || "").trim();
+    const chatId = String(binding?.chatId || "").trim();
+    const threadId = String(binding?.threadIdByWorkspaceRoot?.[workspaceRoot] || "").trim();
+    if (!bindingKey || !workspaceRoot || !chatId || !threadId) {
+      return;
+    }
+    if (this.activeTurnIdByThreadId.has(threadId) || this.pendingApprovalByThreadId.has(threadId)) {
+      return;
+    }
+
+    this.rememberSelectedThreadForSync(bindingKey, workspaceRoot, threadId);
+    const syncKey = buildThreadSyncKey(bindingKey, workspaceRoot);
+    const state = this.threadSyncStateByKey.get(syncKey);
+    if (!state || state.threadId !== threadId) {
+      return;
+    }
+
+    const threads = await this.refreshWorkspaceThreads(bindingKey, workspaceRoot, {
+      workspaceId: binding?.workspaceId || this.config.defaultWorkspaceId,
+      chatId,
+      threadKey: binding?.threadKey || "",
+      senderId: binding?.senderId || "",
+      messageId: "",
+    });
+    const selectedThread = threads.find((thread) => thread?.id === threadId) || null;
+    if (!selectedThread) {
+      await this.maybeSendThreadSyncWarning(state, {
+        chatId,
+        text: [
+          "当前选中的线程已不可用，请重新切换线程。",
+          `项目：\`${workspaceRoot}\``,
+          `线程ID：\`${threadId}\``,
+        ].join("\n"),
+        errorKey: `missing:${threadId}`,
+      });
+      return;
+    }
+
+    const updatedAt = Number(selectedThread.updatedAt || 0);
+    if (!state.needsBaseline && updatedAt > 0 && updatedAt <= state.lastUpdatedAt) {
+      state.lastError = "";
+      return;
+    }
+
+    const resumeResponse = await this.codex.resumeThread({ threadId });
+    const recentMessages = codexMessageUtils.extractRecentConversationFromResumeResponse(resumeResponse);
+    const signature = codexMessageUtils.buildRecentConversationSignature(recentMessages);
+
+    if (state.needsBaseline) {
+      state.needsBaseline = false;
+      state.lastUpdatedAt = updatedAt;
+      state.lastMessageSignature = signature;
+      state.skipNextSync = false;
+      state.lastError = "";
+      return;
+    }
+
+    if ((signature && signature === state.lastMessageSignature) || !recentMessages.length) {
+      state.lastUpdatedAt = updatedAt;
+      state.lastMessageSignature = signature;
+      state.lastError = "";
+      return;
+    }
+
+    if (state.skipNextSync) {
+      state.lastUpdatedAt = updatedAt;
+      state.lastMessageSignature = signature;
+      state.skipNextSync = false;
+      state.lastError = "";
+      return;
+    }
+
+    await this.sendTextMessage({
+      chatId,
+      text: this.buildThreadSyncText({
+        workspaceRoot,
+        thread: selectedThread,
+        recentMessages,
+      }),
+    });
+    state.lastUpdatedAt = updatedAt;
+    state.lastMessageSignature = signature;
+    state.lastError = "";
+  }
+
+  async maybeSendThreadSyncWarning(state, { chatId, text, errorKey }) {
+    if (!state || !chatId || !text || !errorKey || state.lastError === errorKey) {
+      return;
+    }
+    await this.sendTextMessage({ chatId, text });
+    state.lastError = errorKey;
   }
 
   async refreshAvailableModelCatalogAtStartup() {
@@ -443,6 +623,8 @@ function attachRuntimeForwarders() {
     buildStatusPanelCard,
     buildThreadMessagesSummary,
     buildThreadPickerCard,
+    buildThreadPickerText,
+    buildThreadSyncText,
     buildWorkspaceBrowserCard,
     buildWorkspaceBindingsCard,
     listBoundWorkspaces,
@@ -549,6 +731,15 @@ function setBoundedMapEntry(map, key, value, limit) {
     }
     map.delete(oldestKey);
   }
+}
+
+function buildThreadSyncKey(bindingKey, workspaceRoot) {
+  const normalizedBindingKey = String(bindingKey || "").trim();
+  const normalizedWorkspaceRoot = String(workspaceRoot || "").trim();
+  if (!normalizedBindingKey || !normalizedWorkspaceRoot) {
+    return "";
+  }
+  return `${normalizedBindingKey}::${normalizedWorkspaceRoot}`;
 }
 
 async function delay(ms, signal) {

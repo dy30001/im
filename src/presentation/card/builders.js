@@ -489,6 +489,48 @@ function buildThreadPickerCard({
   };
 }
 
+function buildThreadPickerText({
+  workspaceRoot,
+  threads,
+  currentThreadId,
+  page = 0,
+  pageSize = 8,
+  noticeText = "",
+}) {
+  const normalizedThreads = Array.isArray(threads) ? threads : [];
+  const normalizedPageSize = Number.isInteger(pageSize) && pageSize > 0 ? pageSize : 8;
+  const totalCount = normalizedThreads.length;
+  const totalPages = Math.max(1, Math.ceil(totalCount / normalizedPageSize));
+  const safePage = Math.min(Math.max(Number(page) || 0, 0), totalPages - 1);
+  const startIndex = safePage * normalizedPageSize;
+  const pageThreads = normalizedThreads.slice(startIndex, startIndex + normalizedPageSize);
+
+  const lines = [
+    `当前项目：\`${workspaceRoot}\``,
+    `线程列表（共 ${totalCount} 条，第 ${safePage + 1}/${totalPages} 页）`,
+  ];
+  if (typeof noticeText === "string" && noticeText.trim()) {
+    lines.push(noticeText.trim());
+  }
+
+  if (!pageThreads.length) {
+    lines.push("还没有可切换的历史线程。");
+    return lines.join("\n\n");
+  }
+
+  for (const thread of pageThreads) {
+    lines.push(formatThreadListEntryText(thread, thread?.id === currentThreadId));
+  }
+
+  lines.push(
+    "操作：",
+    "`/codex switch <threadId>`",
+    "`/codex message`",
+    "`/codex new`"
+  );
+  return lines.join("\n\n");
+}
+
 function buildHelpCardText() {
   const sections = [
     [
@@ -867,6 +909,14 @@ function buildThreadMessagesSummary({ workspaceRoot, thread, recentMessages }) {
   return sections.join("\n\n");
 }
 
+function buildThreadSyncText({ workspaceRoot, thread, recentMessages }) {
+  return [
+    "检测到电脑端更新，已同步当前线程最近消息。",
+    "",
+    buildThreadMessagesSummary({ workspaceRoot, thread, recentMessages }),
+  ].join("\n");
+}
+
 function mergeReplyText(previousText, nextText) {
   if (!previousText) {
     return nextText;
@@ -1073,6 +1123,14 @@ function buildWorkspaceActionValue(action, workspaceRoot) {
 function summarizeThreadPreview(thread) {
   const updated = formatRelativeTimestamp(thread?.updatedAt);
   return updated ? `更新时间：${updated}` : "更新时间：未知";
+}
+
+function formatThreadListEntryText(thread, isCurrent) {
+  return [
+    `${isCurrent ? "🟢 当前" : "⚪ 历史"} · ${formatThreadLabel(thread)}`,
+    formatThreadIdLine(thread),
+    summarizeThreadPreview(thread),
+  ].filter(Boolean).join("\n");
 }
 
 function formatRelativeTimestamp(value) {
@@ -1395,6 +1453,8 @@ module.exports = {
   buildEffortValidationErrorText,
   buildThreadMessagesSummary,
   buildThreadPickerCard,
+  buildThreadPickerText,
+  buildThreadSyncText,
   buildWorkspaceBrowserCard,
   buildWorkspaceBindingsCard,
   listBoundWorkspaces,

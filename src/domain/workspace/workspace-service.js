@@ -568,6 +568,23 @@ async function showThreadPicker(runtime, normalized, { replyToMessageId, page = 
     return;
   }
 
+  if (typeof runtime.supportsInteractiveCards === "function" && !runtime.supportsInteractiveCards()) {
+    await runtime.sendInfoCardMessage({
+      chatId: normalized.chatId,
+      replyToMessageId: replyTarget,
+      text: runtime.buildThreadPickerText({
+        workspaceRoot,
+        threads,
+        currentThreadId,
+        page,
+        noticeText: refreshState.fromCache
+          ? "线程列表刷新失败，当前展示最近一次成功结果。"
+          : "",
+      }),
+    });
+    return;
+  }
+
   await runtime.sendInteractiveCard({
     chatId: normalized.chatId,
     replyToMessageId: replyTarget,

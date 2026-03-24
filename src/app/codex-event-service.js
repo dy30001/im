@@ -57,6 +57,13 @@ function handleCodexMessage(runtime, message) {
   if (!outbound.payload.turnId) {
     outbound.payload.turnId = runtime.activeTurnIdByThreadId.get(threadId) || "";
   }
+  if (
+    threadId
+    && typeof runtime.markThreadSyncLocalActivity === "function"
+    && (outbound.type === "im.agent_reply" || outbound.type === "im.run_state")
+  ) {
+    runtime.markThreadSyncLocalActivity(threadId);
+  }
   const context = runtime.pendingChatContextByThreadId.get(threadId);
   if (context) {
     outbound.payload.chatId = context.chatId;

@@ -36,6 +36,9 @@ async function resolveWorkspaceThreadState(runtime, {
   if (threadId) {
     runtime.setThreadBindingKey(threadId, bindingKey);
     runtime.setThreadWorkspaceRoot(threadId, workspaceRoot);
+    if (typeof runtime.rememberSelectedThreadForSync === "function") {
+      runtime.rememberSelectedThreadForSync(bindingKey, workspaceRoot, threadId);
+    }
   }
   return { threads, threadId, selectedThreadId };
 }
@@ -126,6 +129,9 @@ async function createWorkspaceThread(runtime, { bindingKey, workspaceRoot, norma
   runtime.setPendingThreadContext(resolvedThreadId, normalized);
   runtime.setThreadBindingKey(resolvedThreadId, bindingKey);
   runtime.setThreadWorkspaceRoot(resolvedThreadId, workspaceRoot);
+  if (typeof runtime.rememberSelectedThreadForSync === "function") {
+    runtime.rememberSelectedThreadForSync(bindingKey, workspaceRoot, resolvedThreadId);
+  }
   return resolvedThreadId;
 }
 
@@ -313,6 +319,9 @@ async function switchThreadById(runtime, normalized, threadId, { replyToMessageI
   );
   runtime.setThreadBindingKey(threadId, bindingKey);
   runtime.setThreadWorkspaceRoot(threadId, resolvedWorkspaceRoot);
+  if (typeof runtime.rememberSelectedThreadForSync === "function") {
+    runtime.rememberSelectedThreadForSync(bindingKey, resolvedWorkspaceRoot, threadId);
+  }
   runtime.resumedThreadIds.delete(threadId);
   try {
     await ensureThreadResumed(runtime, threadId);

@@ -3,6 +3,7 @@ const path = require("path");
 const { normalizeModelCatalog } = require("../../shared/model-catalog");
 
 const DEFAULT_SAVE_DEBOUNCE_MS = 100;
+const RESTRICTED_STATE_FILE_MODE = 0o600;
 
 class SessionStore {
   constructor({ filePath }) {
@@ -103,6 +104,17 @@ class SessionStore {
 
   getBinding(bindingKey) {
     return this.state.bindings[bindingKey] || null;
+  }
+
+  listBindings() {
+    return Object.entries(this.state.bindings || {}).map(([bindingKey, binding]) => ({
+      bindingKey,
+      binding: {
+        ...(binding || {}),
+        threadIdByWorkspaceRoot: getThreadMap(binding),
+        codexParamsByWorkspaceRoot: getCodexParamsMap(binding),
+      },
+    }));
   }
 
   getActiveWorkspaceRoot(bindingKey) {
@@ -371,7 +383,12 @@ function normalizeCommandAllowlist(allowlist) {
 async function writeStateAtomically(filePath, serializedState) {
   const tempPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
   try {
-    await fs.promises.writeFile(tempPath, serializedState, "utf8");
+    // Session state includes local workspace metadata and approval prefixes,
+    // so keep the on-disk file readable by the current user only.
+    await fs.promises.writeFile(tempPath, serializedState, {
+      encoding: "utf8",
+      mode: RESTRICTED_STATE_FILE_MODE,
+    });
     await fs.promises.rename(tempPath, filePath);
   } catch (error) {
     await fs.promises.unlink(tempPath).catch(() => {});
