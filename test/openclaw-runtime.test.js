@@ -7,7 +7,7 @@ const test = require("node:test");
 const { OpenClawBotRuntime } = require("../src/app/openclaw-bot-runtime");
 const { saveOpenClawCredentials } = require("../src/infra/openclaw/token-store");
 
-test("OpenClawBotRuntime.stop flushes state and closes codex once", async () => {
+test("OpenClawBotRuntime.stop closes session state and codex once", async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-im-openclaw-runtime-"));
   const runtime = new OpenClawBotRuntime({
     mode: "openclaw-bot",
@@ -40,8 +40,8 @@ test("OpenClawBotRuntime.stop flushes state and closes codex once", async () => 
     },
   };
   runtime.sessionStore = {
-    flush: async () => {
-      calls.push("flush");
+    close: async () => {
+      calls.push("close");
     },
   };
 
@@ -49,7 +49,7 @@ test("OpenClawBotRuntime.stop flushes state and closes codex once", async () => 
   await runtime.stop();
 
   assert.equal(runtime.isStopping, true);
-  assert.deepEqual(calls, ["abort", "codex", "flush"]);
+  assert.deepEqual(calls, ["abort", "codex", "close"]);
 });
 
 test("OpenClawBotRuntime reloads stored credentials after a credential failure", async () => {

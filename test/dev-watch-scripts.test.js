@@ -14,3 +14,24 @@ test("package.json exposes dev watch scripts for both runtimes", () => {
   assert.match(scripts["watch:openclaw-bot"], /node --watch/);
   assert.match(scripts["watch:openclaw-bot"], /openclaw-bot/);
 });
+
+test("package.json check script covers newly added runtime and workspace modules", () => {
+  const packageJsonPath = path.join(__dirname, "..", "package.json");
+  const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+  const checkScript = String(packageJson.scripts?.check || "");
+
+  const requiredPaths = [
+    "src/app/openclaw-bot-runtime.js",
+    "src/app/runtime-base.js",
+    "src/domain/workspace/browser-service.js",
+    "src/domain/workspace/settings-service.js",
+    "src/infra/acpx/session-bridge.js",
+    "src/infra/openclaw/client-adapter.js",
+    "src/shared/error-text.js",
+    "src/shared/model-catalog.js",
+  ];
+
+  for (const requiredPath of requiredPaths) {
+    assert.match(checkScript, new RegExp(requiredPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+});

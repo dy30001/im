@@ -41,6 +41,10 @@ const {
   patchWsClientForCardCallbacks,
 } = require("../infra/feishu/client-adapter");
 const runtimeCommands = require("./command-dispatcher");
+const {
+  attachRuntimeForwarders: attachSharedRuntimeForwarders,
+  initializeCommonRuntimeState,
+} = require("./runtime-base");
 const approvalRuntime = require("../domain/approval/approval-service");
 const runtimeState = require("../domain/session/binding-context");
 const threadRuntime = require("../domain/thread/thread-service");
@@ -54,7 +58,10 @@ const fs = require("fs");
 class FeishuBotRuntime {
   constructor(config = readConfig()) {
     this.config = config;
-    this.sessionStore = new SessionStore({ filePath: config.sessionsFile });
+    this.sessionStore = new SessionStore({
+      filePath: config.sessionsFile,
+      fallbackFilePaths: config.sessionFallbackFiles,
+    });
     this.codex = new CodexRpcClient({
       endpoint: config.codexEndpoint,
       env: process.env,
@@ -65,26 +72,7 @@ class FeishuBotRuntime {
     this.client = null;
     this.wsClient = null;
     this.feishuAdapter = null;
-    this.pendingChatContextByThreadId = new Map();
-    this.pendingChatContextByBindingKey = new Map();
-    this.activeTurnIdByThreadId = new Map();
-    this.pendingApprovalByThreadId = new Map();
-    this.replyCardByRunKey = new Map();
-    this.currentRunKeyByThreadId = new Map();
-    this.replyFlushTimersByRunKey = new Map();
-    this.pendingReactionByBindingKey = new Map();
-    this.pendingReactionByThreadId = new Map();
-    this.bindingKeyByThreadId = new Map();
-    this.workspaceRootByThreadId = new Map();
-    this.approvalAllowlistByWorkspaceRoot = new Map();
-    this.inFlightApprovalRequestKeys = new Set();
-    this.resumedThreadIds = new Set();
-    this.messageContextByMessageId = new Map();
-    this.latestMessageContextByChatId = new Map();
-    this.workspaceThreadListCache = new Map();
-    this.workspaceThreadRefreshStateByKey = new Map();
-    this.isStopping = false;
-    this.stopPromise = null;
+    initializeCommonRuntimeState(this);
     this.codex.onMessage((message) => appDispatcher.onCodexMessage(this, message));
   }
 
@@ -125,9 +113,13 @@ class FeishuBotRuntime {
       }
 
       try {
-        await this.sessionStore.flush();
+        if (typeof this.sessionStore.close === "function") {
+          await this.sessionStore.close();
+        } else {
+          await this.sessionStore.flush();
+        }
       } catch (error) {
-        console.error(`[codex-im] failed to flush session store: ${error.message}`);
+        console.error(`[codex-im] failed to close session store: ${error.message}`);
       }
     })();
 
@@ -277,12 +269,6 @@ function attachRuntimeForwarders() {
     listBoundWorkspaces,
   };
 
-  for (const [methodName, fn] of Object.entries(plainForwarders)) {
-    proto[methodName] = function forwardedPlain(...args) {
-      return fn(...args);
-    };
-  }
-
   const runtimeFirstForwarders = {
     dispatchTextCommand: runtimeCommands.dispatchTextCommand,
     resolveWorkspaceContext: workspaceRuntime.resolveWorkspaceContext,
@@ -352,15 +338,10 @@ function attachRuntimeForwarders() {
     pruneRuntimeMapSizes: runtimeState.pruneRuntimeMapSizes,
   };
 
-  for (const [methodName, fn] of Object.entries(runtimeFirstForwarders)) {
-    proto[methodName] = function forwardedRuntimeFirst(...args) {
-      return fn(this, ...args);
-    };
-  }
-
-  proto.getCodexParamsForWorkspace = function getCodexParamsForWorkspace(bindingKey, workspaceRoot) {
-    return this.sessionStore.getCodexParamsForWorkspace(bindingKey, workspaceRoot);
-  };
+  attachSharedRuntimeForwarders(proto, {
+    plainForwarders,
+    runtimeFirstForwarders,
+  });
 }
 
 attachRuntimeForwarders();

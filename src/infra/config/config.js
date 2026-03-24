@@ -7,10 +7,16 @@ const ALLOWED_ACCESS_MODES = new Set(["default", "full-access"]);
 const DEFAULT_OPENCLAW_BASE_URL = "https://ilinkai.weixin.qq.com";
 const DEFAULT_OPENCLAW_LONG_POLL_TIMEOUT_MS = 35_000;
 const DEFAULT_OPENCLAW_CREDENTIALS_FILE = path.join(os.homedir(), ".codex-im", "openclaw-credentials.json");
+const DEFAULT_SESSION_STATE_DIR = path.join(os.homedir(), ".codex-im");
+const LEGACY_DEFAULT_SESSIONS_FILE = path.join(DEFAULT_SESSION_STATE_DIR, "sessions.json");
+const DEFAULT_ACPX_SESSIONS_DIR = path.join(os.homedir(), ".acpx", "sessions");
+const DEFAULT_ACPX_SESSION_INDEX_FILE = path.join(DEFAULT_ACPX_SESSIONS_DIR, "index.json");
 
 function readConfig() {
   const mode = process.argv[2] || "";
   const openClawBaseUrl = readTextEnv("CODEX_IM_OPENCLAW_BASE_URL");
+  const explicitSessionsFile = readTextEnv("CODEX_IM_SESSIONS_FILE");
+  const sessionsFile = explicitSessionsFile || resolveDefaultSessionsFile(mode);
 
   return {
     mode,
@@ -29,18 +35,35 @@ function readConfig() {
       baseUrl: openClawBaseUrl || DEFAULT_OPENCLAW_BASE_URL,
       baseUrlExplicit: Boolean(openClawBaseUrl),
       token: readTextEnv("CODEX_IM_OPENCLAW_TOKEN"),
+      threadSource: readThreadSourceEnv("CODEX_IM_OPENCLAW_THREAD_SOURCE", "acpx"),
       longPollTimeoutMs: readIntegerEnv(
         "CODEX_IM_OPENCLAW_LONG_POLL_TIMEOUT_MS",
         DEFAULT_OPENCLAW_LONG_POLL_TIMEOUT_MS
       ),
       credentialsFile: readTextEnv("CODEX_IM_OPENCLAW_CREDENTIALS_FILE") || DEFAULT_OPENCLAW_CREDENTIALS_FILE,
+      acpxSessionsDir: readTextEnv("CODEX_IM_OPENCLAW_ACPX_SESSIONS_DIR") || DEFAULT_ACPX_SESSIONS_DIR,
+      acpxSessionIndexFile: readTextEnv("CODEX_IM_OPENCLAW_ACPX_SESSION_INDEX_FILE") || DEFAULT_ACPX_SESSION_INDEX_FILE,
     },
     defaultWorkspaceId: process.env.CODEX_IM_DEFAULT_WORKSPACE_ID || "default",
     feishuStreamingOutput: readBooleanEnv("CODEX_IM_FEISHU_STREAMING_OUTPUT", true),
     openclawStreamingOutput: readBooleanEnv("CODEX_IM_OPENCLAW_STREAMING_OUTPUT", false),
-    sessionsFile: process.env.CODEX_IM_SESSIONS_FILE
-      || path.join(os.homedir(), ".codex-im", "sessions.json"),
+    sessionsFile,
+    sessionFallbackFiles: explicitSessionsFile ? [] : buildSessionFallbackFiles(sessionsFile),
   };
+}
+
+function resolveDefaultSessionsFile(mode) {
+  if (mode === "openclaw-bot") {
+    return path.join(DEFAULT_SESSION_STATE_DIR, "openclaw-sessions.json");
+  }
+  return path.join(DEFAULT_SESSION_STATE_DIR, "feishu-sessions.json");
+}
+
+function buildSessionFallbackFiles(primaryFilePath) {
+  if (!primaryFilePath || primaryFilePath === LEGACY_DEFAULT_SESSIONS_FILE) {
+    return [];
+  }
+  return [LEGACY_DEFAULT_SESSIONS_FILE];
 }
 
 function readListEnv(name) {
@@ -81,9 +104,21 @@ function readAccessModeEnv(name) {
   return ALLOWED_ACCESS_MODES.has(value) ? value : "";
 }
 
+function readThreadSourceEnv(name, defaultValue) {
+  const value = readTextEnv(name).toLowerCase();
+  if (value === "codex" || value === "acpx") {
+    return value;
+  }
+  return defaultValue;
+}
+
 module.exports = {
+  DEFAULT_ACPX_SESSION_INDEX_FILE,
+  DEFAULT_ACPX_SESSIONS_DIR,
+  DEFAULT_SESSION_STATE_DIR,
   DEFAULT_OPENCLAW_BASE_URL,
   DEFAULT_OPENCLAW_CREDENTIALS_FILE,
   DEFAULT_OPENCLAW_LONG_POLL_TIMEOUT_MS,
+  LEGACY_DEFAULT_SESSIONS_FILE,
   readConfig,
 };

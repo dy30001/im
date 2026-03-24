@@ -47,7 +47,12 @@ const {
   loadOpenClawCredentials,
   saveOpenClawCredentials,
 } = require("../infra/openclaw/token-store");
+const desktopSessionBridge = require("../infra/acpx/session-bridge");
 const runtimeCommands = require("./command-dispatcher");
+const {
+  attachRuntimeForwarders: attachSharedRuntimeForwarders,
+  initializeCommonRuntimeState,
+} = require("./runtime-base");
 const approvalRuntime = require("../domain/approval/approval-service");
 const runtimeState = require("../domain/session/binding-context");
 const threadRuntime = require("../domain/thread/thread-service");
@@ -66,7 +71,10 @@ class OpenClawBotRuntime {
   constructor(config = readConfig()) {
     this.config = config;
     this.providerKind = "openclaw";
-    this.sessionStore = new SessionStore({ filePath: config.sessionsFile });
+    this.sessionStore = new SessionStore({
+      filePath: config.sessionsFile,
+      fallbackFilePaths: config.sessionFallbackFiles,
+    });
     this.codex = new CodexRpcClient({
       endpoint: config.codexEndpoint,
       env: process.env,
@@ -81,27 +89,9 @@ class OpenClawBotRuntime {
     this.pollAbortController = null;
     this.pollLoopPromise = null;
     this.syncCursor = "";
-    this.pendingChatContextByThreadId = new Map();
-    this.pendingChatContextByBindingKey = new Map();
-    this.activeTurnIdByThreadId = new Map();
-    this.pendingApprovalByThreadId = new Map();
-    this.replyCardByRunKey = new Map();
-    this.currentRunKeyByThreadId = new Map();
-    this.replyFlushTimersByRunKey = new Map();
-    this.pendingReactionByBindingKey = new Map();
-    this.pendingReactionByThreadId = new Map();
-    this.bindingKeyByThreadId = new Map();
-    this.workspaceRootByThreadId = new Map();
-    this.approvalAllowlistByWorkspaceRoot = new Map();
-    this.inFlightApprovalRequestKeys = new Set();
-    this.resumedThreadIds = new Set();
-    this.messageContextByMessageId = new Map();
-    this.latestMessageContextByChatId = new Map();
-    this.workspaceThreadListCache = new Map();
-    this.workspaceThreadRefreshStateByKey = new Map();
+    initializeCommonRuntimeState(this);
+    this.desktopSessionsByWorkspaceRoot = new Map();
     this.threadSyncStateByKey = new Map();
-    this.isStopping = false;
-    this.stopPromise = null;
     this.threadSyncLoopPromise = null;
     this.codex.onMessage((message) => appDispatcher.onCodexMessage(this, message));
   }
@@ -156,9 +146,13 @@ class OpenClawBotRuntime {
       }
 
       try {
-        await this.sessionStore.flush();
+        if (typeof this.sessionStore.close === "function") {
+          await this.sessionStore.close();
+        } else {
+          await this.sessionStore.flush();
+        }
       } catch (error) {
-        console.error(`[codex-im] failed to flush session store: ${error.message}`);
+        console.error(`[codex-im] failed to close session store: ${error.message}`);
       }
     })();
 
@@ -419,6 +413,10 @@ class OpenClawBotRuntime {
   }
 
   async syncSelectedThreadBinding({ bindingKey, binding }) {
+    if (this.usesDesktopSessionSource()) {
+      return this.syncSelectedDesktopSessionBinding({ bindingKey, binding });
+    }
+
     const workspaceRoot = String(binding?.activeWorkspaceRoot || "").trim();
     const chatId = String(binding?.chatId || "").trim();
     const threadId = String(binding?.threadIdByWorkspaceRoot?.[workspaceRoot] || "").trim();
@@ -496,6 +494,91 @@ class OpenClawBotRuntime {
       text: this.buildThreadSyncText({
         workspaceRoot,
         thread: selectedThread,
+        recentMessages,
+      }),
+    });
+    state.lastUpdatedAt = updatedAt;
+    state.lastMessageSignature = signature;
+    state.lastError = "";
+  }
+
+  async syncSelectedDesktopSessionBinding({ bindingKey, binding }) {
+    const workspaceRoot = String(binding?.activeWorkspaceRoot || "").trim();
+    const chatId = String(binding?.chatId || "").trim();
+    const threadId = String(binding?.threadIdByWorkspaceRoot?.[workspaceRoot] || "").trim();
+    if (!bindingKey || !workspaceRoot || !chatId || !threadId) {
+      return;
+    }
+
+    this.rememberSelectedThreadForSync(bindingKey, workspaceRoot, threadId);
+    const syncKey = buildThreadSyncKey(bindingKey, workspaceRoot);
+    const state = this.threadSyncStateByKey.get(syncKey);
+    if (!state || state.threadId !== threadId) {
+      return;
+    }
+
+    const sessions = await this.listDesktopSessionsForWorkspace(workspaceRoot);
+    const selectedSession = sessions.find((session) => (
+      session?.id === threadId
+      || session?.acpSessionId === threadId
+      || session?.acpxRecordId === threadId
+    )) || null;
+    if (!selectedSession) {
+      await this.maybeSendThreadSyncWarning(state, {
+        chatId,
+        text: [
+          "当前选中的桌面会话已不可用，请重新切换会话。",
+          `项目：\`${workspaceRoot}\``,
+          `会话ID：\`${threadId}\``,
+        ].join("\n"),
+        errorKey: `missing:${threadId}`,
+      });
+      return;
+    }
+
+    const hydrated = await this.hydrateDesktopSession(selectedSession);
+    if (!hydrated) {
+      return;
+    }
+
+    const updatedAt = Number(hydrated.updatedAt || selectedSession.updatedAt || 0);
+    if (!state.needsBaseline && updatedAt > 0 && updatedAt <= state.lastUpdatedAt) {
+      state.lastError = "";
+      return;
+    }
+
+    const recentMessages = Array.isArray(hydrated.recentMessages) ? hydrated.recentMessages : [];
+    const signature = codexMessageUtils.buildRecentConversationSignature(recentMessages);
+
+    if (state.needsBaseline) {
+      state.needsBaseline = false;
+      state.lastUpdatedAt = updatedAt;
+      state.lastMessageSignature = signature;
+      state.skipNextSync = false;
+      state.lastError = "";
+      return;
+    }
+
+    if ((signature && signature === state.lastMessageSignature) || !recentMessages.length) {
+      state.lastUpdatedAt = updatedAt;
+      state.lastMessageSignature = signature;
+      state.lastError = "";
+      return;
+    }
+
+    if (state.skipNextSync) {
+      state.lastUpdatedAt = updatedAt;
+      state.lastMessageSignature = signature;
+      state.skipNextSync = false;
+      state.lastError = "";
+      return;
+    }
+
+    await this.sendTextMessage({
+      chatId,
+      text: this.buildThreadSyncText({
+        workspaceRoot,
+        thread: hydrated,
         recentMessages,
       }),
     });
@@ -591,6 +674,22 @@ class OpenClawBotRuntime {
     throw new Error("Current provider does not support file sending");
   }
 
+  usesDesktopSessionSource() {
+    return String(this.config.openclaw?.threadSource || "").trim().toLowerCase() === "acpx";
+  }
+
+  async listDesktopSessionsForWorkspace(workspaceRoot) {
+    return desktopSessionBridge.listDesktopSessionsForWorkspace(this, workspaceRoot);
+  }
+
+  resolveDesktopSessionById(workspaceRoot, sessionId) {
+    return desktopSessionBridge.resolveDesktopSessionById(this, workspaceRoot, sessionId);
+  }
+
+  async hydrateDesktopSession(session) {
+    return desktopSessionBridge.hydrateDesktopSession(this, session);
+  }
+
   async resolveWorkspaceStats(workspaceRoot) {
     try {
       const stats = await fs.promises.stat(workspaceRoot);
@@ -629,12 +728,6 @@ function attachRuntimeForwarders() {
     buildWorkspaceBindingsCard,
     listBoundWorkspaces,
   };
-
-  for (const [methodName, fn] of Object.entries(plainForwarders)) {
-    proto[methodName] = function forwardedPlain(...args) {
-      return fn(...args);
-    };
-  }
 
   const runtimeFirstForwarders = {
     dispatchTextCommand: runtimeCommands.dispatchTextCommand,
@@ -705,15 +798,10 @@ function attachRuntimeForwarders() {
     pruneRuntimeMapSizes: runtimeState.pruneRuntimeMapSizes,
   };
 
-  for (const [methodName, fn] of Object.entries(runtimeFirstForwarders)) {
-    proto[methodName] = function forwardedRuntimeFirst(...args) {
-      return fn(this, ...args);
-    };
-  }
-
-  proto.getCodexParamsForWorkspace = function getCodexParamsForWorkspace(bindingKey, workspaceRoot) {
-    return this.sessionStore.getCodexParamsForWorkspace(bindingKey, workspaceRoot);
-  };
+  attachSharedRuntimeForwarders(proto, {
+    plainForwarders,
+    runtimeFirstForwarders,
+  });
 }
 
 function setBoundedMapEntry(map, key, value, limit) {

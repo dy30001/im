@@ -20,6 +20,7 @@ function createRuntime() {
     openclaw: {
       baseUrl: "https://ilinkai.weixin.qq.com",
       token: "token",
+      threadSource: "codex",
       longPollTimeoutMs: 35000,
     },
     defaultWorkspaceId: "default",

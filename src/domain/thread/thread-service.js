@@ -22,6 +22,15 @@ async function resolveWorkspaceThreadState(runtime, {
   normalized,
   autoSelectThread = true,
 }) {
+  if (shouldUseDesktopSessions(runtime)) {
+    return resolveDesktopSessionState(runtime, {
+      bindingKey,
+      workspaceRoot,
+      normalized,
+      autoSelectThread,
+    });
+  }
+
   const threads = await refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, normalized);
   const selectedThreadId = runtime.resolveThreadIdForBinding(bindingKey, workspaceRoot);
   const threadId = selectedThreadId || (autoSelectThread ? (threads[0]?.id || "") : "");
@@ -44,6 +53,15 @@ async function resolveWorkspaceThreadState(runtime, {
 }
 
 async function ensureThreadAndSendMessage(runtime, { bindingKey, workspaceRoot, normalized, threadId }) {
+  if (shouldUseDesktopSessions(runtime)) {
+    return ensureDesktopSessionAndSendMessage(runtime, {
+      bindingKey,
+      workspaceRoot,
+      normalized,
+      threadId,
+    });
+  }
+
   const codexParams = runtime.getCodexParamsForWorkspace(bindingKey, workspaceRoot);
 
   if (!threadId) {
@@ -108,6 +126,86 @@ async function ensureThreadAndSendMessage(runtime, { bindingKey, workspaceRoot, 
   }
 }
 
+async function resolveDesktopSessionState(runtime, {
+  bindingKey,
+  workspaceRoot,
+  normalized,
+  autoSelectThread = true,
+}) {
+  const threads = await refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, normalized);
+  const selectedThreadId = runtime.resolveThreadIdForBinding(bindingKey, workspaceRoot);
+  let selectedThread = selectedThreadId
+    ? findDesktopSessionById(runtime, workspaceRoot, selectedThreadId)
+    : null;
+  let threadId = selectedThread?.id || "";
+
+  if (!selectedThread && autoSelectThread && threads[0]) {
+    selectedThread = threads[0];
+    threadId = selectedThread.id;
+    runtime.sessionStore.setThreadIdForWorkspace(
+      bindingKey,
+      workspaceRoot,
+      threadId,
+      codexMessageUtils.buildBindingMetadata(normalized)
+    );
+  }
+
+  if (!selectedThread && selectedThreadId) {
+    runtime.sessionStore.clearThreadIdForWorkspace(bindingKey, workspaceRoot);
+  }
+
+  if (threadId) {
+    runtime.setThreadBindingKey(threadId, bindingKey);
+    runtime.setThreadWorkspaceRoot(threadId, workspaceRoot);
+    if (typeof runtime.rememberSelectedThreadForSync === "function") {
+      runtime.rememberSelectedThreadForSync(bindingKey, workspaceRoot, threadId);
+    }
+  }
+
+  return { threads, threadId, selectedThreadId };
+}
+
+async function ensureDesktopSessionAndSendMessage(runtime, {
+  bindingKey,
+  workspaceRoot,
+  normalized,
+  threadId,
+}) {
+  const codexParams = runtime.getCodexParamsForWorkspace(bindingKey, workspaceRoot);
+  if (!threadId) {
+    throw new Error("当前项目在桌面 App 里还没有可见会话。请先在电脑端打开该项目并创建/恢复会话。");
+  }
+
+  const selectedSession = await hydrateSelectedDesktopSession(runtime, workspaceRoot, threadId);
+  if (!selectedSession) {
+    throw new Error("当前桌面会话不可用，请刷新会话列表后重试。");
+  }
+  if (!selectedSession.writable || !selectedSession.acpSessionId) {
+    throw new Error("当前桌面会话仅支持查看/同步，暂不支持从微信继续聊天。");
+  }
+
+  await ensureThreadResumed(runtime, selectedSession.acpSessionId);
+  await runtime.codex.sendUserMessage({
+    threadId: selectedSession.acpSessionId,
+    text: normalized.text,
+    model: codexParams.model || null,
+    effort: codexParams.effort || null,
+    accessMode: runtime.config.defaultCodexAccessMode,
+    workspaceRoot,
+  });
+  runtime.sessionStore.setThreadIdForWorkspace(
+    bindingKey,
+    workspaceRoot,
+    selectedSession.id,
+    codexMessageUtils.buildBindingMetadata(normalized)
+  );
+  runtime.setThreadBindingKey(selectedSession.id, bindingKey);
+  runtime.setThreadWorkspaceRoot(selectedSession.id, workspaceRoot);
+  runtime.setThreadBindingKey(selectedSession.acpSessionId, bindingKey);
+  runtime.setThreadWorkspaceRoot(selectedSession.acpSessionId, workspaceRoot);
+  return selectedSession.id;
+}
+
 async function createWorkspaceThread(runtime, { bindingKey, workspaceRoot, normalized }) {
   const response = await runtime.codex.startThread({
     cwd: workspaceRoot,
@@ -159,6 +257,15 @@ async function handleNewCommand(runtime, normalized) {
     return;
   }
 
+  if (shouldUseDesktopSessions(runtime)) {
+    await runtime.sendInfoCardMessage({
+      chatId: normalized.chatId,
+      replyToMessageId: normalized.messageId,
+      text: "桌面会话模式下，请先在电脑端打开当前项目并新建会话，然后再在微信里刷新。",
+    });
+    return;
+  }
+
   try {
     const createdThreadId = await createWorkspaceThread(runtime, {
       bindingKey,
@@ -186,7 +293,9 @@ async function handleSwitchCommand(runtime, normalized) {
     await runtime.sendInfoCardMessage({
       chatId: normalized.chatId,
       replyToMessageId: normalized.messageId,
-      text: "用法: `/codex switch <threadId>`",
+      text: shouldUseDesktopSessions(runtime)
+        ? "用法: `/codex switch <sessionId>`"
+        : "用法: `/codex switch <threadId>`",
     });
     return;
   }
@@ -195,6 +304,35 @@ async function handleSwitchCommand(runtime, normalized) {
 }
 
 async function refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, normalized) {
+  if (shouldUseDesktopSessions(runtime)) {
+    const cacheKey = buildWorkspaceThreadCacheKey(bindingKey, workspaceRoot);
+    try {
+      const sessions = await runtime.listDesktopSessionsForWorkspace(workspaceRoot);
+      setWorkspaceThreadRefreshState(runtime, cacheKey, {
+        ok: true,
+        fromCache: false,
+        error: "",
+        updatedAt: new Date().toISOString(),
+      });
+      setWorkspaceThreadCache(runtime, cacheKey, sessions);
+      const currentThreadId = runtime.sessionStore.getThreadIdForWorkspace(bindingKey, workspaceRoot);
+      if (currentThreadId && !sessions.some((thread) => thread.id === currentThreadId)) {
+        runtime.sessionStore.clearThreadIdForWorkspace(bindingKey, workspaceRoot);
+      }
+      return sessions;
+    } catch (error) {
+      console.warn(`[codex-im] desktop session refresh failed for workspace=${workspaceRoot}: ${error.message}`);
+      const cachedThreads = getWorkspaceThreadCache(runtime, cacheKey);
+      setWorkspaceThreadRefreshState(runtime, cacheKey, {
+        ok: false,
+        fromCache: cachedThreads.length > 0,
+        error: error.message,
+        updatedAt: new Date().toISOString(),
+      });
+      return cachedThreads;
+    }
+  }
+
   const cacheKey = buildWorkspaceThreadCacheKey(bindingKey, workspaceRoot);
   try {
     const threads = await listCodexThreadsForWorkspace(runtime, workspaceRoot);
@@ -277,6 +415,10 @@ function describeWorkspaceStatus(runtime, threadId) {
 }
 
 async function switchThreadById(runtime, normalized, threadId, { replyToMessageId } = {}) {
+  if (shouldUseDesktopSessions(runtime)) {
+    return switchDesktopSessionById(runtime, normalized, threadId, { replyToMessageId });
+  }
+
   const replyTarget = runtime.resolveReplyToMessageId(normalized, replyToMessageId);
   const { bindingKey, workspaceRoot } = runtime.getBindingContext(normalized);
   if (!workspaceRoot) {
@@ -344,6 +486,55 @@ async function switchThreadById(runtime, normalized, threadId, { replyToMessageI
   await runtime.showStatusPanel(normalized, { replyToMessageId: replyTarget });
 }
 
+async function switchDesktopSessionById(runtime, normalized, threadId, { replyToMessageId } = {}) {
+  const replyTarget = runtime.resolveReplyToMessageId(normalized, replyToMessageId);
+  const { bindingKey, workspaceRoot } = runtime.getBindingContext(normalized);
+  if (!workspaceRoot) {
+    await runtime.sendInfoCardMessage({
+      chatId: normalized.chatId,
+      replyToMessageId: replyTarget,
+      text: "当前会话还未绑定项目。先发送 `/codex bind /绝对路径`。",
+    });
+    return;
+  }
+
+  const availableThreads = await refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, normalized);
+  const selectedThread = availableThreads.find((thread) => (
+    thread.id === threadId
+    || thread.acpSessionId === threadId
+    || thread.acpxRecordId === threadId
+  )) || null;
+  if (!selectedThread) {
+    await runtime.sendInfoCardMessage({
+      chatId: normalized.chatId,
+      replyToMessageId: replyTarget,
+      text: "指定桌面会话当前不可用，请刷新后重试。",
+    });
+    return;
+  }
+
+  runtime.sessionStore.setActiveWorkspaceRoot(bindingKey, workspaceRoot);
+  runtime.sessionStore.setThreadIdForWorkspace(
+    bindingKey,
+    workspaceRoot,
+    selectedThread.id,
+    codexMessageUtils.buildBindingMetadata(normalized)
+  );
+  runtime.setThreadBindingKey(selectedThread.id, bindingKey);
+  runtime.setThreadWorkspaceRoot(selectedThread.id, workspaceRoot);
+  if (typeof runtime.rememberSelectedThreadForSync === "function") {
+    runtime.rememberSelectedThreadForSync(bindingKey, workspaceRoot, selectedThread.id);
+  }
+
+  const hydrated = await hydrateSelectedDesktopSession(runtime, workspaceRoot, selectedThread.id);
+  await runtime.showStatusPanel(normalized, {
+    replyToMessageId: replyTarget,
+    noticeText: hydrated?.writable
+      ? "已切换到桌面会话，可继续在微信里追问。"
+      : "已切换到桌面会话。当前仅支持查看/同步，暂不支持从微信继续聊天。",
+  });
+}
+
 function getWorkspaceThreadRefreshState(runtime, bindingKey, workspaceRoot) {
   const cacheKey = buildWorkspaceThreadCacheKey(bindingKey, workspaceRoot);
   const state = runtime.workspaceThreadRefreshStateByKey?.get(cacheKey) || null;
@@ -399,6 +590,28 @@ function isSupportedThreadSourceKind(sourceKind) {
 function shouldRecreateThread(error) {
   const message = String(error?.message || "").toLowerCase();
   return message.includes("thread not found") || message.includes("unknown thread");
+}
+
+function shouldUseDesktopSessions(runtime) {
+  return typeof runtime.usesDesktopSessionSource === "function" && runtime.usesDesktopSessionSource();
+}
+
+function findDesktopSessionById(runtime, workspaceRoot, sessionId) {
+  if (typeof runtime.resolveDesktopSessionById !== "function") {
+    return null;
+  }
+  return runtime.resolveDesktopSessionById(workspaceRoot, sessionId);
+}
+
+async function hydrateSelectedDesktopSession(runtime, workspaceRoot, sessionId) {
+  const selectedSession = findDesktopSessionById(runtime, workspaceRoot, sessionId);
+  if (!selectedSession) {
+    return null;
+  }
+  if (typeof runtime.hydrateDesktopSession !== "function") {
+    return selectedSession;
+  }
+  return runtime.hydrateDesktopSession(selectedSession);
 }
 
 module.exports = {

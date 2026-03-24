@@ -6,7 +6,7 @@ const test = require("node:test");
 
 const { FeishuBotRuntime } = require("../src/app/feishu-bot-runtime");
 
-test("FeishuBotRuntime.stop flushes state and closes transports once", async () => {
+test("FeishuBotRuntime.stop closes session state and transports once", async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-im-runtime-"));
   const runtime = new FeishuBotRuntime({
     mode: "feishu-bot",
@@ -38,8 +38,8 @@ test("FeishuBotRuntime.stop flushes state and closes transports once", async () 
     },
   };
   runtime.sessionStore = {
-    flush: async () => {
-      calls.push("flush");
+    close: async () => {
+      calls.push("close");
     },
   };
 
@@ -47,5 +47,5 @@ test("FeishuBotRuntime.stop flushes state and closes transports once", async () 
   await runtime.stop();
 
   assert.equal(runtime.isStopping, true);
-  assert.deepEqual(calls, ["ws", "codex", "flush"]);
+  assert.deepEqual(calls, ["ws", "codex", "close"]);
 });

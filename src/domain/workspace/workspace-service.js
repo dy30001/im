@@ -1,5 +1,4 @@
 const fs = require("fs");
-const os = require("os");
 const path = require("path");
 const {
   isAbsoluteWorkspacePath,
@@ -15,16 +14,14 @@ const {
   extractSendPath,
 } = require("../../shared/command-parsing");
 const {
-  extractModelCatalogFromListResponse,
-  findModelByQuery,
-  normalizeText,
   resolveEffectiveModelForEffort,
 } = require("../../shared/model-catalog");
 const codexMessageUtils = require("../../infra/codex/message-utils");
 const { formatFailureText } = require("../../shared/error-text");
+const browserRuntime = require("./browser-service");
+const settingsRuntime = require("./settings-service");
 
 const MAX_FEISHU_UPLOAD_FILE_BYTES = 30 * 1024 * 1024;
-const MAX_WORKSPACE_BROWSER_ENTRIES = 20;
 
 async function resolveWorkspaceContext(
   runtime,
@@ -74,7 +71,7 @@ async function handleBrowseCommand(
   } = {}
 ) {
   const replyTarget = runtime.resolveReplyToMessageId(normalized, replyToMessageId || normalized.messageId);
-  const browseRoots = resolveBrowseRoots(runtime);
+  const browseRoots = browserRuntime.resolveBrowseRoots(runtime);
   if (!browseRoots.length) {
     await runtime.sendInfoCardMessage({
       chatId: normalized.chatId,
@@ -114,7 +111,7 @@ async function handleBrowseCommand(
   }
   const preferredPath = requestedBrowsePath || normalizeWorkspacePath(currentWorkspaceRoot);
   const requestedPath = preferredPath && isWorkspaceAllowed(preferredPath, browseRoots) ? preferredPath : "";
-  const browserState = await resolveWorkspaceBrowserState(runtime, {
+  const browserState = await browserRuntime.resolveWorkspaceBrowserState(runtime, {
     browseRoots,
     requestedPath,
   });
@@ -138,6 +135,7 @@ async function bindWorkspaceByPath(runtime, normalized, rawWorkspaceRoot, { repl
   const bindingKey = runtime.sessionStore.buildBindingKey(normalized);
   const replyTarget = runtime.resolveReplyToMessageId(normalized, replyToMessageId || normalized.messageId);
   const workspaceRoot = normalizeWorkspacePath(rawWorkspaceRoot);
+  const bindRoots = browserRuntime.resolveBrowseRoots(runtime);
   if (!isAbsoluteWorkspacePath(workspaceRoot)) {
     await runtime.sendInfoCardMessage({
       chatId: normalized.chatId,
@@ -146,11 +144,14 @@ async function bindWorkspaceByPath(runtime, normalized, rawWorkspaceRoot, { repl
     });
     return;
   }
-  if (!isWorkspaceAllowed(workspaceRoot, runtime.config.workspaceAllowlist)) {
+
+  // Keep direct `/codex bind` aligned with the browser boundary so users
+  // cannot bypass the allowed directory scope by typing an absolute path.
+  if (!bindRoots.length || !isWorkspaceAllowed(workspaceRoot, bindRoots)) {
     await runtime.sendInfoCardMessage({
       chatId: normalized.chatId,
       replyToMessageId: replyTarget,
-      text: "该项目不在允许绑定的白名单中。",
+      text: "该项目不在允许绑定的范围内。",
     });
     return;
   }
@@ -174,7 +175,7 @@ async function bindWorkspaceByPath(runtime, normalized, rawWorkspaceRoot, { repl
     return;
   }
 
-  applyDefaultCodexParamsOnBind(runtime, bindingKey, workspaceRoot);
+  settingsRuntime.applyDefaultCodexParamsOnBind(runtime, bindingKey, workspaceRoot);
   runtime.sessionStore.setActiveWorkspaceRoot(bindingKey, workspaceRoot);
   await runtime.refreshWorkspaceThreads(bindingKey, workspaceRoot, normalized);
   const existingThreadId = runtime.resolveThreadIdForBinding(bindingKey, workspaceRoot);
@@ -211,8 +212,8 @@ async function showStatusPanel(runtime, normalized, { replyToMessageId, noticeTe
   const codexParams = runtime.getCodexParamsForWorkspace(bindingKey, workspaceRoot);
   const availableCatalog = runtime.sessionStore.getAvailableModelCatalog();
   const availableModels = Array.isArray(availableCatalog?.models) ? availableCatalog.models : [];
-  const modelOptions = buildModelSelectOptions(availableModels);
-  const effortOptions = buildEffortSelectOptions(availableModels, codexParams?.model || "");
+  const modelOptions = settingsRuntime.buildModelSelectOptions(availableModels);
+  const effortOptions = settingsRuntime.buildEffortSelectOptions(availableModels, codexParams?.model || "");
   await runtime.sendInteractiveCard({
     chatId: normalized.chatId,
     replyToMessageId: replyTarget,
@@ -251,15 +252,25 @@ async function handleMessageCommand(runtime, normalized) {
     await runtime.sendInfoCardMessage({
       chatId: normalized.chatId,
       replyToMessageId: normalized.messageId,
-      text: `当前项目：\`${workspaceRoot}\`\n\n该项目还没有可查看的线程消息。`,
+      text: usesDesktopSessionSource(runtime)
+        ? `当前项目：\`${workspaceRoot}\`\n\n该项目在桌面 App 里还没有可查看的会话消息。`
+        : `当前项目：\`${workspaceRoot}\`\n\n该项目还没有可查看的线程消息。`,
     });
     return;
   }
 
   const currentThread = threads.find((thread) => thread.id === threadId) || { id: threadId };
-  runtime.resumedThreadIds.delete(threadId);
-  const resumeResponse = await runtime.ensureThreadResumed(threadId);
-  const recentMessages = codexMessageUtils.extractRecentConversationFromResumeResponse(resumeResponse);
+  let recentMessages = [];
+  if (usesDesktopSessionSource(runtime) && currentThread?.sourceKind === "desktopSession") {
+    const hydrated = typeof runtime.hydrateDesktopSession === "function"
+      ? await runtime.hydrateDesktopSession(currentThread)
+      : currentThread;
+    recentMessages = Array.isArray(hydrated?.recentMessages) ? hydrated.recentMessages : [];
+  } else {
+    runtime.resumedThreadIds.delete(threadId);
+    const resumeResponse = await runtime.ensureThreadResumed(threadId);
+    recentMessages = codexMessageUtils.extractRecentConversationFromResumeResponse(resumeResponse);
+  }
 
   await runtime.sendInfoCardMessage({
     chatId: normalized.chatId,
@@ -399,7 +410,7 @@ async function handleModelCommand(runtime, normalized) {
   const rawModel = extractModelValue(normalized.text);
   if (!rawModel) {
     const current = runtime.getCodexParamsForWorkspace(bindingKey, workspaceRoot);
-    const availableModelsResult = await loadAvailableModels(runtime, {
+    const availableModelsResult = await settingsRuntime.loadAvailableModels(runtime, {
       forceRefresh: false,
     });
     await runtime.sendInfoCardMessage({
@@ -412,7 +423,7 @@ async function handleModelCommand(runtime, normalized) {
 
   const modelUpdateDirective = parseUpdateDirective(rawModel);
   if (modelUpdateDirective) {
-    const availableModelsResult = await loadAvailableModels(runtime, {
+    const availableModelsResult = await settingsRuntime.loadAvailableModels(runtime, {
       forceRefresh: true,
     });
     await runtime.sendInfoCardMessage({
@@ -425,14 +436,14 @@ async function handleModelCommand(runtime, normalized) {
     return;
   }
 
-  const availableModelsResult = await loadAvailableModelsForSetting(runtime, normalized, {
+  const availableModelsResult = await settingsRuntime.loadAvailableModelsForSetting(runtime, normalized, {
     settingType: "model",
   });
   if (!availableModelsResult) {
     return;
   }
 
-  const resolvedModel = resolveRequestedModel(availableModelsResult.models, rawModel);
+  const resolvedModel = settingsRuntime.resolveRequestedModel(availableModelsResult.models, rawModel);
   if (!resolvedModel) {
     await runtime.sendInfoCardMessage({
       chatId: normalized.chatId,
@@ -463,7 +474,7 @@ async function handleEffortCommand(runtime, normalized) {
   const rawEffort = extractEffortValue(normalized.text);
   if (!rawEffort) {
     const current = runtime.getCodexParamsForWorkspace(bindingKey, workspaceRoot);
-    const availableModelsResult = await loadAvailableModels(runtime, {
+    const availableModelsResult = await settingsRuntime.loadAvailableModels(runtime, {
       forceRefresh: false,
     });
     await runtime.sendInfoCardMessage({
@@ -474,7 +485,7 @@ async function handleEffortCommand(runtime, normalized) {
     return;
   }
 
-  const availableModelsResult = await loadAvailableModelsForSetting(runtime, normalized, {
+  const availableModelsResult = await settingsRuntime.loadAvailableModelsForSetting(runtime, normalized, {
     settingType: "effort",
   });
   if (!availableModelsResult) {
@@ -492,7 +503,7 @@ async function handleEffortCommand(runtime, normalized) {
     return;
   }
 
-  const resolvedEffort = resolveRequestedEffort(effectiveModel, rawEffort);
+  const resolvedEffort = settingsRuntime.resolveRequestedEffort(effectiveModel, rawEffort);
   if (!resolvedEffort) {
     await runtime.sendInfoCardMessage({
       chatId: normalized.chatId,
@@ -563,7 +574,9 @@ async function showThreadPicker(runtime, normalized, { replyToMessageId, page = 
       replyToMessageId: replyTarget,
       text: refreshState.ok === false
         ? `当前项目：\`${workspaceRoot}\`\n\n线程列表刷新失败：${refreshState.error || "请稍后重试。"}`
-        : `当前项目：\`${workspaceRoot}\`\n\n还没有可切换的历史线程。`,
+        : usesDesktopSessionSource(runtime)
+          ? `当前项目：\`${workspaceRoot}\`\n\n桌面 App 里还没有这个项目的可见会话。请先在电脑端打开该项目并创建/恢复会话。`
+          : `当前项目：\`${workspaceRoot}\`\n\n还没有可切换的历史线程。`,
     });
     return;
   }
@@ -728,8 +741,12 @@ module.exports = {
   showStatusPanel,
   showThreadPicker,
   switchWorkspaceByPath,
-  validateDefaultCodexParamsConfig,
+  validateDefaultCodexParamsConfig: settingsRuntime.validateDefaultCodexParamsConfig,
 };
+
+function usesDesktopSessionSource(runtime) {
+  return typeof runtime.usesDesktopSessionSource === "function" && runtime.usesDesktopSessionSource();
+}
 
 function resolveWorkspaceSendTarget(workspaceRoot, requestedPath) {
   const normalizedInput = normalizeWorkspacePath(requestedPath);
@@ -752,122 +769,6 @@ function resolveWorkspaceSendTarget(workspaceRoot, requestedPath) {
   };
 }
 
-async function resolveWorkspaceBrowserState(runtime, { browseRoots, requestedPath }) {
-  if (!requestedPath) {
-    if (browseRoots.length === 1) {
-      return readWorkspaceDirectory(runtime, browseRoots[0], browseRoots);
-    }
-    return {
-      currentPath: "",
-      entries: browseRoots.map((workspaceRoot) => ({
-        kind: "directory",
-        name: workspaceRoot,
-        path: workspaceRoot,
-      })),
-      canGoUp: false,
-      parentPath: "",
-      scopeText: `浏览范围：以下 ${browseRoots.length} 个目录根允许绑定。`,
-      emptyText: "当前没有可选的目录根。",
-      truncated: false,
-    };
-  }
-
-  const normalizedPath = normalizeWorkspacePath(requestedPath);
-  if (!isAbsoluteWorkspacePath(normalizedPath)) {
-    return { errorText: "目标目录无效，请刷新后重试。" };
-  }
-  if (!isWorkspaceAllowed(normalizedPath, browseRoots)) {
-    return { errorText: "该目录不在允许浏览的范围内。" };
-  }
-  return readWorkspaceDirectory(runtime, normalizedPath, browseRoots);
-}
-
-async function readWorkspaceDirectory(runtime, currentPath, browseRoots) {
-  const stats = await runtime.resolveWorkspaceStats(currentPath);
-  if (!stats.exists) {
-    return { errorText: `目录不存在: ${currentPath}` };
-  }
-  if (!stats.isDirectory) {
-    return { errorText: `路径非法: ${currentPath}` };
-  }
-
-  let dirents;
-  try {
-    dirents = await fs.promises.readdir(currentPath, { withFileTypes: true });
-  } catch (error) {
-    return { errorText: formatFailureText("读取目录失败", error) };
-  }
-
-  const parentPath = resolveWorkspaceBrowserParentPath(currentPath, browseRoots);
-  const entries = dirents
-    .map((dirent) => buildWorkspaceBrowserEntry(currentPath, dirent))
-    .filter(Boolean)
-    .sort(compareWorkspaceBrowserEntries)
-    .slice(0, MAX_WORKSPACE_BROWSER_ENTRIES);
-
-  return {
-    currentPath,
-    entries,
-    canGoUp: !!parentPath,
-    parentPath,
-    scopeText: buildWorkspaceBrowserScopeText(browseRoots),
-    emptyText: "当前目录为空。",
-    truncated: dirents.length > MAX_WORKSPACE_BROWSER_ENTRIES,
-  };
-}
-
-function resolveBrowseRoots(runtime) {
-  const allowlist = Array.isArray(runtime.config.workspaceAllowlist)
-    ? runtime.config.workspaceAllowlist
-      .map((workspaceRoot) => normalizeWorkspacePath(workspaceRoot))
-      .filter((workspaceRoot) => isAbsoluteWorkspacePath(workspaceRoot))
-    : [];
-  if (allowlist.length) {
-    return [...new Set(allowlist)].sort((left, right) => left.localeCompare(right));
-  }
-  const homeDirectory = normalizeWorkspacePath(os.homedir());
-  return homeDirectory ? [homeDirectory] : [];
-}
-
-function resolveWorkspaceBrowserParentPath(currentPath, browseRoots) {
-  const parentPath = normalizeWorkspacePath(path.dirname(currentPath));
-  if (!parentPath || parentPath === currentPath) {
-    return "";
-  }
-  return isWorkspaceAllowed(parentPath, browseRoots) ? parentPath : "";
-}
-
-function buildWorkspaceBrowserEntry(currentPath, dirent) {
-  const name = String(dirent?.name || "").trim();
-  if (!name || name === "." || name === "..") {
-    return null;
-  }
-  return {
-    kind: dirent.isDirectory() ? "directory" : "file",
-    name,
-    path: normalizeWorkspacePath(path.join(currentPath, name)),
-  };
-}
-
-function compareWorkspaceBrowserEntries(left, right) {
-  const leftRank = left.kind === "directory" ? 0 : 1;
-  const rightRank = right.kind === "directory" ? 0 : 1;
-  if (leftRank !== rightRank) {
-    return leftRank - rightRank;
-  }
-  return left.name.localeCompare(right.name);
-}
-
-function buildWorkspaceBrowserScopeText(browseRoots) {
-  if (!Array.isArray(browseRoots) || !browseRoots.length) {
-    return "";
-  }
-  if (browseRoots.length === 1) {
-    return `浏览范围：${browseRoots[0]}`;
-  }
-  return `浏览范围：共 ${browseRoots.length} 个允许目录根。`;
-}
-
 function parseUpdateDirective(value) {
   const normalized = String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
   if (normalized === "update") {
@@ -876,215 +777,9 @@ function parseUpdateDirective(value) {
   return null;
 }
 
-function applyDefaultCodexParamsOnBind(runtime, bindingKey, workspaceRoot) {
-  const current = runtime.sessionStore.getCodexParamsForWorkspace(bindingKey, workspaceRoot);
-  if (current.model || current.effort) {
-    return;
-  }
-
-  const availableCatalog = runtime.sessionStore.getAvailableModelCatalog();
-  const availableModels = Array.isArray(availableCatalog?.models) ? availableCatalog.models : [];
-  const validatedDefaults = validateDefaultCodexParamsConfig(runtime, availableModels);
-  const defaultModel = validatedDefaults.model;
-  const defaultEffort = validatedDefaults.effort;
-  if (!defaultModel && !defaultEffort) {
-    return;
-  }
-
-  runtime.sessionStore.setCodexParamsForWorkspace(bindingKey, workspaceRoot, {
-    model: defaultModel,
-    effort: defaultEffort,
-  });
-}
-
-function validateDefaultCodexParamsConfig(runtime, modelsInput) {
-  const models = Array.isArray(modelsInput) ? modelsInput : [];
-  const rawModel = normalizeText(runtime.config.defaultCodexModel);
-  const rawEffort = normalizeEffort(runtime.config.defaultCodexEffort);
-  const result = { model: "", effort: "" };
-  if (!rawModel && !rawEffort) {
-    return result;
-  }
-  if (!models.length) {
-    return result;
-  }
-
-  if (rawModel) {
-    result.model = resolveRequestedModel(models, rawModel);
-  }
-
-  if (rawEffort) {
-    const effectiveModel = resolveEffectiveModelForEffort(models, result.model || rawModel);
-    if (effectiveModel) {
-      result.effort = resolveRequestedEffort(effectiveModel, rawEffort);
-    }
-  }
-
-  return result;
-}
-
 async function resolveCodexSettingWorkspaceContext(runtime, normalized) {
   return resolveWorkspaceContext(runtime, normalized, {
     replyToMessageId: normalized.messageId,
     missingWorkspaceText: "当前会话还未绑定项目。先发送 `/codex bind /绝对路径`。",
   });
-}
-
-function normalizeEffort(value) {
-  return String(value || "").trim().toLowerCase();
-}
-
-async function loadAvailableModelsForSetting(runtime, normalized, { settingType }) {
-  const availableModelsResult = await loadAvailableModels(runtime, {
-    forceRefresh: false,
-  });
-  if (!availableModelsResult.error) {
-    return availableModelsResult;
-  }
-  const isEffort = settingType === "effort";
-  const actionLabel = isEffort ? "推理强度" : "模型";
-  const listCommand = isEffort ? "/codex effort" : "/codex model";
-  await runtime.sendInfoCardMessage({
-    chatId: normalized.chatId,
-    replyToMessageId: normalized.messageId,
-    text: [
-      `无法设置${actionLabel}：${availableModelsResult.error}`,
-      "",
-      `请先执行 \`${listCommand}\`，确认可用${actionLabel}后重试。`,
-    ].join("\n"),
-  });
-  return null;
-}
-
-async function loadAvailableModels(runtime, { forceRefresh = false } = {}) {
-  const cached = runtime.sessionStore.getAvailableModelCatalog();
-  if (!forceRefresh && cached?.models?.length) {
-    return {
-      models: cached.models,
-      error: "",
-      source: "cache",
-      updatedAt: cached.updatedAt || "",
-    };
-  }
-
-  try {
-    const response = await runtime.codex.listModels();
-    const models = extractModelCatalogFromListResponse(response);
-    if (!models.length) {
-      if (cached?.models?.length) {
-        return {
-          models: cached.models,
-          error: "",
-          source: "cache",
-          updatedAt: cached.updatedAt || "",
-          warning: "Codex 未返回模型列表，已回退本地缓存。",
-        };
-      }
-      return {
-        models: [],
-        error: "Codex 未返回可用模型列表。",
-        source: forceRefresh ? "refresh" : "live",
-        updatedAt: "",
-      };
-    }
-    const saved = runtime.sessionStore.setAvailableModelCatalog(models);
-    return {
-      models,
-      error: "",
-      source: forceRefresh ? "refresh" : "live",
-      updatedAt: saved?.updatedAt || new Date().toISOString(),
-    };
-  } catch (error) {
-    if (cached?.models?.length) {
-      return {
-        models: cached.models,
-        error: "",
-        source: "cache",
-        updatedAt: cached.updatedAt || "",
-        warning: `拉取失败，已回退本地缓存：${error?.message || "未知错误"}`,
-      };
-    }
-    return {
-      models: [],
-      error: error?.message || "获取模型列表失败。",
-      source: forceRefresh ? "refresh" : "live",
-      updatedAt: "",
-    };
-  }
-}
-
-function resolveRequestedModel(models, rawInput) {
-  const matched = findModelByQuery(models, rawInput);
-  return matched?.model || matched?.id || "";
-}
-
-function resolveRequestedEffort(modelEntry, rawEffort) {
-  if (!modelEntry) {
-    return "";
-  }
-  const query = normalizeEffort(rawEffort);
-  if (!query) {
-    return "";
-  }
-  const availableEfforts = listModelEfforts(modelEntry, { withDefaultFallback: true });
-  for (const effort of availableEfforts) {
-    if (normalizeEffort(effort) === query) {
-      return effort;
-    }
-  }
-  return "";
-}
-
-function buildModelSelectOptions(models) {
-  if (!Array.isArray(models) || !models.length) {
-    return [];
-  }
-  return models
-    .map((item) => normalizeText(item?.model))
-    .filter(Boolean)
-    .slice(0, 100)
-    .map((model) => ({
-      label: model,
-      value: model,
-    }));
-}
-
-function buildEffortSelectOptions(models, currentModel) {
-  const effectiveModel = resolveEffectiveModelForEffort(models, currentModel);
-  if (!effectiveModel) {
-    return [];
-  }
-  const supported = listModelEfforts(effectiveModel, { withDefaultFallback: true });
-  const options = [];
-  const seen = new Set();
-  for (const effort of supported) {
-    const normalized = normalizeText(effort);
-    if (!normalized) {
-      continue;
-    }
-    const key = normalized.toLowerCase();
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    options.push({
-      label: normalized,
-      value: normalized,
-    });
-  }
-  return options.slice(0, 20);
-}
-
-function listModelEfforts(modelEntry, { withDefaultFallback = false } = {}) {
-  const supported = Array.isArray(modelEntry?.supportedReasoningEfforts)
-    ? modelEntry.supportedReasoningEfforts
-    : [];
-  if (supported.length) {
-    return supported;
-  }
-  if (!withDefaultFallback) {
-    return [];
-  }
-  const defaultEffort = normalizeText(modelEntry?.defaultReasoningEffort);
-  return defaultEffort ? [defaultEffort] : [];
 }

@@ -5,6 +5,7 @@ const path = require("node:path");
 const test = require("node:test");
 
 const { buildWorkspaceBrowserCard } = require("../src/presentation/card/builders");
+const browserRuntime = require("../src/domain/workspace/browser-service");
 const { normalizeFeishuTextEvent } = require("../src/presentation/message/normalizers");
 const workspaceService = require("../src/domain/workspace/workspace-service");
 
@@ -72,6 +73,60 @@ test("handleBrowseCommand rejects browse paths outside the allowlist", async () 
   assert.equal(sentInfo[0].text, "该目录不在允许浏览的范围内。");
 });
 
+test("handleBindCommand rejects direct binds outside the default browse root when the allowlist is empty", async () => {
+  const outsideHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-im-bind-deny-"));
+  const sentInfo = [];
+  const runtime = createBrowseRuntime({
+    workspaceAllowlist: [],
+    onSendInfoCardMessage: (payload) => sentInfo.push(payload),
+  });
+
+  await workspaceService.handleBindCommand(runtime, {
+    ...createNormalizedEvent(),
+    text: `/codex bind ${outsideHomeDir}`,
+    command: "bind",
+  });
+
+  assert.equal(sentInfo.length, 1);
+  assert.equal(sentInfo[0].text, "该项目不在允许绑定的范围内。");
+});
+
+test("handleBindCommand keeps allowing direct binds inside the home directory when the allowlist is empty", async () => {
+  let activeWorkspaceRoot = "";
+  const sentCards = [];
+  const runtime = createBrowseRuntime({
+    workspaceAllowlist: [],
+    onSendInteractiveCard: (payload) => sentCards.push(payload),
+  });
+  runtime.sessionStore.getCodexParamsForWorkspace = () => ({ model: "", effort: "" });
+  runtime.sessionStore.getAvailableModelCatalog = () => null;
+  runtime.sessionStore.setActiveWorkspaceRoot = (_bindingKey, workspaceRoot) => {
+    activeWorkspaceRoot = workspaceRoot;
+  };
+  runtime.getCodexParamsForWorkspace = () => ({ model: "", effort: "" });
+  runtime.getBindingContext = () => ({
+    bindingKey: "binding:1",
+    workspaceRoot: activeWorkspaceRoot,
+  });
+  runtime.resolveWorkspaceThreadState = async () => ({
+    threads: [],
+    threadId: "",
+  });
+  runtime.describeWorkspaceStatus = () => ({ code: "idle", label: "空闲" });
+  runtime.buildStatusPanelCard = ({ workspaceRoot }) => ({ workspaceRoot });
+  runtime.refreshWorkspaceThreads = async () => [];
+  runtime.resolveThreadIdForBinding = () => "";
+
+  await workspaceService.handleBindCommand(runtime, {
+    ...createNormalizedEvent(),
+    text: `/codex bind ${os.homedir()}`,
+    command: "bind",
+  });
+
+  assert.equal(activeWorkspaceRoot, os.homedir());
+  assert.equal(sentCards.length, 1);
+});
+
 test("handleBrowseCommand lists directories before files inside the allowed root", async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-im-browse-list-"));
   const repoDir = path.join(tempDir, "repo");
@@ -97,6 +152,18 @@ test("handleBrowseCommand lists directories before files inside the allowed root
   assert.match(cardJson, /browse_bind/);
 });
 
+test("resolveBrowseRoots normalizes allowlist entries and falls back to home when empty", () => {
+  const allowlistRuntime = createBrowseRuntime({
+    workspaceAllowlist: ["/tmp/repo/", "/tmp/repo", "relative/path"],
+  });
+  const fallbackRuntime = createBrowseRuntime({
+    workspaceAllowlist: [],
+  });
+
+  assert.deepEqual(browserRuntime.resolveBrowseRoots(allowlistRuntime), ["/tmp/repo"]);
+  assert.deepEqual(browserRuntime.resolveBrowseRoots(fallbackRuntime), [os.homedir()]);
+});
+
 function createBrowseRuntime({
   workspaceAllowlist,
   onSendInteractiveCard = () => {},
@@ -105,6 +172,10 @@ function createBrowseRuntime({
   return {
     config: {
       workspaceAllowlist,
+    },
+    sessionStore: {
+      buildBindingKey: () => "binding:1",
+      getBinding: () => ({}),
     },
     getBindingContext() {
       return {

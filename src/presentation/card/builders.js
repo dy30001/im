@@ -259,6 +259,7 @@ function buildStatusPanelCard({
       ? "🟠 等待授权"
       : "";
   const shouldShowAllThreadsButton = Number(totalThreadCount || 0) > 3;
+  const listLabel = currentThread?.sourceKind === "desktopSession" ? "会话列表" : "线程列表";
   const threadRows = [];
   const current = threadId ? (currentThread || { id: threadId }) : null;
   if (current) {
@@ -333,7 +334,7 @@ function buildStatusPanelCard({
   if (threadRows.length) {
     elements.push({
       tag: "markdown",
-      content: `**线程列表**（${threadRows.length}）`,
+      content: `**${listLabel}**（${threadRows.length}）`,
       text_size: "notation",
     });
     threadRows.forEach((row, index) => {
@@ -349,7 +350,7 @@ function buildStatusPanelCard({
   } else {
     elements.push({
       tag: "markdown",
-      content: "**线程列表**\n暂无历史线程",
+      content: `**${listLabel}**\n暂无历史记录`,
       text_size: "notation",
     });
   }
@@ -414,6 +415,7 @@ function buildThreadPickerCard({
   const safePage = Math.min(Math.max(Number(page) || 0, 0), totalPages - 1);
   const startIndex = safePage * normalizedPageSize;
   const pageThreads = normalizedThreads.slice(startIndex, startIndex + normalizedPageSize);
+  const listLabel = normalizedThreads[0]?.sourceKind === "desktopSession" ? "会话列表" : "线程列表";
   const elements = [
     {
       tag: "markdown",
@@ -422,7 +424,7 @@ function buildThreadPickerCard({
     { tag: "hr" },
     {
       tag: "markdown",
-      content: `**线程列表**（共 ${totalCount} 条，第 ${safePage + 1}/${totalPages} 页）`,
+      content: `**${listLabel}**（共 ${totalCount} 条，第 ${safePage + 1}/${totalPages} 页）`,
       text_size: "notation",
     },
   ];
@@ -504,10 +506,11 @@ function buildThreadPickerText({
   const safePage = Math.min(Math.max(Number(page) || 0, 0), totalPages - 1);
   const startIndex = safePage * normalizedPageSize;
   const pageThreads = normalizedThreads.slice(startIndex, startIndex + normalizedPageSize);
+  const listLabel = normalizedThreads[0]?.sourceKind === "desktopSession" ? "会话列表" : "线程列表";
 
   const lines = [
     `当前项目：\`${workspaceRoot}\``,
-    `线程列表（共 ${totalCount} 条，第 ${safePage + 1}/${totalPages} 页）`,
+    `${listLabel}（共 ${totalCount} 条，第 ${safePage + 1}/${totalPages} 页）`,
   ];
   if (typeof noticeText === "string" && noticeText.trim()) {
     lines.push(noticeText.trim());
@@ -522,9 +525,12 @@ function buildThreadPickerText({
     lines.push(formatThreadListEntryText(thread, thread?.id === currentThreadId));
   }
 
+  const switchTargetPlaceholder = normalizedThreads[0]?.sourceKind === "desktopSession"
+    ? "<sessionId>"
+    : "<threadId>";
   lines.push(
     "操作：",
-    "`/codex switch <threadId>`",
+    `\`/codex switch ${switchTargetPlaceholder}\``,
     "`/codex message`",
     "`/codex new`"
   );
@@ -888,9 +894,10 @@ function buildWorkspaceBrowserCard({
 }
 
 function buildThreadMessagesSummary({ workspaceRoot, thread, recentMessages }) {
+  const threadLabel = thread?.sourceKind === "desktopSession" ? "当前会话" : "当前线程";
   const sections = [
     `项目：\`${workspaceRoot}\``,
-    `当前线程：${formatThreadLabel(thread)}`,
+    `${threadLabel}：${formatThreadLabel(thread)}`,
     "***",
     "**对话记录**",
   ];
@@ -990,7 +997,8 @@ function formatThreadIdLine(thread) {
   if (!threadId) {
     return "";
   }
-  return `线程ID：\`${escapeCardMarkdown(threadId)}\``;
+  const label = thread?.sourceKind === "desktopSession" ? "会话ID" : "线程ID";
+  return `${label}：\`${escapeCardMarkdown(threadId)}\``;
 }
 
 function truncateDisplayText(text, maxLength) {

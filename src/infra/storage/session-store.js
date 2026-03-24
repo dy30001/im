@@ -4,18 +4,79 @@ const { normalizeModelCatalog } = require("../../shared/model-catalog");
 
 const DEFAULT_SAVE_DEBOUNCE_MS = 100;
 const RESTRICTED_STATE_FILE_MODE = 0o600;
+const ACTIVE_SESSION_STORE_PATHS = new Set();
 
 class SessionStore {
-  constructor({ filePath }) {
-    this.filePath = filePath;
+  constructor({ filePath, fallbackFilePaths = [] }) {
+    this.filePath = path.resolve(filePath);
+    this.lockFilePath = `${this.filePath}.lock`;
+    this.fallbackFilePaths = normalizePathList(fallbackFilePaths).filter((candidate) => candidate !== this.filePath);
     this.state = createEmptyState();
     this.saveDebounceMs = DEFAULT_SAVE_DEBOUNCE_MS;
     this.saveTimer = null;
     this.saveInFlight = false;
     this.pendingSave = false;
     this.savePromise = Promise.resolve();
+    this.closed = false;
+    this.hasFileLock = false;
     this.ensureParentDirectory();
-    this.load();
+    try {
+      this.acquireFileLock();
+      this.load();
+    } catch (error) {
+      this.releaseFileLock();
+      throw error;
+    }
+  }
+
+  acquireFileLock() {
+    if (ACTIVE_SESSION_STORE_PATHS.has(this.filePath)) {
+      throw new Error(`Session store ${this.filePath} is already in use`);
+    }
+
+    while (true) {
+      let descriptor = null;
+      try {
+        descriptor = fs.openSync(this.lockFilePath, "wx", RESTRICTED_STATE_FILE_MODE);
+        fs.writeFileSync(descriptor, JSON.stringify({
+          pid: process.pid,
+          filePath: this.filePath,
+          createdAt: new Date().toISOString(),
+        }, null, 2), "utf8");
+        ACTIVE_SESSION_STORE_PATHS.add(this.filePath);
+        this.hasFileLock = true;
+        return;
+      } catch (error) {
+        if (error?.code !== "EEXIST") {
+          throw error;
+        }
+        if (!clearStaleSessionStoreLock(this.lockFilePath)) {
+          throw new Error(`Session store ${this.filePath} is already in use`);
+        }
+      } finally {
+        if (descriptor !== null) {
+          try {
+            fs.closeSync(descriptor);
+          } catch {}
+        }
+      }
+    }
+  }
+
+  releaseFileLock() {
+    if (!this.hasFileLock) {
+      return;
+    }
+
+    ACTIVE_SESSION_STORE_PATHS.delete(this.filePath);
+    this.hasFileLock = false;
+    try {
+      fs.unlinkSync(this.lockFilePath);
+    } catch (error) {
+      if (error?.code !== "ENOENT") {
+        throw error;
+      }
+    }
   }
 
   ensureParentDirectory() {
@@ -24,24 +85,29 @@ class SessionStore {
   }
 
   load() {
-    try {
-      const raw = fs.readFileSync(this.filePath, "utf8");
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === "object" && parsed.bindings) {
-        this.state = {
-          ...createEmptyState(),
-          ...parsed,
-          bindings: parsed.bindings || {},
-          approvalCommandAllowlistByWorkspaceRoot: parsed.approvalCommandAllowlistByWorkspaceRoot || {},
-          availableModelCatalog: parsed.availableModelCatalog || {
-            models: [],
-            updatedAt: "",
-          },
-        };
+    const candidatePaths = [this.filePath, ...this.fallbackFilePaths];
+    for (const candidatePath of candidatePaths) {
+      try {
+        const raw = fs.readFileSync(candidatePath, "utf8");
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === "object" && parsed.bindings) {
+          this.state = {
+            ...createEmptyState(),
+            ...parsed,
+            bindings: parsed.bindings || {},
+            approvalCommandAllowlistByWorkspaceRoot: parsed.approvalCommandAllowlistByWorkspaceRoot || {},
+            availableModelCatalog: parsed.availableModelCatalog || {
+              models: [],
+              updatedAt: "",
+            },
+          };
+          return;
+        }
+      } catch {
+        continue;
       }
-    } catch {
-      this.state = createEmptyState();
     }
+    this.state = createEmptyState();
   }
 
   save() {
@@ -99,7 +165,15 @@ class SessionStore {
   }
 
   async close() {
-    await this.flush();
+    if (this.closed) {
+      return;
+    }
+    this.closed = true;
+    try {
+      await this.flush();
+    } finally {
+      this.releaseFileLock();
+    }
   }
 
   getBinding(bindingKey) {
@@ -378,6 +452,49 @@ function normalizeCommandAllowlist(allowlist) {
   return allowlist
     .map((tokens) => normalizeCommandTokens(tokens))
     .filter((tokens) => tokens.length > 0);
+}
+
+function normalizePathList(paths) {
+  if (!Array.isArray(paths)) {
+    return [];
+  }
+  return paths
+    .map((item) => (typeof item === "string" ? item.trim() : ""))
+    .filter(Boolean)
+    .map((item) => path.resolve(item))
+    .filter(Boolean);
+}
+
+function clearStaleSessionStoreLock(lockFilePath) {
+  const lockInfo = readSessionStoreLock(lockFilePath);
+  const lockPid = Number(lockInfo?.pid);
+  if (Number.isInteger(lockPid) && lockPid > 0 && isSessionStoreProcessAlive(lockPid)) {
+    return false;
+  }
+
+  try {
+    fs.unlinkSync(lockFilePath);
+    return true;
+  } catch (error) {
+    return error?.code === "ENOENT";
+  }
+}
+
+function readSessionStoreLock(lockFilePath) {
+  try {
+    return JSON.parse(fs.readFileSync(lockFilePath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function isSessionStoreProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code !== "ESRCH";
+  }
 }
 
 async function writeStateAtomically(filePath, serializedState) {
