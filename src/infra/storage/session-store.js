@@ -2,10 +2,17 @@ const fs = require("fs");
 const path = require("path");
 const { normalizeModelCatalog } = require("../../shared/model-catalog");
 
+const DEFAULT_SAVE_DEBOUNCE_MS = 100;
+
 class SessionStore {
   constructor({ filePath }) {
     this.filePath = filePath;
     this.state = createEmptyState();
+    this.saveDebounceMs = DEFAULT_SAVE_DEBOUNCE_MS;
+    this.saveTimer = null;
+    this.saveInFlight = false;
+    this.pendingSave = false;
+    this.savePromise = Promise.resolve();
     this.ensureParentDirectory();
     this.load();
   }
@@ -37,7 +44,61 @@ class SessionStore {
   }
 
   save() {
-    fs.writeFileSync(this.filePath, JSON.stringify(this.state, null, 2));
+    this.requestSave();
+  }
+
+  requestSave() {
+    this.pendingSave = true;
+    if (this.saveTimer || this.saveInFlight) {
+      return;
+    }
+
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = null;
+      this.flush().catch((error) => {
+        console.error(`[codex-im] failed to persist session store: ${error.message}`);
+      });
+    }, this.saveDebounceMs);
+
+    if (typeof this.saveTimer.unref === "function") {
+      this.saveTimer.unref();
+    }
+  }
+
+  async flush() {
+    this.pendingSave = true;
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+
+    if (this.saveInFlight) {
+      return this.savePromise;
+    }
+
+    this.saveInFlight = true;
+    this.savePromise = (async () => {
+      try {
+        while (this.pendingSave) {
+          this.pendingSave = false;
+          await writeStateAtomically(this.filePath, JSON.stringify(this.state, null, 2));
+        }
+      } catch (error) {
+        this.pendingSave = true;
+        throw error;
+      } finally {
+        this.saveInFlight = false;
+        if (this.pendingSave && !this.saveTimer) {
+          this.requestSave();
+        }
+      }
+    })();
+
+    return this.savePromise;
+  }
+
+  async close() {
+    await this.flush();
   }
 
   getBinding(bindingKey) {
@@ -305,6 +366,17 @@ function normalizeCommandAllowlist(allowlist) {
   return allowlist
     .map((tokens) => normalizeCommandTokens(tokens))
     .filter((tokens) => tokens.length > 0);
+}
+
+async function writeStateAtomically(filePath, serializedState) {
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
+  try {
+    await fs.promises.writeFile(tempPath, serializedState, "utf8");
+    await fs.promises.rename(tempPath, filePath);
+  } catch (error) {
+    await fs.promises.unlink(tempPath).catch(() => {});
+    throw error;
+  }
 }
 
 module.exports = { SessionStore };

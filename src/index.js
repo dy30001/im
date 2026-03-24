@@ -5,6 +5,9 @@ const dotenv = require("dotenv");
 
 const { readConfig } = require("./infra/config/config");
 const { FeishuBotRuntime } = require("./app/feishu-bot-runtime");
+const { OpenClawBotRuntime } = require("./app/openclaw-bot-runtime");
+
+let shutdownHooksInstalled = false;
 
 function loadEnv() {
   ensureDefaultConfigDirectory();
@@ -36,11 +39,33 @@ async function main() {
 
   if (!config.mode || config.mode === "feishu-bot") {
     const runtime = new FeishuBotRuntime(config);
-    await runtime.start();
+    installShutdownHooks(runtime);
+    try {
+      await runtime.start();
+    } catch (error) {
+      await runtime.stop().catch((stopError) => {
+        console.error(`[codex-im] failed to stop runtime after startup error: ${stopError.message}`);
+      });
+      throw error;
+    }
     return;
   }
 
-  console.error("Usage: codex-im [feishu-bot]");
+  if (config.mode === "openclaw-bot") {
+    const runtime = new OpenClawBotRuntime(config);
+    installShutdownHooks(runtime);
+    try {
+      await runtime.start();
+    } catch (error) {
+      await runtime.stop().catch((stopError) => {
+        console.error(`[codex-im] failed to stop runtime after startup error: ${stopError.message}`);
+      });
+      throw error;
+    }
+    return;
+  }
+
+  console.error("Usage: codex-im [feishu-bot|openclaw-bot]");
   process.exit(1);
 }
 
@@ -48,6 +73,35 @@ if (require.main === module) {
   main().catch((error) => {
     console.error(`[codex-im] ${error.message}`);
     process.exit(1);
+  });
+}
+
+function installShutdownHooks(runtime) {
+  if (shutdownHooksInstalled) {
+    return;
+  }
+
+  shutdownHooksInstalled = true;
+  let shuttingDown = false;
+  const shutdown = async (signal) => {
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
+    try {
+      await runtime.stop();
+    } catch (error) {
+      console.error(`[codex-im] shutdown failed for ${signal}: ${error.message}`);
+    } finally {
+      process.exit(0);
+    }
+  };
+
+  process.once("SIGINT", () => {
+    void shutdown("SIGINT");
+  });
+  process.once("SIGTERM", () => {
+    void shutdown("SIGTERM");
   });
 }
 

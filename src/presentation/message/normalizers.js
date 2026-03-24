@@ -1,4 +1,5 @@
 const codexMessageUtils = require("../../infra/codex/message-utils");
+const { detectNaturalCommand } = require("../../shared/command-parsing");
 
 function normalizeFeishuTextEvent(event, config) {
   const message = event?.message || {};
@@ -22,6 +23,40 @@ function normalizeFeishuTextEvent(event, config) {
     text,
     command: parseCommand(text),
     receivedAt: new Date().toISOString(),
+  };
+}
+
+function normalizeOpenClawTextEvent(message, config) {
+  if (Number(message?.message_type) !== 1) {
+    return null;
+  }
+
+  const text = extractOpenClawText(message?.item_list);
+  if (!text) {
+    return null;
+  }
+
+  const fromUserId = normalizeIdentifier(message?.from_user_id);
+  const sessionId = normalizeIdentifier(message?.session_id);
+  const messageId = normalizeIdentifier(message?.message_id == null ? "" : String(message.message_id));
+  if (!fromUserId || !messageId) {
+    return null;
+  }
+  const createdAt = Number.isFinite(Number(message?.create_time_ms))
+    ? new Date(Number(message.create_time_ms)).toISOString()
+    : new Date().toISOString();
+
+  return {
+    provider: "openclaw",
+    workspaceId: config.defaultWorkspaceId,
+    chatId: fromUserId,
+    threadKey: sessionId,
+    senderId: fromUserId,
+    messageId,
+    text,
+    command: parseCommand(text),
+    receivedAt: createdAt,
+    contextToken: normalizeIdentifier(message?.context_token),
   };
 }
 
@@ -58,6 +93,7 @@ function extractCardAction(data) {
       kind: value.kind,
       action: value.action || "",
       threadId: value.threadId || "",
+      page: normalizeActionPage(value.page),
     };
   }
   if (value.kind === "workspace") {
@@ -110,6 +146,19 @@ function parseFeishuMessageText(rawContent) {
   }
 }
 
+function extractOpenClawText(itemList) {
+  if (!Array.isArray(itemList)) {
+    return "";
+  }
+
+  const textParts = itemList
+    .filter((item) => Number(item?.type) === 1)
+    .map((item) => String(item?.text_item?.text || "").trim())
+    .filter(Boolean);
+
+  return textParts.join("\n\n");
+}
+
 function parseCommand(text) {
   const normalized = text.trim().toLowerCase();
   const prefixes = ["/codex "];
@@ -118,6 +167,8 @@ function parseCommand(text) {
   const exactCommands = {
     stop: ["stop"],
     where: ["where"],
+    browse: ["browse"],
+    threads: ["threads"],
     inspect_message: ["message"],
     help: ["help"],
     workspace: ["workspace"],
@@ -160,6 +211,10 @@ function parseCommand(text) {
   if (exactPrefixes.includes(normalized)) {
     return "unknown_command";
   }
+  const naturalCommand = detectNaturalCommand(text);
+  if (naturalCommand) {
+    return naturalCommand;
+  }
   if (text.trim()) {
     return "message";
   }
@@ -193,9 +248,23 @@ function normalizeIdentifier(value) {
   return typeof value === "string" && value.trim() ? value.trim() : "";
 }
 
+function normalizeActionPage(value) {
+  const page = Number(value);
+  if (Number.isInteger(page) && page >= 0) {
+    return page;
+  }
+  if (value !== undefined && value !== null && value !== "") {
+    console.warn("[codex-im] invalid thread action page, falling back to 0", {
+      rawPage: value,
+    });
+  }
+  return 0;
+}
+
 module.exports = {
   extractCardAction,
   mapCodexMessageToImEvent,
   normalizeCardActionContext,
   normalizeFeishuTextEvent,
+  normalizeOpenClawTextEvent,
 };

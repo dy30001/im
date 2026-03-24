@@ -3,9 +3,33 @@ const eventsRuntime = require("./codex-event-service");
 const { formatFailureText } = require("../shared/error-text");
 
 async function onFeishuTextEvent(runtime, event) {
+  if (runtime.isStopping) {
+    return;
+  }
   const normalized = messageNormalizers.normalizeFeishuTextEvent(event, runtime.config);
+  return onNormalizedTextEvent(runtime, normalized);
+}
+
+async function onOpenClawTextEvent(runtime, message) {
+  if (runtime.isStopping) {
+    return;
+  }
+  const normalized = messageNormalizers.normalizeOpenClawTextEvent(message, runtime.config);
+  if (runtime.config.verboseCodexLogs) {
+    console.log(
+      `[codex-im] openclaw normalized command=${normalized?.command || "-"} `
+      + `chat=${normalized?.chatId || "-"} message=${normalized?.messageId || "-"}`
+    );
+  }
+  return onNormalizedTextEvent(runtime, normalized);
+}
+
+async function onNormalizedTextEvent(runtime, normalized) {
   if (!normalized) {
     return;
+  }
+  if (typeof runtime.rememberInboundContext === "function") {
+    runtime.rememberInboundContext(normalized);
   }
 
   if (await runtime.dispatchTextCommand(normalized)) {
@@ -54,6 +78,9 @@ async function onFeishuTextEvent(runtime, event) {
 }
 
 async function onFeishuCardAction(runtime, data) {
+  if (runtime.isStopping) {
+    return runtime.buildCardToast("当前正在停止，请稍后重试。");
+  }
   try {
     return await runtime.handleCardAction(data);
   } catch (error) {
@@ -70,4 +97,5 @@ module.exports = {
   onCodexMessage,
   onFeishuCardAction,
   onFeishuTextEvent,
+  onOpenClawTextEvent,
 };

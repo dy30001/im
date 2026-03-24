@@ -36,8 +36,13 @@ async function handleStopCommand(runtime, normalized) {
 }
 
 function handleCodexMessage(runtime, message) {
+  if (runtime.isStopping) {
+    return;
+  }
   if (typeof message?.method === "string") {
-    console.log(`[codex-im] codex event ${message.method}`);
+    if (runtime.config.verboseCodexLogs) {
+      console.log(`[codex-im] codex event ${message.method}`);
+    }
   }
   codexMessageUtils.trackRunningTurn(runtime.activeTurnIdByThreadId, message);
   codexMessageUtils.trackPendingApproval(runtime.pendingApprovalByThreadId, message);
@@ -65,9 +70,9 @@ function handleCodexMessage(runtime, message) {
   }
 
   const shouldCleanupThreadState = isTerminalTurnMessage(message);
-  runtime.deliverToFeishu(outbound)
+  runtime.deliverToProvider(outbound)
     .catch((error) => {
-      console.error(`[codex-im] failed to deliver Feishu message: ${error.message}`);
+      console.error(`[codex-im] failed to deliver provider message: ${error.message}`);
     })
     .finally(() => {
       if (!shouldCleanupThreadState || !threadId) {
@@ -80,7 +85,14 @@ function handleCodexMessage(runtime, message) {
     });
 }
 
-async function deliverToFeishu(runtime, event) {
+async function deliverToProvider(runtime, event) {
+  if (runtime.isStopping) {
+    return;
+  }
+  const streamingOutput = runtime.supportsInteractiveCards()
+    ? runtime.config.feishuStreamingOutput
+    : runtime.config.openclawStreamingOutput;
+
   if (event.type === "im.agent_reply") {
     await runtime.upsertAssistantReplyCard({
       threadId: event.payload.threadId,
@@ -88,14 +100,14 @@ async function deliverToFeishu(runtime, event) {
       chatId: event.payload.chatId,
       text: event.payload.text,
       state: "streaming",
-      deferFlush: !runtime.config.feishuStreamingOutput,
+      deferFlush: !streamingOutput,
     });
     return;
   }
 
   if (event.type === "im.run_state") {
     if (event.payload.state === "streaming") {
-      if (!runtime.config.feishuStreamingOutput) {
+      if (!streamingOutput) {
         return;
       }
       await runtime.upsertAssistantReplyCard({
@@ -152,7 +164,7 @@ function isTerminalTurnMessage(message) {
 }
 
 module.exports = {
-  deliverToFeishu,
+  deliverToProvider,
   handleCodexMessage,
   handleStopCommand,
 };

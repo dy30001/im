@@ -1,4 +1,7 @@
 const PANEL_ACTION_CONFIG = Object.freeze({
+  browse: Object.freeze({
+    feedback: "正在打开目录浏览...",
+  }),
   open_threads: Object.freeze({
     feedback: "正在打开线程列表...",
   }),
@@ -27,17 +30,37 @@ const PANEL_ACTION_CONFIG = Object.freeze({
 });
 
 const THREAD_ACTION_CONFIG = Object.freeze({
+  prev_page: Object.freeze({
+    feedback: "正在打开上一页线程...",
+  }),
+  next_page: Object.freeze({
+    feedback: "正在打开下一页线程...",
+  }),
+  refresh: Object.freeze({
+    feedback: "正在刷新线程列表...",
+  }),
   switch: Object.freeze({
     feedback: "正在切换线程...",
     alreadyCurrentText: "已经是当前线程，无需切换。",
+    missingThreadIdText: "未读取到线程 ID，请刷新后重试。",
   }),
   messages: Object.freeze({
     feedback: "正在获取最近消息...",
     notCurrentText: "非当前线程，请先切换到该线程。",
+    missingThreadIdText: "未读取到线程 ID，请刷新后重试。",
   }),
 });
 
 const WORKSPACE_ACTION_CONFIG = Object.freeze({
+  browse_bind: Object.freeze({
+    feedback: "正在绑定项目...",
+  }),
+  browse_open: Object.freeze({
+    feedback: "正在打开目录...",
+  }),
+  browse_parent: Object.freeze({
+    feedback: "正在返回上一级目录...",
+  }),
   status: Object.freeze({
     feedback: "正在查看线程列表...",
   }),

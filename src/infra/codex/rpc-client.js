@@ -2,9 +2,15 @@ const { spawn } = require("child_process");
 const os = require("os");
 const WebSocket = require("ws");
 
-const IS_WINDOWS = os.platform() === "win32";
+const PLATFORM = os.platform();
+const IS_WINDOWS = PLATFORM === "win32";
+const IS_MACOS = PLATFORM === "darwin";
 const DEFAULT_CODEX_COMMAND = "codex";
 const WINDOWS_EXECUTABLE_SUFFIX_RE = /\.(cmd|exe|bat)$/i;
+const MACOS_CODEX_APP_CANDIDATES = [
+  "/Applications/Codex.app/Contents/Resources/codex",
+  `${os.homedir()}/Applications/Codex.app/Contents/Resources/codex`,
+];
 const CODEX_CLIENT_INFO = {
   name: "codex_im_agent",
   title: "Codex IM Agent",
@@ -12,10 +18,20 @@ const CODEX_CLIENT_INFO = {
 };
 
 class CodexRpcClient {
-  constructor({ endpoint = "", env = process.env, codexCommand = "" }) {
+  constructor({
+    endpoint = "",
+    env = process.env,
+    codexCommand = "",
+    spawnImpl = spawn,
+    webSocketImpl = WebSocket,
+    verboseLogs = false,
+  }) {
     this.endpoint = endpoint;
     this.env = env;
-    this.codexCommand = codexCommand || resolveDefaultCodexCommand(env);
+    this.codexCommand = normalizeNonEmptyString(codexCommand) || normalizeNonEmptyString(env.CODEX_IM_CODEX_COMMAND);
+    this.spawnImpl = spawnImpl;
+    this.webSocketImpl = webSocketImpl;
+    this.verboseLogs = verboseLogs;
     this.mode = endpoint ? "websocket" : "spawn";
     this.socket = null;
     this.child = null;
@@ -23,6 +39,8 @@ class CodexRpcClient {
     this.pending = new Map();
     this.isReady = false;
     this.messageListeners = new Set();
+    this.isClosing = false;
+    this.hasReportedTransportFailure = false;
   }
 
   async connect() {
@@ -43,19 +61,14 @@ class CodexRpcClient {
     for (const command of commandCandidates) {
       try {
         const spawnSpec = buildSpawnSpec(command);
-        child = spawn(spawnSpec.command, spawnSpec.args, {
-          env: { ...this.env },
-          stdio: ["pipe", "pipe", "pipe"],
-          shell: false,
-        });
+        child = await spawnCodexProcess(this.spawnImpl, spawnSpec, this.env);
         selectedCommand = command;
-        child.once("spawn", () => {
-          console.log(`[codex-im] spawned Codex app-server via ${spawnSpec.command} ${spawnSpec.args.join(" ")}`);
-        });
+        this.hasReportedTransportFailure = false;
+        console.log(`[codex-im] spawned Codex app-server via ${spawnSpec.command} ${spawnSpec.args.join(" ")}`);
         break;
       } catch (error) {
         lastError = error;
-        if (error?.code !== "ENOENT" && error?.code !== "EINVAL") {
+        if (!isSpawnCandidateError(error)) {
           throw error;
         }
       }
@@ -70,8 +83,14 @@ class CodexRpcClient {
     this.child = child;
 
     child.on("error", (error) => {
+      if (this.isClosing) {
+        return;
+      }
       this.isReady = false;
-      console.error(`[codex-im] failed to spawn Codex app-server via ${selectedCommand || this.codexCommand}: ${error.message}`);
+      this.reportTransportFailure(
+        error,
+        `[codex-im] failed to spawn Codex app-server via ${selectedCommand || this.codexCommand || DEFAULT_CODEX_COMMAND}: ${error.message}`
+      );
     });
 
     child.stdout.on("data", (chunk) => {
@@ -94,19 +113,35 @@ class CodexRpcClient {
       }
     });
 
-    child.on("close", (code) => {
+    child.on("close", (code, signal) => {
+      if (this.isClosing) {
+        return;
+      }
       this.isReady = false;
-      console.error(`[codex-im] codex app-server exited with code ${code}`);
+      this.child = null;
+      const suffix = signal ? ` signal ${signal}` : "";
+      this.reportTransportFailure(
+        new Error(`codex app-server exited with code ${code}${suffix}`),
+        `[codex-im] codex app-server exited with code ${code}${suffix}`
+      );
     });
   }
 
   async connectWebSocket() {
     await new Promise((resolve, reject) => {
-      const socket = new WebSocket(this.endpoint);
+      const socket = new this.webSocketImpl(this.endpoint);
       this.socket = socket;
 
-      socket.on("open", () => resolve());
-      socket.on("error", (error) => reject(error));
+      socket.on("open", () => {
+        this.hasReportedTransportFailure = false;
+        resolve();
+      });
+      socket.on("error", (error) => {
+        if (!this.isClosing) {
+          this.reportTransportFailure(error, `[codex-im] failed to open Codex websocket: ${error.message}`);
+        }
+        reject(error);
+      });
       socket.on("message", (chunk) => {
         const message = typeof chunk === "string" ? chunk : chunk.toString("utf8");
         if (message.trim()) {
@@ -115,6 +150,10 @@ class CodexRpcClient {
       });
       socket.on("close", () => {
         this.isReady = false;
+        this.socket = null;
+        if (!this.isClosing) {
+          this.rejectAllPending(new Error("Codex websocket closed"));
+        }
       });
     });
   }
@@ -190,31 +229,41 @@ class CodexRpcClient {
   async sendRequest(method, params) {
     const id = createRequestId();
     const payload = JSON.stringify({ id, method, params });
+    let rejectPending = null;
 
     const responsePromise = new Promise((resolve, reject) => {
+      rejectPending = reject;
       this.pending.set(id, { resolve, reject });
     });
 
-    logCodexOutboundMessage(`request:${method}`, payload);
-    this.sendRaw(payload);
+    logCodexOutboundMessage(this.verboseLogs, `request:${method}`, payload);
+    try {
+      await this.sendRaw(payload);
+    } catch (error) {
+      this.pending.delete(id);
+      if (rejectPending) {
+        rejectPending(error);
+      }
+      throw error;
+    }
     return responsePromise;
   }
 
   async sendNotification(method, params) {
     const payload = JSON.stringify({ method, params });
-    logCodexOutboundMessage(`notification:${method}`, payload);
-    this.sendRaw(payload);
+    logCodexOutboundMessage(this.verboseLogs, `notification:${method}`, payload);
+    await this.sendRaw(payload);
   }
 
   async sendResponse(id, result) {
     const payload = JSON.stringify({ id, result });
-    logCodexOutboundMessage("response", payload);
-    this.sendRaw(payload);
+    logCodexOutboundMessage(this.verboseLogs, "response", payload);
+    await this.sendRaw(payload);
   }
 
-  sendRaw(payload) {
+  async sendRaw(payload) {
     if (this.mode === "websocket") {
-      if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      if (!this.socket || this.socket.readyState !== this.webSocketImpl.OPEN) {
         throw new Error("Codex websocket is not connected");
       }
       this.socket.send(payload);
@@ -224,16 +273,19 @@ class CodexRpcClient {
     if (!this.child || !this.child.stdin.writable) {
       throw new Error("Codex process stdin is not writable");
     }
-    this.child.stdin.write(`${payload}\n`);
+    await writePayloadToWritable(this.child.stdin, `${payload}\n`);
   }
 
   handleIncoming(rawMessage) {
-    const parsed = tryParseJson(rawMessage);
-    if (!parsed) {
-      logCodexParseFailure(rawMessage);
+    if (this.isClosing) {
       return;
     }
-    logCodexInboundMessage(parsed);
+    const parsed = tryParseJson(rawMessage);
+    if (!parsed) {
+      logCodexParseFailure(this.verboseLogs, rawMessage);
+      return;
+    }
+    logCodexInboundMessage(this.verboseLogs, parsed);
 
     if (parsed && parsed.id != null && this.pending.has(String(parsed.id))) {
       const { resolve, reject } = this.pending.get(String(parsed.id));
@@ -250,6 +302,57 @@ class CodexRpcClient {
       listener(parsed);
     }
   }
+
+  async close() {
+    this.isClosing = true;
+    this.isReady = false;
+    this.stdoutBuffer = "";
+
+    if (this.socket) {
+      try {
+        this.socket.removeAllListeners?.();
+        this.socket.close?.();
+      } catch {
+        // best effort
+      }
+      this.socket = null;
+    }
+
+    if (this.child) {
+      try {
+        this.child.removeAllListeners?.();
+        if (!this.child.killed) {
+          this.child.kill?.();
+        }
+      } catch {
+        // best effort
+      }
+      this.child = null;
+    }
+
+    this.rejectAllPending(new Error("Codex client closed"));
+  }
+
+  rejectAllPending(error) {
+    if (!this.pending.size) {
+      return;
+    }
+    const pendingEntries = Array.from(this.pending.values());
+    this.pending.clear();
+    for (const { reject } of pendingEntries) {
+      reject(error);
+    }
+  }
+
+  reportTransportFailure(error, message) {
+    if (this.hasReportedTransportFailure) {
+      this.rejectAllPending(error);
+      return;
+    }
+    this.hasReportedTransportFailure = true;
+    console.error(message);
+    this.rejectAllPending(error);
+  }
 }
 
 function createRequestId() {
@@ -264,7 +367,10 @@ function tryParseJson(rawMessage) {
   }
 }
 
-function logCodexOutboundMessage(operation, payload) {
+function logCodexOutboundMessage(enabled, operation, payload) {
+  if (!enabled) {
+    return;
+  }
   try {
     console.log(`[codex-im] codex=> op=${operation} ${payload}`);
   } catch {
@@ -272,7 +378,10 @@ function logCodexOutboundMessage(operation, payload) {
   }
 }
 
-function logCodexInboundMessage(message) {
+function logCodexInboundMessage(enabled, message) {
+  if (!enabled) {
+    return;
+  }
   try {
     console.log(`[codex-im] codex<= ${JSON.stringify(message)}`);
   } catch {
@@ -280,19 +389,32 @@ function logCodexInboundMessage(message) {
   }
 }
 
-function logCodexParseFailure(rawMessage) {
+function logCodexParseFailure(enabled, rawMessage) {
+  if (!enabled) {
+    return;
+  }
   const sample = String(rawMessage || "").slice(0, 300);
   console.warn(`[codex-im] codex<= [parse_failed] raw=${JSON.stringify(sample)}`);
 }
 
-function resolveDefaultCodexCommand(env = process.env) {
-  return normalizeNonEmptyString(env.CODEX_IM_CODEX_COMMAND) || DEFAULT_CODEX_COMMAND;
+function buildCodexCommandCandidates(configuredCommand) {
+  return buildCodexCommandCandidatesWithPlatform(configuredCommand, {
+    isWindows: IS_WINDOWS,
+    isMacos: IS_MACOS,
+  });
 }
 
-function buildCodexCommandCandidates(configuredCommand) {
+function buildCodexCommandCandidatesWithPlatform(
+  configuredCommand,
+  {
+    isWindows = IS_WINDOWS,
+    isMacos = IS_MACOS,
+    macosAppCandidates = MACOS_CODEX_APP_CANDIDATES,
+  } = {}
+) {
   const explicit = normalizeNonEmptyString(configuredCommand);
   if (explicit) {
-    if (!IS_WINDOWS) {
+    if (!isWindows) {
       return [explicit];
     }
 
@@ -303,15 +425,23 @@ function buildCodexCommandCandidates(configuredCommand) {
     return [...new Set(candidates)];
   }
 
-  if (IS_WINDOWS) {
+  if (isWindows) {
     return [DEFAULT_CODEX_COMMAND, `${DEFAULT_CODEX_COMMAND}.cmd`, `${DEFAULT_CODEX_COMMAND}.exe`, `${DEFAULT_CODEX_COMMAND}.bat`];
+  }
+
+  if (isMacos) {
+    return [DEFAULT_CODEX_COMMAND, ...macosAppCandidates];
   }
 
   return [DEFAULT_CODEX_COMMAND];
 }
 
 function buildSpawnSpec(command) {
-  if (IS_WINDOWS) {
+  return buildSpawnSpecWithPlatform(command, { isWindows: IS_WINDOWS });
+}
+
+function buildSpawnSpecWithPlatform(command, { isWindows = IS_WINDOWS } = {}) {
+  if (isWindows) {
     return {
       command: "cmd.exe",
       args: ["/c", command, "app-server"],
@@ -322,6 +452,87 @@ function buildSpawnSpec(command) {
     command,
     args: ["app-server"],
   };
+}
+
+function isSpawnCandidateError(error) {
+  return error?.code === "ENOENT" || error?.code === "EINVAL";
+}
+
+function spawnCodexProcess(spawnImpl, spawnSpec, env) {
+  return new Promise((resolve, reject) => {
+    let child;
+    try {
+      child = spawnImpl(spawnSpec.command, spawnSpec.args, {
+        env: { ...env },
+        stdio: ["pipe", "pipe", "pipe"],
+        shell: false,
+      });
+    } catch (error) {
+      reject(error);
+      return;
+    }
+
+    const cleanup = () => {
+      child?.removeListener("spawn", handleSpawn);
+      child?.removeListener("error", handleError);
+    };
+
+    const handleSpawn = () => {
+      cleanup();
+      resolve(child);
+    };
+
+    const handleError = (error) => {
+      cleanup();
+      reject(error);
+    };
+
+    child.once("spawn", handleSpawn);
+    child.once("error", handleError);
+  });
+}
+
+function writePayloadToWritable(writable, payload) {
+  return new Promise((resolve, reject) => {
+    const onError = (error) => {
+      cleanup();
+      reject(error);
+    };
+
+    const onDrain = () => {
+      cleanup();
+      resolve();
+    };
+
+    const cleanup = () => {
+      writable?.removeListener("error", onError);
+      writable?.removeListener("drain", onDrain);
+    };
+
+    writable.once("error", onError);
+
+    let canContinue = false;
+    try {
+      canContinue = writable.write(payload, (error) => {
+        if (error) {
+          cleanup();
+          reject(error);
+        }
+      });
+    } catch (error) {
+      cleanup();
+      reject(error);
+      return;
+    }
+
+    if (canContinue) {
+      cleanup();
+      resolve();
+      return;
+    }
+
+    writable.once("drain", onDrain);
+  });
 }
 
 function normalizeNonEmptyString(value) {
@@ -412,4 +623,13 @@ function buildExecutionPolicies(accessMode, workspaceRoot) {
   };
 }
 
-module.exports = { CodexRpcClient };
+module.exports = {
+  CodexRpcClient,
+  buildCodexCommandCandidates,
+  buildCodexCommandCandidatesWithPlatform,
+  buildSpawnSpec,
+  buildSpawnSpecWithPlatform,
+  isSpawnCandidateError,
+  spawnCodexProcess,
+  writePayloadToWritable,
+};

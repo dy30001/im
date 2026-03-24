@@ -1,4 +1,5 @@
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const {
   isAbsoluteWorkspacePath,
@@ -23,6 +24,7 @@ const codexMessageUtils = require("../../infra/codex/message-utils");
 const { formatFailureText } = require("../../shared/error-text");
 
 const MAX_FEISHU_UPLOAD_FILE_BYTES = 30 * 1024 * 1024;
+const MAX_WORKSPACE_BROWSER_ENTRIES = 20;
 
 async function resolveWorkspaceContext(
   runtime,
@@ -47,7 +49,6 @@ async function resolveWorkspaceContext(
 }
 
 async function handleBindCommand(runtime, normalized) {
-  const bindingKey = runtime.sessionStore.buildBindingKey(normalized);
   const rawWorkspaceRoot = extractBindPath(normalized.text);
   if (!rawWorkspaceRoot) {
     await runtime.sendInfoCardMessage({
@@ -58,11 +59,89 @@ async function handleBindCommand(runtime, normalized) {
     return;
   }
 
+  await bindWorkspaceByPath(runtime, normalized, rawWorkspaceRoot, {
+    replyToMessageId: normalized.messageId,
+  });
+}
+
+async function handleBrowseCommand(
+  runtime,
+  normalized,
+  {
+    replyToMessageId = "",
+    browsePath = "",
+    bindPath = "",
+  } = {}
+) {
+  const replyTarget = runtime.resolveReplyToMessageId(normalized, replyToMessageId || normalized.messageId);
+  const browseRoots = resolveBrowseRoots(runtime);
+  if (!browseRoots.length) {
+    await runtime.sendInfoCardMessage({
+      chatId: normalized.chatId,
+      replyToMessageId: replyTarget,
+      text: "当前没有可浏览的目录范围。",
+    });
+    return;
+  }
+
+  if (bindPath) {
+    const targetBindPath = normalizeWorkspacePath(bindPath);
+    if (!isAbsoluteWorkspacePath(targetBindPath) || !isWorkspaceAllowed(targetBindPath, browseRoots)) {
+      await runtime.sendInfoCardMessage({
+        chatId: normalized.chatId,
+        replyToMessageId: replyTarget,
+        text: "该目录不在允许浏览的范围内。",
+      });
+      return;
+    }
+    await bindWorkspaceByPath(runtime, normalized, targetBindPath, {
+      replyToMessageId: replyTarget,
+    });
+    return;
+  }
+
+  const { workspaceRoot: currentWorkspaceRoot } = runtime.getBindingContext(normalized);
+  const requestedBrowsePath = normalizeWorkspacePath(browsePath);
+  if (requestedBrowsePath) {
+    if (!isAbsoluteWorkspacePath(requestedBrowsePath) || !isWorkspaceAllowed(requestedBrowsePath, browseRoots)) {
+      await runtime.sendInfoCardMessage({
+        chatId: normalized.chatId,
+        replyToMessageId: replyTarget,
+        text: "该目录不在允许浏览的范围内。",
+      });
+      return;
+    }
+  }
+  const preferredPath = requestedBrowsePath || normalizeWorkspacePath(currentWorkspaceRoot);
+  const requestedPath = preferredPath && isWorkspaceAllowed(preferredPath, browseRoots) ? preferredPath : "";
+  const browserState = await resolveWorkspaceBrowserState(runtime, {
+    browseRoots,
+    requestedPath,
+  });
+  if (browserState.errorText) {
+    await runtime.sendInfoCardMessage({
+      chatId: normalized.chatId,
+      replyToMessageId: replyTarget,
+      text: browserState.errorText,
+    });
+    return;
+  }
+
+  await runtime.sendInteractiveCard({
+    chatId: normalized.chatId,
+    replyToMessageId: replyTarget,
+    card: runtime.buildWorkspaceBrowserCard(browserState),
+  });
+}
+
+async function bindWorkspaceByPath(runtime, normalized, rawWorkspaceRoot, { replyToMessageId } = {}) {
+  const bindingKey = runtime.sessionStore.buildBindingKey(normalized);
+  const replyTarget = runtime.resolveReplyToMessageId(normalized, replyToMessageId || normalized.messageId);
   const workspaceRoot = normalizeWorkspacePath(rawWorkspaceRoot);
   if (!isAbsoluteWorkspacePath(workspaceRoot)) {
     await runtime.sendInfoCardMessage({
       chatId: normalized.chatId,
-      replyToMessageId: normalized.messageId,
+      replyToMessageId: replyTarget,
       text: "只支持绝对路径绑定。Windows 例如 `C:\\code\\repo`，macOS/Linux 例如 `/Users/name/repo`。",
     });
     return;
@@ -70,7 +149,7 @@ async function handleBindCommand(runtime, normalized) {
   if (!isWorkspaceAllowed(workspaceRoot, runtime.config.workspaceAllowlist)) {
     await runtime.sendInfoCardMessage({
       chatId: normalized.chatId,
-      replyToMessageId: normalized.messageId,
+      replyToMessageId: replyTarget,
       text: "该项目不在允许绑定的白名单中。",
     });
     return;
@@ -80,7 +159,7 @@ async function handleBindCommand(runtime, normalized) {
   if (!workspaceStats.exists) {
     await runtime.sendInfoCardMessage({
       chatId: normalized.chatId,
-      replyToMessageId: normalized.messageId,
+      replyToMessageId: replyTarget,
       text: `项目不存在: ${workspaceRoot}`,
     });
     return;
@@ -89,7 +168,7 @@ async function handleBindCommand(runtime, normalized) {
   if (!workspaceStats.isDirectory) {
     await runtime.sendInfoCardMessage({
       chatId: normalized.chatId,
-      replyToMessageId: normalized.messageId,
+      replyToMessageId: replyTarget,
       text: `路径非法: ${workspaceRoot}`,
     });
     return;
@@ -100,7 +179,7 @@ async function handleBindCommand(runtime, normalized) {
   await runtime.refreshWorkspaceThreads(bindingKey, workspaceRoot, normalized);
   const existingThreadId = runtime.resolveThreadIdForBinding(bindingKey, workspaceRoot);
   await showStatusPanel(runtime, normalized, {
-    replyToMessageId: normalized.messageId,
+    replyToMessageId: replyTarget,
     noticeText: existingThreadId
       ? "已切换到项目，并恢复原会话上下文。"
       : "已绑定项目。",
@@ -267,6 +346,15 @@ async function handleSendCommand(runtime, normalized) {
       chatId: normalized.chatId,
       replyToMessageId: normalized.messageId,
       text: `文件为空，无法发送: ${resolvedTarget.displayPath}`,
+    });
+    return;
+  }
+
+  if (!runtime.supportsFileMessages()) {
+    await runtime.sendInfoCardMessage({
+      chatId: normalized.chatId,
+      replyToMessageId: normalized.messageId,
+      text: "当前通道暂不支持文件发送。",
     });
     return;
   }
@@ -445,7 +533,14 @@ async function handleWorkspacesCommand(runtime, normalized, { replyToMessageId }
   });
 }
 
-async function showThreadPicker(runtime, normalized, { replyToMessageId } = {}) {
+async function handleThreadsCommand(runtime, normalized) {
+  await showThreadPicker(runtime, normalized, {
+    replyToMessageId: normalized.messageId,
+    page: 0,
+  });
+}
+
+async function showThreadPicker(runtime, normalized, { replyToMessageId, page = 0 } = {}) {
   const replyTarget = runtime.resolveReplyToMessageId(normalized, replyToMessageId);
   const { bindingKey, workspaceRoot } = runtime.getBindingContext(normalized);
   if (!workspaceRoot) {
@@ -458,12 +553,17 @@ async function showThreadPicker(runtime, normalized, { replyToMessageId } = {}) 
   }
 
   const threads = await runtime.refreshWorkspaceThreads(bindingKey, workspaceRoot, normalized);
+  const refreshState = typeof runtime.getWorkspaceThreadRefreshState === "function"
+    ? runtime.getWorkspaceThreadRefreshState(bindingKey, workspaceRoot)
+    : { ok: true, fromCache: false, error: "" };
   const currentThreadId = runtime.resolveThreadIdForBinding(bindingKey, workspaceRoot) || threads[0]?.id || "";
   if (!threads.length) {
     await runtime.sendInfoCardMessage({
       chatId: normalized.chatId,
       replyToMessageId: replyTarget,
-      text: `当前项目：\`${workspaceRoot}\`\n\n还没有可切换的历史线程。`,
+      text: refreshState.ok === false
+        ? `当前项目：\`${workspaceRoot}\`\n\n线程列表刷新失败：${refreshState.error || "请稍后重试。"}`
+        : `当前项目：\`${workspaceRoot}\`\n\n还没有可切换的历史线程。`,
     });
     return;
   }
@@ -475,6 +575,10 @@ async function showThreadPicker(runtime, normalized, { replyToMessageId } = {}) 
       workspaceRoot,
       threads,
       currentThreadId,
+      page,
+      noticeText: refreshState.fromCache
+        ? "线程列表刷新失败，当前展示最近一次成功结果。"
+        : "",
     }),
   });
 }
@@ -591,12 +695,14 @@ async function removeWorkspaceByPath(runtime, normalized, workspaceRoot, { reply
 
 module.exports = {
   handleBindCommand,
+  handleBrowseCommand,
   handleEffortCommand,
   handleHelpCommand,
   handleMessageCommand,
   handleModelCommand,
   handleRemoveCommand,
   handleSendCommand,
+  handleThreadsCommand,
   handleUnknownCommand,
   handleWhereCommand,
   handleWorkspacesCommand,
@@ -627,6 +733,122 @@ function resolveWorkspaceSendTarget(workspaceRoot, requestedPath) {
     filePath,
     displayPath: normalizeWorkspacePath(path.relative(workspaceRoot, filePath)) || path.basename(filePath),
   };
+}
+
+async function resolveWorkspaceBrowserState(runtime, { browseRoots, requestedPath }) {
+  if (!requestedPath) {
+    if (browseRoots.length === 1) {
+      return readWorkspaceDirectory(runtime, browseRoots[0], browseRoots);
+    }
+    return {
+      currentPath: "",
+      entries: browseRoots.map((workspaceRoot) => ({
+        kind: "directory",
+        name: workspaceRoot,
+        path: workspaceRoot,
+      })),
+      canGoUp: false,
+      parentPath: "",
+      scopeText: `浏览范围：以下 ${browseRoots.length} 个目录根允许绑定。`,
+      emptyText: "当前没有可选的目录根。",
+      truncated: false,
+    };
+  }
+
+  const normalizedPath = normalizeWorkspacePath(requestedPath);
+  if (!isAbsoluteWorkspacePath(normalizedPath)) {
+    return { errorText: "目标目录无效，请刷新后重试。" };
+  }
+  if (!isWorkspaceAllowed(normalizedPath, browseRoots)) {
+    return { errorText: "该目录不在允许浏览的范围内。" };
+  }
+  return readWorkspaceDirectory(runtime, normalizedPath, browseRoots);
+}
+
+async function readWorkspaceDirectory(runtime, currentPath, browseRoots) {
+  const stats = await runtime.resolveWorkspaceStats(currentPath);
+  if (!stats.exists) {
+    return { errorText: `目录不存在: ${currentPath}` };
+  }
+  if (!stats.isDirectory) {
+    return { errorText: `路径非法: ${currentPath}` };
+  }
+
+  let dirents;
+  try {
+    dirents = await fs.promises.readdir(currentPath, { withFileTypes: true });
+  } catch (error) {
+    return { errorText: formatFailureText("读取目录失败", error) };
+  }
+
+  const parentPath = resolveWorkspaceBrowserParentPath(currentPath, browseRoots);
+  const entries = dirents
+    .map((dirent) => buildWorkspaceBrowserEntry(currentPath, dirent))
+    .filter(Boolean)
+    .sort(compareWorkspaceBrowserEntries)
+    .slice(0, MAX_WORKSPACE_BROWSER_ENTRIES);
+
+  return {
+    currentPath,
+    entries,
+    canGoUp: !!parentPath,
+    parentPath,
+    scopeText: buildWorkspaceBrowserScopeText(browseRoots),
+    emptyText: "当前目录为空。",
+    truncated: dirents.length > MAX_WORKSPACE_BROWSER_ENTRIES,
+  };
+}
+
+function resolveBrowseRoots(runtime) {
+  const allowlist = Array.isArray(runtime.config.workspaceAllowlist)
+    ? runtime.config.workspaceAllowlist
+      .map((workspaceRoot) => normalizeWorkspacePath(workspaceRoot))
+      .filter((workspaceRoot) => isAbsoluteWorkspacePath(workspaceRoot))
+    : [];
+  if (allowlist.length) {
+    return [...new Set(allowlist)].sort((left, right) => left.localeCompare(right));
+  }
+  const homeDirectory = normalizeWorkspacePath(os.homedir());
+  return homeDirectory ? [homeDirectory] : [];
+}
+
+function resolveWorkspaceBrowserParentPath(currentPath, browseRoots) {
+  const parentPath = normalizeWorkspacePath(path.dirname(currentPath));
+  if (!parentPath || parentPath === currentPath) {
+    return "";
+  }
+  return isWorkspaceAllowed(parentPath, browseRoots) ? parentPath : "";
+}
+
+function buildWorkspaceBrowserEntry(currentPath, dirent) {
+  const name = String(dirent?.name || "").trim();
+  if (!name || name === "." || name === "..") {
+    return null;
+  }
+  return {
+    kind: dirent.isDirectory() ? "directory" : "file",
+    name,
+    path: normalizeWorkspacePath(path.join(currentPath, name)),
+  };
+}
+
+function compareWorkspaceBrowserEntries(left, right) {
+  const leftRank = left.kind === "directory" ? 0 : 1;
+  const rightRank = right.kind === "directory" ? 0 : 1;
+  if (leftRank !== rightRank) {
+    return leftRank - rightRank;
+  }
+  return left.name.localeCompare(right.name);
+}
+
+function buildWorkspaceBrowserScopeText(browseRoots) {
+  if (!Array.isArray(browseRoots) || !browseRoots.length) {
+    return "";
+  }
+  if (browseRoots.length === 1) {
+    return `浏览范围：${browseRoots[0]}`;
+  }
+  return `浏览范围：共 ${browseRoots.length} 个允许目录根。`;
 }
 
 function parseUpdateDirective(value) {

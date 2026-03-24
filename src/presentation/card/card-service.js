@@ -9,11 +9,20 @@ const {
   buildCardResponse,
   buildInfoCard,
   mergeReplyText,
+  summarizeCardToText,
 } = require("./builders");
 
 async function sendInfoCardMessage(runtime, { chatId, text, replyToMessageId = "", replyInThread = false, kind = "info" }) {
   if (!chatId || !text) {
     return null;
+  }
+
+  if (!runtime.supportsInteractiveCards()) {
+    return runtime.sendTextMessage({
+      chatId,
+      replyToMessageId,
+      text: formatPlainTextNotice(text, kind),
+    });
   }
 
   return sendInteractiveCard(runtime, {
@@ -41,6 +50,14 @@ async function sendInteractiveApprovalCard(runtime, { chatId, approval, replyToM
     return null;
   }
 
+  if (!runtime.supportsInteractiveCards()) {
+    return runtime.sendTextMessage({
+      chatId,
+      replyToMessageId,
+      text: buildApprovalFallbackText(approval),
+    });
+  }
+
   return sendInteractiveCard(runtime, {
     chatId,
     replyToMessageId,
@@ -53,6 +70,9 @@ async function updateInteractiveCard(runtime, { messageId, approval }) {
   if (!messageId || !approval) {
     return null;
   }
+  if (!runtime.supportsInteractiveCards()) {
+    return null;
+  }
   return patchInteractiveCard(runtime, {
     messageId,
     card: buildApprovalResolvedCard(approval),
@@ -62,6 +82,13 @@ async function updateInteractiveCard(runtime, { messageId, approval }) {
 async function sendInteractiveCard(runtime, { chatId, card, replyToMessageId = "", replyInThread = false }) {
   if (!chatId || !card) {
     return null;
+  }
+  if (!runtime.supportsInteractiveCards()) {
+    return runtime.sendTextMessage({
+      chatId,
+      replyToMessageId,
+      text: summarizeCardToText(card),
+    });
   }
   return runtime.requireFeishuAdapter().sendInteractiveCard({
     chatId,
@@ -75,29 +102,39 @@ async function patchInteractiveCard(runtime, { messageId, card }) {
   if (!messageId || !card) {
     return null;
   }
+  if (!runtime.supportsInteractiveCards()) {
+    return null;
+  }
   return runtime.requireFeishuAdapter().patchInteractiveCard({ messageId, card });
 }
 
 async function handleCardAction(runtime, data) {
+  if (runtime.isStopping) {
+    return buildCardToast("当前正在停止，请稍后重试。");
+  }
   const action = messageNormalizers.extractCardAction(data);
-  console.log(
-    `[codex-im] card callback kind=${action?.kind || "-"} action=${action?.action || "-"} `
-    + `thread=${action?.threadId || "-"} request=${action?.requestId || "-"} selected=${action?.selectedValue || "-"}`
-  );
+  if (runtime.config.verboseCodexLogs) {
+    console.log(
+      `[codex-im] card callback kind=${action?.kind || "-"} action=${action?.action || "-"} `
+      + `thread=${action?.threadId || "-"} page=${action?.page ?? "-"} `
+      + `request=${action?.requestId || "-"} selected=${action?.selectedValue || "-"} `
+      + `message=${data?.context?.open_message_id || "-"}`
+    );
+  }
   if (!action) {
     runCardActionTask(runtime, sendCardActionFeedback(runtime, data, "无法识别卡片操作。", "error"));
-    return buildCardResponse({});
+    return buildCardToast("无法识别卡片操作。");
   }
 
   if (action.kind === "approval") {
     runCardActionTask(runtime, runtime.handleApprovalCardActionAsync(action, data));
-    return buildCardResponse({});
+    return buildCardToast("正在处理授权...");
   }
 
   const normalized = messageNormalizers.normalizeCardActionContext(data, runtime.config);
   if (!normalized) {
     runCardActionTask(runtime, sendCardActionFeedback(runtime, data, "无法解析当前卡片上下文。", "error"));
-    return buildCardResponse({});
+    return buildCardToast("无法解析当前卡片上下文。");
   }
 
   try {
@@ -110,19 +147,18 @@ async function handleCardAction(runtime, data) {
       runtime,
       sendCardActionFeedbackByContext(runtime, normalized, formatFailureText("处理失败", error), "error")
     );
-    return buildCardResponse({});
+    return buildCardToast(formatFailureText("处理失败", error));
   }
 
   runCardActionTask(runtime, sendCardActionFeedbackByContext(runtime, normalized, "未支持的卡片操作。", "error"));
-  return buildCardResponse({});
+  return buildCardToast("未支持的卡片操作。");
 }
 
 function queueCardActionWithFeedback(runtime, normalized, feedbackText, task) {
   runCardActionTask(runtime, (async () => {
-    await sendCardActionFeedbackByContext(runtime, normalized, feedbackText, "progress");
     await task();
   })());
-  return buildCardResponse({});
+  return buildCardToast(feedbackText);
 }
 
 function runCardActionTask(runtime, taskPromise) {
@@ -179,6 +215,8 @@ async function upsertAssistantReplyCard(
       messageId: "",
       chatId,
       replyToMessageId: "",
+      contextToken: "",
+      sentTextLength: 0,
       text: "",
       state: "streaming",
       threadId,
@@ -191,6 +229,7 @@ async function upsertAssistantReplyCard(
   }
   existing.chatId = chatId;
   existing.replyToMessageId = runtime.pendingChatContextByThreadId.get(threadId)?.messageId || existing.replyToMessageId || "";
+  existing.contextToken = runtime.pendingChatContextByThreadId.get(threadId)?.contextToken || existing.contextToken || "";
   if (state) {
     existing.state = state;
   }
@@ -200,6 +239,38 @@ async function upsertAssistantReplyCard(
 
   runtime.setReplyCardEntry(runKey, existing);
   runtime.setCurrentRunKeyForThread(threadId, runKey);
+
+  if (!runtime.supportsInteractiveCards()) {
+    if (runtime.config.openclawStreamingOutput && existing.text) {
+      const unsentText = existing.text.slice(existing.sentTextLength || 0).trim();
+      if (unsentText) {
+        await runtime.sendTextMessage({
+          chatId: entryChatId(existing, chatId),
+          replyToMessageId: existing.replyToMessageId,
+          contextToken: existing.contextToken,
+          text: unsentText,
+        });
+        existing.sentTextLength = existing.text.length;
+        runtime.setReplyCardEntry(runKey, existing);
+      }
+    }
+    if (existing.state === "completed" || existing.state === "failed") {
+      const remainingText = existing.text.slice(existing.sentTextLength || 0).trim();
+      const fallbackText = remainingText || (
+        !existing.sentTextLength ? (existing.text || (existing.state === "failed" ? "执行失败" : "执行完成")) : ""
+      );
+      if (fallbackText) {
+        await runtime.sendTextMessage({
+          chatId: entryChatId(existing, chatId),
+          replyToMessageId: existing.replyToMessageId,
+          contextToken: existing.contextToken,
+          text: fallbackText,
+        });
+      }
+      runtime.disposeReplyRunState(runKey, threadId);
+    }
+    return;
+  }
 
   if (deferFlush && existing.state !== "completed" && existing.state !== "failed") {
     return;
@@ -290,6 +361,9 @@ async function addPendingReaction(runtime, bindingKey, messageId) {
   if (!bindingKey || !messageId) {
     return;
   }
+  if (!runtime.supportsReactions()) {
+    return;
+  }
 
   await clearPendingReactionForBinding(runtime, bindingKey);
 
@@ -317,6 +391,9 @@ function movePendingReactionToThread(runtime, bindingKey, threadId) {
 }
 
 async function clearPendingReactionForBinding(runtime, bindingKey) {
+  if (!runtime.supportsReactions()) {
+    return;
+  }
   const pending = runtime.pendingReactionByBindingKey.get(bindingKey);
   if (!pending) {
     return;
@@ -326,6 +403,9 @@ async function clearPendingReactionForBinding(runtime, bindingKey) {
 }
 
 async function clearPendingReactionForThread(runtime, threadId) {
+  if (!runtime.supportsReactions()) {
+    return;
+  }
   if (!threadId) {
     return;
   }
@@ -338,10 +418,16 @@ async function clearPendingReactionForThread(runtime, threadId) {
 }
 
 async function createReaction(runtime, { messageId, emojiType }) {
+  if (!runtime.supportsReactions()) {
+    return { reactionId: "" };
+  }
   return reactionRepo.createReaction(runtime.requireFeishuAdapter(), { messageId, emojiType });
 }
 
 async function deleteReaction(runtime, { messageId, reactionId }) {
+  if (!runtime.supportsReactions()) {
+    return;
+  }
   await reactionRepo.deleteReaction(runtime.requireFeishuAdapter(), { messageId, reactionId });
 }
 
@@ -353,6 +439,47 @@ function disposeReplyRunState(runtime, runKey, threadId) {
   if (threadId && runtime.currentRunKeyByThreadId.get(threadId) === runKey) {
     runtime.currentRunKeyByThreadId.delete(threadId);
   }
+}
+
+function formatPlainTextNotice(text, kind) {
+  const normalizedText = String(text || "").trim();
+  if (!normalizedText) {
+    return "";
+  }
+  if (kind === "progress") {
+    return `处理中\n\n${normalizedText}`;
+  }
+  if (kind === "error") {
+    return `处理失败\n\n${normalizedText}`;
+  }
+  if (kind === "success") {
+    return `已完成\n\n${normalizedText}`;
+  }
+  return normalizedText;
+}
+
+function buildApprovalFallbackText(approval) {
+  const requestType = approval?.method && approval.method.includes("command") ? "命令执行" : "敏感操作";
+  const commandLine = Array.isArray(approval?.command)
+    ? approval.command.join(" ")
+    : Array.isArray(approval?.commandTokens)
+      ? approval.commandTokens.join(" ")
+      : String(approval?.command || "").trim();
+  return [
+    "Codex 需要授权。",
+    `请求类型：${requestType}`,
+    approval?.reason ? `原因：${approval.reason}` : "",
+    commandLine ? `命令：${commandLine}` : "",
+    "",
+    "请使用：",
+    "`/codex approve`",
+    "`/codex approve workspace`",
+    "`/codex reject`",
+  ].filter(Boolean).join("\n");
+}
+
+function entryChatId(entry, fallbackChatId) {
+  return String(entry?.chatId || fallbackChatId || "").trim();
 }
 
 

@@ -2,15 +2,20 @@
 
 本项目完全通过Vibe Coding实现，主要特点：手机聊的电脑能继续聊，电脑聊的手机也能继续聊。在手机上可以使用命令或飞书的卡片来进行交互，快速切换项目和线程
 
-`codex-im` 是一个本地运行的飞书机器人桥接层：
+`codex-im` 是一个本地运行的 IM 桥接层：
 
 `飞书消息 -> 本机 codex app-server -> 飞书回复`
+
+也支持通过 OpenClaw 微信协议接入：
+
+`微信消息 -> OpenClaw/微信 HTTP API -> 本机 codex app-server -> 微信文本回复`
 
 Codex 操作都留在 本地，飞书只负责消息交互。
 
 ## 特性
 
 - 飞书长连接机器人
+- OpenClaw / 微信 文本轮询接入（text-only MVP）
 - 普通对话回复
 - 卡片回复与流式更新
 - 先加表情、后输出正文
@@ -35,6 +40,7 @@ npm安装和执行：
 ```sh
 npm install -g @vdug/codex-im
 codex-im feishu-bot
+codex-im openclaw-bot
 ```
 
 开发态运行：
@@ -42,6 +48,14 @@ codex-im feishu-bot
 ```sh
 npm install
 npm run feishu-bot
+npm run openclaw-bot
+```
+
+开发态自动重启：
+
+```sh
+npm run watch:feishu-bot
+npm run watch:openclaw-bot
 ```
 
 ### 执行脚本示例
@@ -72,18 +86,31 @@ codex-im feishu-bot
 ~/.codex-im/sessions.json
 ```
 
-必填环境变量：
+通用必填环境变量：
 
-- `FEISHU_APP_ID`
-- `FEISHU_APP_SECRET`
 - `CODEX_IM_DEFAULT_CODEX_MODEL` 新绑定项目时默认写入的模型（启动时会基于 Codex 可用模型列表校验，不合法则启动失败）
 - `CODEX_IM_DEFAULT_CODEX_EFFORT` 新绑定项目时默认写入的推理强度（启动时会基于对应模型可用推理强度校验，不合法则启动失败）
 - `CODEX_IM_DEFAULT_CODEX_ACCESS_MODE` 默认访问模式（必填：`default` / `full-access`）
+
+`feishu-bot` 模式额外必填：
+
+- `FEISHU_APP_ID`
+- `FEISHU_APP_SECRET`
+
+`openclaw-bot` 模式额外必填：
+
+- 无。若未提供 `CODEX_IM_OPENCLAW_TOKEN`，启动时会自动拉起微信扫码登录。
 
 可选环境变量：
 
 - `CODEX_IM_DEFAULT_WORKSPACE_ID` 在session中读取当前绑定信息的key，更换key后，原来的信息虽然在session中，但是不会再读取
 - `CODEX_IM_FEISHU_STREAMING_OUTPUT`（默认 `true`，设为 `false` 则等 Codex 完成后一次性输出）
+- `CODEX_IM_OPENCLAW_BASE_URL`（默认 `https://ilinkai.weixin.qq.com`）
+- `CODEX_IM_OPENCLAW_TOKEN`（可选；为空时首次启动自动扫码，并写入本地凭据文件）
+- `CODEX_IM_OPENCLAW_LONG_POLL_TIMEOUT_MS`（默认 `35000`）
+- `CODEX_IM_OPENCLAW_STREAMING_OUTPUT`（默认 `false`，微信 text-only 模式建议保持关闭）
+- `CODEX_IM_OPENCLAW_CREDENTIALS_FILE`（默认 `~/.codex-im/openclaw-credentials.json`）
+- `CODEX_IM_VERBOSE_LOGS`（默认 `false`，设为 `true` 才打印较详细的 Codex 传输日志）
 - `CODEX_IM_WORKSPACE_ALLOWLIST`允许绑定的项目白名单
 - `CODEX_IM_CODEX_ENDPOINT` 用来指定 Codex 的远程 WebSocket RPC 地址，默认是启动本地服务
 - `CODEX_IM_SESSIONS_FILE` session文件路径
@@ -95,7 +122,18 @@ codex-im feishu-bot
 
 ```sh
 npm run feishu-bot
+npm run openclaw-bot
 ```
+
+## 开发热重启
+
+- `npm run watch:feishu-bot`
+- `npm run watch:openclaw-bot`
+- 当前实现是“文件变更后自动重启进程”，不是运行中模块热替换
+- 默认监听 `src/`、`bin/` 和当前项目目录下的 `.env`
+- 普通源码改动会自动重启；正在运行的旧进程会收到 `SIGTERM`，由当前 shutdown 逻辑负责回收
+- `sessions.json`、`openclaw-credentials.json` 这类运行时状态文件不会触发自动重启，避免轮询过程被状态写盘反复打断
+- 如果你主要依赖 `~/.codex-im/.env` 而不是当前目录 `.env`，这版 watch 不会自动感知那份文件，修改后请手动重启
 
 常用命令：
 
@@ -115,6 +153,37 @@ npm run feishu-bot
 - `/codex approve session`
 - `/codex reject`
 - `/codex help`
+
+## OpenClaw / 微信模式说明
+
+- 当前是 text-only MVP：普通消息、`/codex bind`、`/codex where`、`/codex new`、`/codex stop`、`/codex message` 可用
+- 卡片、reaction、文件发送会自动降级为纯文本提示
+- 若未设置 `CODEX_IM_OPENCLAW_TOKEN`，`codex-im openclaw-bot` 启动时会自动请求二维码，并尝试在默认浏览器中打开二维码链接
+- 扫码成功后会把 `bot_token` 和 `baseurl` 写入本地凭据文件，后续启动默认直接复用，无需重复扫码
+- 当前实现对齐的是 `@tencent-weixin/openclaw-weixin` 2.0.x 暴露的 HTTP JSON 协议
+- 如果你是在仓库源码目录里直接跑，而不是全局安装 npm 包，请用 `npm run openclaw-bot` 或 `node ./bin/codex-im.js openclaw-bot`
+- 已有 `~/.codex-im/openclaw-credentials.json` 时，重启会优先复用本地 token，不需要每次重新扫码
+- 轮询遇到 `session timeout / errcode=-14` 一类凭证问题时，会先尝试重新加载本地凭据；如果本地没有更新过的 token，日志会明确提示需要重新扫码
+
+## macOS 开机自启
+
+仓库内提供了两个文件：
+
+- `scripts/start-openclaw-bot.sh`
+- `deploy/macos/com.dy3000.codex-im.openclaw.plist`
+
+安装后，`launchd` 会在你登录 macOS 后自动拉起微信桥接服务，并在异常退出时自动重启。日志默认写到：
+
+- `~/Library/Logs/codex-im/openclaw-bot.out.log`
+- `~/Library/Logs/codex-im/openclaw-bot.err.log`
+
+常用命令：
+
+```sh
+launchctl print gui/$(id -u)/com.dy3000.codex-im.openclaw
+tail -f ~/Library/Logs/codex-im/openclaw-bot.out.log
+tail -f ~/Library/Logs/codex-im/openclaw-bot.err.log
+```
 
 ## 项目与线程模型
 
@@ -137,6 +206,12 @@ npm run feishu-bot
 - `src/codex-rpc-client.js`: Codex JSON-RPC 传输层
 - `src/session-store.js`: 会话绑定持久化
 - `src/config.js`: 环境变量配置
+
+## 稳定建议
+
+- 如果你更在意稳定和少刷屏，优先把 `CODEX_IM_FEISHU_STREAMING_OUTPUT=false`
+- 如果你只想看关键错误，把 `CODEX_IM_VERBOSE_LOGS=false`
+- 退出时建议正常 `Ctrl+C`，这样会先刷新 session 再结束进程
 
 
 # 飞书配置

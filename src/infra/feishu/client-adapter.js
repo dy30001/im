@@ -4,6 +4,35 @@ class FeishuClientAdapter {
     this.client = client;
   }
 
+  async sendTextMessage({ chatId, text, replyToMessageId = "", replyInThread = false }) {
+    const content = JSON.stringify({ text: String(text || "").trim() });
+    if (replyToMessageId) {
+      const replyMessage = resolveReplyMessageMethod(this.client);
+      return replyMessage.call(this.client.im?.v1?.message || this.client.im?.message || this.client, {
+        path: {
+          message_id: normalizeMessageId(replyToMessageId),
+        },
+        data: {
+          msg_type: "text",
+          content,
+          reply_in_thread: replyInThread,
+        },
+      });
+    }
+
+    const createMessage = resolveCreateMessageMethod(this.client);
+    return createMessage.call(this.client.im?.v1?.message || this.client.im?.message || this.client, {
+      params: {
+        receive_id_type: "chat_id",
+      },
+      data: {
+        receive_id: chatId,
+        msg_type: "text",
+        content,
+      },
+    });
+  }
+
   async sendFileMessage({ chatId, fileName, fileBuffer, replyToMessageId = "", replyInThread = false }) {
     const fileKey = await this.uploadFile({
       fileName,
@@ -190,20 +219,58 @@ function patchWsClientForCardCallbacks(wsClient) {
   }
 
   const originalHandleEventData = wsClient.handleEventData.bind(wsClient);
-  wsClient.handleEventData = (data) => {
+  wsClient.handleEventData = async (data) => {
     const headers = Array.isArray(data?.headers) ? data.headers : [];
     const messageType = headers.find((header) => header?.key === "type")?.value;
     if (messageType === "card") {
-      const patchedData = {
-        ...data,
-        headers: headers.map((header) => (
-          header?.key === "type" ? { ...header, value: "event" } : header
-        )),
+      const headerMap = headers.reduce((accumulator, header) => {
+        accumulator[header?.key] = header?.value;
+        return accumulator;
+      }, {});
+      const mergedData = wsClient.dataCache?.mergeData({
+        message_id: headerMap.message_id,
+        sum: Number(headerMap.sum),
+        seq: Number(headerMap.seq),
+        trace_id: headerMap.trace_id,
+        data: data.payload,
+      });
+      if (!mergedData) {
+        return;
+      }
+
+      const responsePayload = {
+        code: 200,
       };
-      return originalHandleEventData(patchedData);
+      const startTime = Date.now();
+      try {
+        const result = await wsClient.eventDispatcher?.invoke(mergedData, { needCheck: false });
+        if (result) {
+          responsePayload.data = Buffer.from(JSON.stringify(result)).toString("base64");
+        }
+      } catch (error) {
+        responsePayload.code = 500;
+        wsClient.logger?.error?.(
+          "[ws]",
+          `invoke card callback failed, message_id: ${headerMap.message_id}; `
+          + `trace_id: ${headerMap.trace_id}; error: ${error}`
+        );
+      }
+      const endTime = Date.now();
+      return wsClient.sendMessage({
+        ...data,
+        headers: appendWsHeader(headers, "biz_rt", String(startTime - endTime)),
+        payload: new TextEncoder().encode(JSON.stringify(responsePayload)),
+      });
     }
     return originalHandleEventData(data);
   };
+}
+
+function appendWsHeader(headers, key, value) {
+  const normalizedHeaders = Array.isArray(headers) ? headers : [];
+  const nextHeaders = normalizedHeaders.filter((header) => header?.key !== key);
+  nextHeaders.push({ key, value });
+  return nextHeaders;
 }
 
 function normalizeIdentifier(value) {

@@ -37,9 +37,14 @@ const {
   upsertAssistantReplyCard,
 } = require("../presentation/card/card-service");
 const {
-  FeishuClientAdapter,
-  patchWsClientForCardCallbacks,
-} = require("../infra/feishu/client-adapter");
+  OpenClawClientAdapter,
+  isOpenClawCredentialError,
+} = require("../infra/openclaw/client-adapter");
+const { loginWithQr, openQrInBrowser } = require("../infra/openclaw/qr-login");
+const {
+  loadOpenClawCredentials,
+  saveOpenClawCredentials,
+} = require("../infra/openclaw/token-store");
 const runtimeCommands = require("./command-dispatcher");
 const approvalRuntime = require("../domain/approval/approval-service");
 const runtimeState = require("../domain/session/binding-context");
@@ -51,9 +56,12 @@ const appDispatcher = require("./dispatcher");
 const { extractModelCatalogFromListResponse } = require("../shared/model-catalog");
 const fs = require("fs");
 
-class FeishuBotRuntime {
+const MAX_MESSAGE_CONTEXT_ENTRIES = 1_000;
+
+class OpenClawBotRuntime {
   constructor(config = readConfig()) {
     this.config = config;
+    this.providerKind = "openclaw";
     this.sessionStore = new SessionStore({ filePath: config.sessionsFile });
     this.codex = new CodexRpcClient({
       endpoint: config.codexEndpoint,
@@ -61,10 +69,14 @@ class FeishuBotRuntime {
       codexCommand: config.codexCommand,
       verboseLogs: config.verboseCodexLogs,
     });
-    this.lark = null;
-    this.client = null;
-    this.wsClient = null;
-    this.feishuAdapter = null;
+    this.openclawAdapter = new OpenClawClientAdapter({
+      baseUrl: config.openclaw?.baseUrl,
+      token: config.openclaw?.token,
+      verboseLogs: config.verboseCodexLogs,
+    });
+    this.pollAbortController = null;
+    this.pollLoopPromise = null;
+    this.syncCursor = "";
     this.pendingChatContextByThreadId = new Map();
     this.pendingChatContextByBindingKey = new Map();
     this.activeTurnIdByThreadId = new Map();
@@ -90,12 +102,12 @@ class FeishuBotRuntime {
 
   async start() {
     this.validateConfig();
-    this.initializeFeishuSdk();
+    await this.ensureOpenClawCredentials();
     await this.codex.connect();
     await this.codex.initialize();
     await this.refreshAvailableModelCatalogAtStartup();
-    this.startLongConnection();
-    console.log(`[codex-im] feishu-bot runtime ready for app ${maskSecret(this.config.feishu.appId)}`);
+    this.startPolling();
+    console.log(`[codex-im] openclaw-bot runtime ready for ${maskUrl(this.config.openclaw.baseUrl)}`);
   }
 
   async stop() {
@@ -110,12 +122,16 @@ class FeishuBotRuntime {
       }
       this.replyFlushTimersByRunKey.clear();
 
-      try {
-        if (this.wsClient?.close) {
-          this.wsClient.close();
-        }
-      } catch (error) {
-        console.error(`[codex-im] failed to close Feishu WS client: ${error.message}`);
+      if (this.pollAbortController) {
+        this.pollAbortController.abort();
+      }
+
+      if (this.pollLoopPromise) {
+        await this.pollLoopPromise.catch((error) => {
+          if (error?.name !== "AbortError") {
+            console.error(`[codex-im] openclaw poll loop stopped with error: ${error.message}`);
+          }
+        });
       }
 
       try {
@@ -135,8 +151,8 @@ class FeishuBotRuntime {
   }
 
   validateConfig() {
-    if (!this.config.feishu.appId || !this.config.feishu.appSecret) {
-      throw new Error("FEISHU_APP_ID and FEISHU_APP_SECRET are required for feishu-bot mode");
+    if (!String(this.config.openclaw?.baseUrl || "").trim()) {
+      throw new Error("CODEX_IM_OPENCLAW_BASE_URL is required for openclaw-bot mode");
     }
     if (!String(this.config.defaultCodexModel || "").trim()) {
       throw new Error("CODEX_IM_DEFAULT_CODEX_MODEL is required");
@@ -151,51 +167,169 @@ class FeishuBotRuntime {
     }
   }
 
-  initializeFeishuSdk() {
-    try {
-      // Official SDK: https://github.com/larksuite/node-sdk
-      this.lark = require("@larksuiteoapi/node-sdk");
-    } catch {
-      throw new Error(
-        "Missing @larksuiteoapi/node-sdk. Run `npm install` in codex-im before starting feishu-bot mode."
-      );
+  async ensureOpenClawCredentials() {
+    const storedCredentials = loadOpenClawCredentials(this.config.openclaw.credentialsFile);
+    const resolvedToken = String(this.config.openclaw.token || "").trim() || storedCredentials?.token || "";
+    const resolvedBaseUrl = this.config.openclaw.baseUrlExplicit
+      ? String(this.config.openclaw.baseUrl || "").trim()
+      : (storedCredentials?.baseUrl || String(this.config.openclaw.baseUrl || "").trim());
+
+    if (resolvedToken) {
+      this.applyOpenClawCredentials({
+        token: resolvedToken,
+        baseUrl: resolvedBaseUrl,
+      });
+      return;
     }
 
-    this.client = new this.lark.Client({
-      appId: this.config.feishu.appId,
-      appSecret: this.config.feishu.appSecret,
-      appType: this.lark.AppType.SelfBuild,
-      domain: this.lark.Domain.Feishu,
-      loggerLevel: this.lark.LoggerLevel.info,
-    });
-
-    this.wsClient = new this.lark.WSClient({
-      appId: this.config.feishu.appId,
-      appSecret: this.config.feishu.appSecret,
-      appType: this.lark.AppType.SelfBuild,
-      domain: this.lark.Domain.Feishu,
-      loggerLevel: this.lark.LoggerLevel.info,
-      wsConfig: {
-        PingInterval: 30,
-        PingTimeout: 5,
+    console.log("[codex-im] no OpenClaw token found, starting Weixin QR login");
+    let lastStatus = "";
+    const loginResult = await loginWithQr({
+      baseUrl: resolvedBaseUrl,
+      onQrCode: async ({ qrcodeUrl, refreshCount }) => {
+        const actionText = refreshCount > 0 ? "二维码已刷新" : "二维码已就绪";
+        console.log(`[codex-im] ${actionText}，请使用微信扫码`);
+        const opened = await openQrInBrowser(qrcodeUrl);
+        if (opened) {
+          console.log("[codex-im] QR link opened in the default browser");
+        }
+        console.log(`[codex-im] QR URL: ${qrcodeUrl}`);
+      },
+      onStatus: (status) => {
+        if (!status || status === lastStatus) {
+          return;
+        }
+        lastStatus = status;
+        if (status === "scaned") {
+          console.log("[codex-im] QR scanned, confirm the login in Weixin");
+        } else if (status === "confirmed") {
+          console.log("[codex-im] QR login confirmed");
+        } else if (status === "expired") {
+          console.log("[codex-im] QR expired, refreshing");
+        }
       },
     });
-    this.feishuAdapter = new FeishuClientAdapter(this.client);
-    patchWsClientForCardCallbacks(this.wsClient);
+
+    saveOpenClawCredentials(this.config.openclaw.credentialsFile, {
+      token: loginResult.token,
+      baseUrl: loginResult.baseUrl,
+      accountId: loginResult.accountId,
+      userId: loginResult.userId,
+    });
+    this.applyOpenClawCredentials({
+      token: loginResult.token,
+      baseUrl: loginResult.baseUrl,
+    });
   }
 
-  startLongConnection() {
-    const eventDispatcher = new this.lark.EventDispatcher({}).register({
-      "im.message.receive_v1": async (data) => {
-        appDispatcher.onFeishuTextEvent(this, data).catch((error) => {
-          console.error(`[codex-im] failed to process Feishu message: ${error.message}`);
-        });
-      },
-      "card.action.trigger": async (data) => appDispatcher.onFeishuCardAction(this, data),
-    });
+  reloadOpenClawCredentialsFromStore() {
+    const storedCredentials = loadOpenClawCredentials(this.config.openclaw.credentialsFile);
+    const storedToken = String(storedCredentials?.token || "").trim();
+    const storedBaseUrl = String(storedCredentials?.baseUrl || this.config.openclaw.baseUrl || "").trim();
+    if (!storedToken) {
+      return false;
+    }
 
-    this.wsClient.start({ eventDispatcher });
-    console.log("[codex-im] Feishu long connection started");
+    const currentToken = String(this.config.openclaw.token || "").trim();
+    const currentBaseUrl = String(this.config.openclaw.baseUrl || "").trim();
+    if (storedToken === currentToken && storedBaseUrl === currentBaseUrl) {
+      return false;
+    }
+
+    this.syncCursor = "";
+    this.applyOpenClawCredentials({
+      token: storedToken,
+      baseUrl: storedBaseUrl,
+    });
+    console.warn("[codex-im] reloaded OpenClaw credentials from the local credentials file");
+    return true;
+  }
+
+  async tryRecoverFromPollError(error) {
+    if (!isOpenClawCredentialError(error)) {
+      return false;
+    }
+
+    if (this.reloadOpenClawCredentialsFromStore()) {
+      return true;
+    }
+
+    console.error(
+      "[codex-im] OpenClaw credentials may have expired. Run `codex-im openclaw-bot` and complete Weixin QR login again."
+    );
+    return false;
+  }
+
+  applyOpenClawCredentials({ token, baseUrl }) {
+    const resolvedToken = String(token || "").trim();
+    const resolvedBaseUrl = String(baseUrl || this.config.openclaw.baseUrl || "").trim();
+    this.config.openclaw.token = resolvedToken;
+    this.config.openclaw.baseUrl = resolvedBaseUrl;
+    this.openclawAdapter.setCredentials({
+      token: resolvedToken,
+      baseUrl: resolvedBaseUrl,
+    });
+  }
+
+  startPolling() {
+    if (this.pollLoopPromise) {
+      return;
+    }
+    this.pollAbortController = new AbortController();
+    this.pollLoopPromise = this.pollLoop(this.pollAbortController.signal);
+  }
+
+  async pollLoop(signal) {
+    while (!signal.aborted && !this.isStopping) {
+      try {
+        const response = await this.openclawAdapter.getUpdates({
+          cursor: this.syncCursor,
+          timeoutMs: this.config.openclaw.longPollTimeoutMs,
+          signal,
+        });
+        if (signal.aborted || this.isStopping) {
+          break;
+        }
+
+        if (typeof response?.get_updates_buf === "string") {
+          this.syncCursor = response.get_updates_buf;
+        }
+        const messages = Array.isArray(response?.msgs) ? response.msgs : [];
+        if (this.config.verboseCodexLogs && messages.length) {
+          console.log(`[codex-im] openclaw poll received ${messages.length} message(s)`);
+        }
+        for (const message of messages) {
+          if (this.config.verboseCodexLogs) {
+            console.log(
+              "[codex-im] openclaw message",
+              JSON.stringify({
+                messageId: message?.message_id ?? "",
+                fromUserId: message?.from_user_id ?? "",
+                toUserId: message?.to_user_id ?? "",
+                sessionId: message?.session_id ?? "",
+                messageType: message?.message_type ?? "",
+                itemTypes: Array.isArray(message?.item_list)
+                  ? message.item_list.map((item) => item?.type ?? "")
+                  : [],
+              })
+            );
+          }
+          await appDispatcher.onOpenClawTextEvent(this, message).catch((error) => {
+            console.error(`[codex-im] failed to process OpenClaw message: ${error.message}`);
+          });
+        }
+      } catch (error) {
+        if (signal.aborted || this.isStopping) {
+          break;
+        }
+        const recovered = await this.tryRecoverFromPollError(error);
+        if (recovered) {
+          continue;
+        }
+        console.error(`[codex-im] openclaw poll failed: ${error.message}`);
+        await delay(1_000, signal);
+      }
+    }
   }
 
   async refreshAvailableModelCatalogAtStartup() {
@@ -233,11 +367,48 @@ class FeishuBotRuntime {
     return { bindingKey, workspaceRoot, threadId };
   }
 
-  requireFeishuAdapter() {
-    if (!this.feishuAdapter) {
-      throw new Error("Feishu adapter is not initialized");
+  rememberInboundContext(normalized) {
+    if (!normalized?.messageId) {
+      return;
     }
-    return this.feishuAdapter;
+    setBoundedMapEntry(this.messageContextByMessageId, normalized.messageId, normalized, MAX_MESSAGE_CONTEXT_ENTRIES);
+    if (normalized.chatId) {
+      setBoundedMapEntry(this.latestMessageContextByChatId, normalized.chatId, normalized, MAX_MESSAGE_CONTEXT_ENTRIES);
+    }
+  }
+
+  resolveMessageContext({ replyToMessageId = "", chatId = "" } = {}) {
+    const byMessageId = replyToMessageId ? this.messageContextByMessageId.get(replyToMessageId) || null : null;
+    if (byMessageId) {
+      return byMessageId;
+    }
+    return chatId ? this.latestMessageContextByChatId.get(chatId) || null : null;
+  }
+
+  supportsInteractiveCards() {
+    return false;
+  }
+
+  supportsReactions() {
+    return false;
+  }
+
+  supportsFileMessages() {
+    return false;
+  }
+
+  async sendTextMessage({ chatId, text, replyToMessageId = "", contextToken = "" } = {}) {
+    const messageContext = this.resolveMessageContext({ replyToMessageId, chatId });
+    return this.openclawAdapter.sendTextMessage({
+      toUserId: chatId,
+      text,
+      contextToken: contextToken || messageContext?.contextToken || "",
+      signal: this.pollAbortController?.signal,
+    });
+  }
+
+  async sendFileMessage() {
+    throw new Error("Current provider does not support file sending");
   }
 
   async resolveWorkspaceStats(workspaceRoot) {
@@ -257,7 +428,7 @@ class FeishuBotRuntime {
 }
 
 function attachRuntimeForwarders() {
-  const proto = FeishuBotRuntime.prototype;
+  const proto = OpenClawBotRuntime.prototype;
 
   const plainForwarders = {
     buildCardResponse,
@@ -363,55 +534,7 @@ function attachRuntimeForwarders() {
   };
 }
 
-attachRuntimeForwarders();
-
-FeishuBotRuntime.prototype.supportsInteractiveCards = function supportsInteractiveCards() {
-  return true;
-};
-
-FeishuBotRuntime.prototype.supportsReactions = function supportsReactions() {
-  return true;
-};
-
-FeishuBotRuntime.prototype.supportsFileMessages = function supportsFileMessages() {
-  return true;
-};
-
-FeishuBotRuntime.prototype.rememberInboundContext = function rememberInboundContext(normalized) {
-  if (!normalized?.messageId) {
-    return;
-  }
-  rememberContext(this.messageContextByMessageId, normalized.messageId, normalized);
-  if (normalized.chatId) {
-    rememberContext(this.latestMessageContextByChatId, normalized.chatId, normalized);
-  }
-};
-
-FeishuBotRuntime.prototype.resolveMessageContext = function resolveMessageContext({ replyToMessageId = "", chatId = "" } = {}) {
-  const fromReply = replyToMessageId ? this.messageContextByMessageId.get(replyToMessageId) || null : null;
-  if (fromReply) {
-    return fromReply;
-  }
-  return chatId ? this.latestMessageContextByChatId.get(chatId) || null : null;
-};
-
-FeishuBotRuntime.prototype.sendFileMessage = function sendFileMessage(args) {
-  return this.requireFeishuAdapter().sendFileMessage(args);
-};
-
-FeishuBotRuntime.prototype.sendTextMessage = function sendTextMessage({ chatId, text, replyToMessageId = "", replyInThread = false }) {
-  if (!chatId || !text) {
-    return null;
-  }
-  return this.requireFeishuAdapter().sendTextMessage({
-    chatId,
-    text,
-    replyToMessageId,
-    replyInThread,
-  });
-};
-
-function rememberContext(map, key, value) {
+function setBoundedMapEntry(map, key, value, limit) {
   if (!map || !key) {
     return;
   }
@@ -419,7 +542,7 @@ function rememberContext(map, key, value) {
     map.delete(key);
   }
   map.set(key, value);
-  while (map.size > 1000) {
+  while (map.size > limit) {
     const oldestKey = map.keys().next().value;
     if (!oldestKey) {
       break;
@@ -428,14 +551,30 @@ function rememberContext(map, key, value) {
   }
 }
 
-function maskSecret(value) {
+async function delay(ms, signal) {
+  await new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    if (signal) {
+      signal.addEventListener("abort", () => {
+        clearTimeout(timer);
+        resolve();
+      }, { once: true });
+    }
+  });
+}
+
+function maskUrl(value) {
   if (!value) {
     return "";
   }
-  if (value.length <= 6) {
-    return "***";
+  try {
+    const url = new URL(value);
+    return `${url.protocol}//${url.host}`;
+  } catch {
+    return value;
   }
-  return `${value.slice(0, 3)}***${value.slice(-3)}`;
 }
 
-module.exports = { FeishuBotRuntime };
+attachRuntimeForwarders();
+
+module.exports = { OpenClawBotRuntime };

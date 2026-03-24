@@ -8,6 +8,8 @@ const {
 const TEXT_COMMAND_HANDLER_METHODS = {
   stop: "handleStopCommand",
   bind: "handleBindCommand",
+  browse: "handleBrowseCommand",
+  threads: "handleThreadsCommand",
   where: "handleWhereCommand",
   inspect_message: "handleMessageCommand",
   help: "handleHelpCommand",
@@ -30,6 +32,12 @@ const CARD_ACTION_KIND_METHODS = {
 };
 
 const PANEL_CARD_ACTIONS = {
+  browse: {
+    feedback: PANEL_ACTION_CONFIG.browse.feedback,
+    run: (runtime, normalized) => runtime.handleBrowseCommand(normalized, {
+      replyToMessageId: normalized.messageId,
+    }),
+  },
   open_threads: {
     feedback: PANEL_ACTION_CONFIG.open_threads.feedback,
     run: (runtime, normalized) => runtime.showThreadPicker(normalized, { replyToMessageId: normalized.messageId }),
@@ -55,9 +63,39 @@ const PANEL_CARD_ACTIONS = {
 };
 
 const THREAD_CARD_ACTIONS = {
+  prev_page: {
+    feedback: THREAD_ACTION_CONFIG.prev_page.feedback,
+    run: (runtime, normalized, action) => (
+      runtime.showThreadPicker(normalized, {
+        replyToMessageId: normalized.messageId,
+        page: action.page,
+      })
+    ),
+  },
+  next_page: {
+    feedback: THREAD_ACTION_CONFIG.next_page.feedback,
+    run: (runtime, normalized, action) => (
+      runtime.showThreadPicker(normalized, {
+        replyToMessageId: normalized.messageId,
+        page: action.page,
+      })
+    ),
+  },
+  refresh: {
+    feedback: THREAD_ACTION_CONFIG.refresh.feedback,
+    run: (runtime, normalized, action) => (
+      runtime.showThreadPicker(normalized, {
+        replyToMessageId: normalized.messageId,
+        page: action.page,
+      })
+    ),
+  },
   switch: {
     feedback: THREAD_ACTION_CONFIG.switch.feedback,
     validate: (runtime, normalized, action) => {
+      if (!action.threadId) {
+        return { text: THREAD_ACTION_CONFIG.switch.missingThreadIdText, kind: "error" };
+      }
       const { threadId: currentThreadId } = runtime.getCurrentThreadContext(normalized);
       if (currentThreadId && currentThreadId === action.threadId) {
         return { text: THREAD_ACTION_CONFIG.switch.alreadyCurrentText, kind: "info" };
@@ -71,6 +109,9 @@ const THREAD_CARD_ACTIONS = {
   messages: {
     feedback: THREAD_ACTION_CONFIG.messages.feedback,
     validate: (runtime, normalized, action) => {
+      if (!action.threadId) {
+        return { text: THREAD_ACTION_CONFIG.messages.missingThreadIdText, kind: "error" };
+      }
       const { threadId: currentThreadId } = runtime.getCurrentThreadContext(normalized);
       if (!currentThreadId || currentThreadId !== action.threadId) {
         return { text: THREAD_ACTION_CONFIG.messages.notCurrentText, kind: "error" };
@@ -82,6 +123,27 @@ const THREAD_CARD_ACTIONS = {
 };
 
 const WORKSPACE_CARD_ACTIONS = {
+  browse_bind: {
+    feedback: WORKSPACE_ACTION_CONFIG.browse_bind.feedback,
+    run: (runtime, normalized, action) => runtime.handleBrowseCommand(normalized, {
+      replyToMessageId: normalized.messageId,
+      bindPath: action.workspaceRoot,
+    }),
+  },
+  browse_open: {
+    feedback: WORKSPACE_ACTION_CONFIG.browse_open.feedback,
+    run: (runtime, normalized, action) => runtime.handleBrowseCommand(normalized, {
+      replyToMessageId: normalized.messageId,
+      browsePath: action.workspaceRoot,
+    }),
+  },
+  browse_parent: {
+    feedback: WORKSPACE_ACTION_CONFIG.browse_parent.feedback,
+    run: (runtime, normalized, action) => runtime.handleBrowseCommand(normalized, {
+      replyToMessageId: normalized.messageId,
+      browsePath: action.workspaceRoot,
+    }),
+  },
   status: {
     feedback: WORKSPACE_ACTION_CONFIG.status.feedback,
     run: (runtime, normalized) => runtime.showStatusPanel(normalized, { replyToMessageId: normalized.messageId }),
@@ -120,10 +182,23 @@ async function dispatchTextCommand(runtime, normalized) {
 
 function dispatchCardAction(runtime, action, normalized) {
   const handlerMethod = CARD_ACTION_KIND_METHODS[action.kind];
-  if (!handlerMethod || typeof runtime[handlerMethod] !== "function") {
+  if (!handlerMethod) {
     return null;
   }
-  return runtime[handlerMethod](action, normalized);
+  if (typeof runtime[handlerMethod] === "function") {
+    return runtime[handlerMethod](action, normalized);
+  }
+
+  if (handlerMethod === "handlePanelCardAction") {
+    return handlePanelCardAction(runtime, action, normalized);
+  }
+  if (handlerMethod === "handleThreadCardAction") {
+    return handleThreadCardAction(runtime, action, normalized);
+  }
+  if (handlerMethod === "handleWorkspaceCardAction") {
+    return handleWorkspaceCardAction(runtime, action, normalized);
+  }
+  return null;
 }
 
 function handlePanelCardAction(runtime, action, normalized) {
@@ -153,6 +228,9 @@ function executeMappedCardAction(runtime, normalized, action, actionMap) {
       validation.text,
       validation.kind || "error"
     ));
+    if (typeof runtime.buildCardToast === "function") {
+      return runtime.buildCardToast(validation.text);
+    }
     return runtime.buildCardResponse({});
   }
 

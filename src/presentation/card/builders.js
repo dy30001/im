@@ -362,6 +362,10 @@ function buildStatusPanelCard({
     }));
   }
   footerColumns.push(buildFooterButtonColumn({
+    text: "选目录",
+    value: buildPanelActionValue("browse"),
+  }));
+  footerColumns.push(buildFooterButtonColumn({
     text: "新建",
     value: buildPanelActionValue("new_thread"),
   }));
@@ -395,7 +399,21 @@ function buildStatusPanelCard({
   };
 }
 
-function buildThreadPickerCard({ workspaceRoot, threads, currentThreadId }) {
+function buildThreadPickerCard({
+  workspaceRoot,
+  threads,
+  currentThreadId,
+  page = 0,
+  pageSize = 8,
+  noticeText = "",
+}) {
+  const normalizedThreads = Array.isArray(threads) ? threads : [];
+  const normalizedPageSize = Number.isInteger(pageSize) && pageSize > 0 ? pageSize : 8;
+  const totalCount = normalizedThreads.length;
+  const totalPages = Math.max(1, Math.ceil(totalCount / normalizedPageSize));
+  const safePage = Math.min(Math.max(Number(page) || 0, 0), totalPages - 1);
+  const startIndex = safePage * normalizedPageSize;
+  const pageThreads = normalizedThreads.slice(startIndex, startIndex + normalizedPageSize);
   const elements = [
     {
       tag: "markdown",
@@ -404,12 +422,19 @@ function buildThreadPickerCard({ workspaceRoot, threads, currentThreadId }) {
     { tag: "hr" },
     {
       tag: "markdown",
-      content: `**线程列表**（${Math.min(threads.length, 8)}）`,
+      content: `**线程列表**（共 ${totalCount} 条，第 ${safePage + 1}/${totalPages} 页）`,
       text_size: "notation",
     },
   ];
+  if (typeof noticeText === "string" && noticeText.trim()) {
+    elements.push({
+      tag: "markdown",
+      content: escapeCardMarkdown(noticeText.trim()),
+      text_size: "notation",
+    });
+  }
 
-  threads.slice(0, 8).forEach((thread, index) => {
+  pageThreads.forEach((thread, index) => {
     if (index > 0) {
       elements.push({ tag: "hr" });
     }
@@ -421,12 +446,34 @@ function buildThreadPickerCard({ workspaceRoot, threads, currentThreadId }) {
     }));
   });
 
+  const footerColumns = [];
+  if (safePage > 0) {
+    footerColumns.push(buildFooterButtonColumn({
+      text: "上一页",
+      value: buildThreadActionValue("prev_page", "", { page: safePage - 1 }),
+    }));
+  }
+  footerColumns.push(buildFooterButtonColumn({
+    text: "刷新",
+    value: buildThreadActionValue("refresh", "", { page: safePage }),
+  }));
+  if (safePage + 1 < totalPages) {
+    footerColumns.push(buildFooterButtonColumn({
+      text: "下一页",
+      value: buildThreadActionValue("next_page", "", { page: safePage + 1 }),
+    }));
+  }
+  footerColumns.push(buildFooterButtonColumn({
+    text: "新建线程",
+    value: buildPanelActionValue("new_thread"),
+  }));
+
   elements.push(
     { tag: "hr" },
     {
-      tag: "button",
-      text: { tag: "plain_text", content: "新建线程" },
-      value: buildPanelActionValue("new_thread"),
+      tag: "column_set",
+      flex_mode: "none",
+      columns: footerColumns,
     }
   );
 
@@ -454,6 +501,11 @@ function buildHelpCardText() {
       "把当前飞书会话绑定到一个本地项目。",
     ],
     [
+      "**浏览并选择目录**",
+      "`/codex browse`",
+      "浏览允许范围内的本地目录，并把当前目录绑定为工作目录。",
+    ],
+    [
       "**查看当前状态**",
       "`/codex where`",
       "查看当前绑定的项目和正在使用的线程。",
@@ -464,9 +516,14 @@ function buildHelpCardText() {
       "查看当前线程最近几轮对话。",
     ],
     [
-      "**查看可用历史线程**",
+      "**查看线程列表**",
+      "`/codex threads`",
+      "枚举当前项目下的 Codex 线程，并直接切换进入。",
+    ],
+    [
+      "**查看会话项目**",
       "`/codex workspace`",
-      "查看当前项目下 Codex runtime 可见的历史线程。",
+      "查看当前会话已绑定的项目列表。",
     ],
     [
       "**移除会话项目绑定**",
@@ -648,6 +705,133 @@ function buildWorkspaceBindingsCard(items) {
       ],
     });
   });
+
+  return {
+    schema: "2.0",
+    config: {
+      wide_screen_mode: true,
+      update_multi: true,
+    },
+    body: {
+      elements,
+    },
+  };
+}
+
+function buildWorkspaceBrowserCard({
+  currentPath = "",
+  entries = [],
+  canGoUp = false,
+  parentPath = "",
+  scopeText = "",
+  emptyText = "",
+  truncated = false,
+}) {
+  const elements = [
+    {
+      tag: "markdown",
+      content: "**选择工作目录**",
+      text_size: "normal",
+    },
+  ];
+
+  if (scopeText) {
+    elements.push({
+      tag: "markdown",
+      content: escapeCardMarkdown(scopeText),
+      text_size: "notation",
+    });
+  }
+
+  if (currentPath) {
+    elements.push({
+      tag: "markdown",
+      content: `**当前目录**：\`${escapeCardMarkdown(currentPath)}\``,
+      text_size: "notation",
+    });
+    elements.push({
+      tag: "column_set",
+      flex_mode: "none",
+      columns: [
+        buildFooterButtonColumn({
+          text: "绑定此目录",
+          value: buildWorkspaceActionValue("browse_bind", currentPath),
+          type: "primary",
+        }),
+        ...(canGoUp && parentPath
+          ? [
+            buildFooterButtonColumn({
+              text: "上一级",
+              value: buildWorkspaceActionValue("browse_parent", parentPath),
+            }),
+          ]
+          : []),
+      ],
+    });
+    elements.push({ tag: "hr" });
+  }
+
+  if (entries.length) {
+    elements.push({
+      tag: "markdown",
+      content: `**目录内容**（${entries.length}${truncated ? "+" : ""}）`,
+      text_size: "notation",
+    });
+    entries.forEach((entry, index) => {
+      if (index > 0) {
+        elements.push({ tag: "hr" });
+      }
+      elements.push({
+        tag: "column_set",
+        flex_mode: "none",
+        columns: [
+          {
+            tag: "column",
+            width: "weighted",
+            weight: 5,
+            vertical_align: "top",
+            elements: [
+              {
+                tag: "markdown",
+                content: entry.kind === "directory"
+                  ? `📁 \`${escapeCardMarkdown(entry.name)}\``
+                  : `📄 \`${escapeCardMarkdown(entry.name)}\``,
+                text_size: "notation",
+              },
+            ],
+          },
+          {
+            tag: "column",
+            width: "auto",
+            vertical_align: "center",
+            elements: entry.kind === "directory"
+              ? [
+                {
+                  tag: "button",
+                  text: { tag: "plain_text", content: "进入" },
+                  type: "primary",
+                  value: buildWorkspaceActionValue("browse_open", entry.path),
+                },
+              ]
+              : [
+                {
+                  tag: "button",
+                  text: { tag: "plain_text", content: "文件" },
+                  type: "default",
+                  disabled: true,
+                },
+              ],
+          },
+        ],
+      });
+    });
+  } else {
+    elements.push({
+      tag: "markdown",
+      content: emptyText || "当前目录为空。",
+      text_size: "notation",
+    });
+  }
 
   return {
     schema: "2.0",
@@ -864,12 +1048,18 @@ function findOptionByValue(options, selectedValue) {
   return options.find((option) => String(option?.value || "").trim().toLowerCase() === normalized) || null;
 }
 
-function buildThreadActionValue(action, threadId) {
-  return {
+function buildThreadActionValue(action, threadId, { page = null } = {}) {
+  const value = {
     kind: "thread",
     action,
-    threadId,
   };
+  if (threadId) {
+    value.threadId = threadId;
+  }
+  if (page !== null && page !== undefined && page !== "") {
+    value.page = String(page);
+  }
+  return value;
 }
 
 function buildWorkspaceActionValue(action, workspaceRoot) {
@@ -922,6 +1112,48 @@ function buildCardResponse({ toast, card }) {
     };
   }
   return response;
+}
+
+function summarizeCardToText(card) {
+  const parts = [];
+  collectCardText(card, parts);
+  return [...new Set(parts.map((part) => String(part || "").trim()).filter(Boolean))].join("\n\n");
+}
+
+function collectCardText(node, parts) {
+  if (!node) {
+    return;
+  }
+  if (Array.isArray(node)) {
+    node.forEach((item) => collectCardText(item, parts));
+    return;
+  }
+  if (typeof node !== "object") {
+    return;
+  }
+
+  if (node.tag === "markdown" && typeof node.content === "string" && node.content.trim()) {
+    parts.push(node.content.trim());
+  }
+  if (node.tag === "plain_text" && typeof node.content === "string" && node.content.trim()) {
+    parts.push(node.content.trim());
+  }
+  if (node.tag === "button") {
+    const buttonText = String(node?.text?.content || "").trim();
+    if (buttonText) {
+      parts.push(`操作：${buttonText}`);
+    }
+  }
+  if (node.tag === "select_static") {
+    const placeholder = String(node?.placeholder?.content || "").trim();
+    if (placeholder) {
+      parts.push(placeholder);
+    }
+  }
+
+  for (const value of Object.values(node)) {
+    collectCardText(value, parts);
+  }
 }
 
 
@@ -1156,12 +1388,14 @@ module.exports = {
   buildModelInfoText,
   buildModelListText,
   buildModelValidationErrorText,
+  summarizeCardToText,
   buildStatusPanelCard,
   buildEffortInfoText,
   buildEffortListText,
   buildEffortValidationErrorText,
   buildThreadMessagesSummary,
   buildThreadPickerCard,
+  buildWorkspaceBrowserCard,
   buildWorkspaceBindingsCard,
   listBoundWorkspaces,
   mergeReplyText,

@@ -189,8 +189,16 @@ async function handleSwitchCommand(runtime, normalized) {
 }
 
 async function refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, normalized) {
+  const cacheKey = buildWorkspaceThreadCacheKey(bindingKey, workspaceRoot);
   try {
     const threads = await listCodexThreadsForWorkspace(runtime, workspaceRoot);
+    setWorkspaceThreadRefreshState(runtime, cacheKey, {
+      ok: true,
+      fromCache: false,
+      error: "",
+      updatedAt: new Date().toISOString(),
+    });
+    setWorkspaceThreadCache(runtime, cacheKey, threads);
     const currentThreadId = runtime.sessionStore.getThreadIdForWorkspace(bindingKey, workspaceRoot);
     const shouldKeepCurrentThread = currentThreadId && runtime.resumedThreadIds.has(currentThreadId);
     if (currentThreadId && !shouldKeepCurrentThread && !threads.some((thread) => thread.id === currentThreadId)) {
@@ -199,7 +207,14 @@ async function refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, norma
     return threads;
   } catch (error) {
     console.warn(`[codex-im] thread/list failed for workspace=${workspaceRoot}: ${error.message}`);
-    return [];
+    const cachedThreads = getWorkspaceThreadCache(runtime, cacheKey);
+    setWorkspaceThreadRefreshState(runtime, cacheKey, {
+      ok: false,
+      fromCache: cachedThreads.length > 0,
+      error: error.message,
+      updatedAt: new Date().toISOString(),
+    });
+    return cachedThreads;
   }
 }
 
@@ -299,8 +314,72 @@ async function switchThreadById(runtime, normalized, threadId, { replyToMessageI
   runtime.setThreadBindingKey(threadId, bindingKey);
   runtime.setThreadWorkspaceRoot(threadId, resolvedWorkspaceRoot);
   runtime.resumedThreadIds.delete(threadId);
-  await ensureThreadResumed(runtime, threadId);
+  try {
+    await ensureThreadResumed(runtime, threadId);
+  } catch (error) {
+    if (shouldRecreateThread(error)) {
+      await runtime.sendInfoCardMessage({
+        chatId: normalized.chatId,
+        replyToMessageId: replyTarget,
+        text: "指定线程当前不可用，请刷新后重试。",
+      });
+      return;
+    }
+    await runtime.sendInfoCardMessage({
+      chatId: normalized.chatId,
+      replyToMessageId: replyTarget,
+      text: `切换线程失败: ${error.message}`,
+    });
+    return;
+  }
   await runtime.showStatusPanel(normalized, { replyToMessageId: replyTarget });
+}
+
+function getWorkspaceThreadRefreshState(runtime, bindingKey, workspaceRoot) {
+  const cacheKey = buildWorkspaceThreadCacheKey(bindingKey, workspaceRoot);
+  const state = runtime.workspaceThreadRefreshStateByKey?.get(cacheKey) || null;
+  if (!state || typeof state !== "object") {
+    return {
+      ok: true,
+      fromCache: false,
+      error: "",
+      updatedAt: "",
+    };
+  }
+  return {
+    ok: state.ok !== false,
+    fromCache: state.fromCache === true,
+    error: typeof state.error === "string" ? state.error : "",
+    updatedAt: typeof state.updatedAt === "string" ? state.updatedAt : "",
+  };
+}
+
+function setWorkspaceThreadRefreshState(runtime, cacheKey, state) {
+  if (!runtime.workspaceThreadRefreshStateByKey) {
+    runtime.workspaceThreadRefreshStateByKey = new Map();
+  }
+  runtime.workspaceThreadRefreshStateByKey.set(cacheKey, {
+    ok: state.ok !== false,
+    fromCache: state.fromCache === true,
+    error: typeof state.error === "string" ? state.error : "",
+    updatedAt: typeof state.updatedAt === "string" ? state.updatedAt : "",
+  });
+}
+
+function getWorkspaceThreadCache(runtime, cacheKey) {
+  const cached = runtime.workspaceThreadListCache?.get(cacheKey);
+  return Array.isArray(cached) ? cached : [];
+}
+
+function setWorkspaceThreadCache(runtime, cacheKey, threads) {
+  if (!runtime.workspaceThreadListCache) {
+    runtime.workspaceThreadListCache = new Map();
+  }
+  runtime.workspaceThreadListCache.set(cacheKey, Array.isArray(threads) ? threads : []);
+}
+
+function buildWorkspaceThreadCacheKey(bindingKey, workspaceRoot) {
+  return `${String(bindingKey || "")}::${String(workspaceRoot || "")}`;
 }
 
 function isSupportedThreadSourceKind(sourceKind) {
@@ -320,6 +399,7 @@ module.exports = {
   ensureThreadResumed,
   handleNewCommand,
   handleSwitchCommand,
+  getWorkspaceThreadRefreshState,
   refreshWorkspaceThreads,
   resolveWorkspaceThreadState,
   switchThreadById,
