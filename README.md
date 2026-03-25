@@ -20,7 +20,7 @@ bash ./scripts/bootstrap-openclaw.sh
 1. 检查 Node.js（要求 18+）
 2. 自动生成 `.env`（如果不存在）
 3. 自动安装 npm 依赖
-4. 自动拉起 `openclaw-bot`
+4. 自动拉起后台常驻的 `openclaw-bot`
 5. 如果 `.env` 里 `CODEX_IM_OPENCLAW_TOKEN` 为空，会自动触发微信二维码登录，并尝试自动打开浏览器
 
 ## 依赖要求
@@ -39,7 +39,7 @@ bash ./scripts/bootstrap-openclaw.sh
 请在仓库根目录执行：bash ./scripts/bootstrap-openclaw.sh
 ```
 
-脚本会自动安装依赖、拉起服务；首次未配置 token 时，会自动进入扫码登录流程。
+脚本会自动安装依赖、拉起后台常驻服务；首次未配置 token 时，会自动进入扫码登录流程。
 
 ## 首次配置（最少配置）
 
@@ -64,6 +64,12 @@ CODEX_IM_OPENCLAW_TOKEN=
 
 ```bash
 npm run openclaw-bot
+```
+
+后台常驻启动：
+
+```bash
+npm run openclaw-bot:daemon
 ```
 
 查看运行状态（进程、锁文件、日志尾部）：
@@ -135,6 +141,13 @@ tail -f /tmp/codex-im-openclaw.log
 
 ```bash
 CODEX_IM_VERBOSE_LOGS=true nohup node ./bin/codex-im.js openclaw-bot > /tmp/codex-im-openclaw.log 2>&1 &
+```
+
+常驻模式下，优先查看状态和日志：
+
+```bash
+npm run openclaw-bot:status
+tail -f /tmp/codex-im-openclaw.log
 ```
 
 你发语音后，重点看这几段日志是否出现：

@@ -31,6 +31,6 @@ fi
 echo "[codex-im] installing npm dependencies ..."
 npm install
 
-echo "[codex-im] starting OpenClaw bot ..."
+echo "[codex-im] starting OpenClaw bot in background ..."
 echo "[codex-im] if CODEX_IM_OPENCLAW_TOKEN is empty, startup will open browser for WeChat QR login."
-exec npm run openclaw-bot
+exec npm run openclaw-bot:daemon

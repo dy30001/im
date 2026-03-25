@@ -39,6 +39,7 @@
   "scripts": {
     "feishu-bot": "node ./bin/codex-im.js",
     "openclaw-bot": "node ./bin/codex-im.js openclaw-bot",
+    "openclaw-bot:daemon": "bash ./scripts/start-openclaw-bot.sh",
     "openclaw-bot:diagnose": "CODEX_IM_VERBOSE_LOGS=true node ./bin/codex-im.js openclaw-bot",
     "openclaw-bot:diagnose:bg": "bash ./scripts/start-openclaw-diagnose.sh",
     "openclaw-bot:status": "bash ./scripts/check-openclaw-status.sh",
