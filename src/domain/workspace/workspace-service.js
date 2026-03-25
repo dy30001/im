@@ -645,7 +645,7 @@ async function handleThreadsCommand(runtime, normalized) {
     return;
   }
 
-  const currentPage = normalizeThreadPickerPage(selectionContext?.page);
+  const currentPage = normalizeThreadPickerPageNumber(selectionContext?.page);
   let page = 0;
   if (normalized.command === "prev_page") {
     page = Math.max(currentPage - 1, 0);
@@ -674,7 +674,7 @@ async function showThreadPicker(runtime, normalized, { replyToMessageId, page = 
   }
 
   const threads = await runtime.refreshWorkspaceThreads(bindingKey, workspaceRoot, normalized);
-  const safePage = normalizeThreadPickerPage(page, threads.length);
+  const safePage = clampThreadPickerPage(page, threads.length);
   const refreshState = typeof runtime.getWorkspaceThreadRefreshState === "function"
     ? runtime.getWorkspaceThreadRefreshState(bindingKey, workspaceRoot)
     : { ok: true, fromCache: false, error: "" };
@@ -734,12 +734,19 @@ async function showThreadPicker(runtime, normalized, { replyToMessageId, page = 
   });
 }
 
-function normalizeThreadPickerPage(page, totalCount = 0, pageSize = 8) {
+function normalizeThreadPickerPageNumber(page) {
+  const numericPage = Number(page);
+  if (!Number.isFinite(numericPage)) {
+    return 0;
+  }
+  return Math.max(Math.floor(numericPage), 0);
+}
+
+function clampThreadPickerPage(page, totalCount = 0, pageSize = 8) {
   const normalizedPageSize = Number.isInteger(pageSize) && pageSize > 0 ? pageSize : 8;
   const totalPages = Math.max(1, Math.ceil(Math.max(Number(totalCount) || 0, 0) / normalizedPageSize));
-  const numericPage = Number(page);
-  const safePage = Number.isFinite(numericPage) ? Math.floor(numericPage) : 0;
-  return Math.min(Math.max(safePage, 0), totalPages - 1);
+  const safePage = normalizeThreadPickerPageNumber(page);
+  return Math.min(safePage, totalPages - 1);
 }
 
 async function handleRemoveCommand(runtime, normalized) {
