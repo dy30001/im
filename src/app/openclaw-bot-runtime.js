@@ -41,12 +41,6 @@ const {
 const {
   OpenClawClientAdapter,
 } = require("../infra/openclaw/client-adapter");
-const {
-  OpenClawMediaAdapter,
-} = require("../infra/openclaw/media-adapter");
-const {
-  LocalFasterWhisperTranscriptionClient,
-} = require("../infra/stt/transcription-client");
 const desktopSessionBridge = require("../infra/acpx/session-bridge");
 const runtimeCommands = require("./command-dispatcher");
 const {
@@ -66,10 +60,6 @@ const {
   syncSelectedThreads,
   threadSyncLoop,
 } = require("./openclaw-thread-sync-service");
-const {
-  reportVoiceTranscriptionStatus,
-  transcribeOpenClawVoiceMessage,
-} = require("./openclaw-voice-service");
 const {
   applyOpenClawCredentials,
   ensureOpenClawCredentials,
@@ -113,12 +103,6 @@ class OpenClawBotRuntime {
       token: config.openclaw?.token,
       verboseLogs: config.verboseCodexLogs,
     });
-    this.openclawMediaAdapter = new OpenClawMediaAdapter({
-      clientAdapter: this.openclawAdapter,
-    });
-    this.transcriptionClient = new LocalFasterWhisperTranscriptionClient({
-      ...(config.openclaw?.transcription || {}),
-    });
     this.pollAbortController = null;
     this.pollLoopPromise = null;
     this.syncCursor = "";
@@ -131,7 +115,6 @@ class OpenClawBotRuntime {
 
   async start() {
     this.validateConfig();
-    this.reportVoiceTranscriptionStatus();
     await this.ensureOpenClawCredentials();
     await this.codex.connect();
     await this.codex.initialize();
@@ -208,10 +191,6 @@ class OpenClawBotRuntime {
         "CODEX_IM_DEFAULT_CODEX_ACCESS_MODE is required and must be one of: default, full-access"
       );
     }
-  }
-
-  reportVoiceTranscriptionStatus() {
-    reportVoiceTranscriptionStatus(this.config);
   }
 
   async ensureOpenClawCredentials() {
@@ -392,10 +371,6 @@ class OpenClawBotRuntime {
 
   async hydrateDesktopSession(session) {
     return desktopSessionBridge.hydrateDesktopSession(this, session);
-  }
-
-  async transcribeOpenClawVoiceMessage(normalized) {
-    return transcribeOpenClawVoiceMessage(this, normalized);
   }
 
   isRuntimeBindingEntry(binding) {

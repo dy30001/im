@@ -18,7 +18,7 @@ test("package.json exposes dev watch scripts for both runtimes", () => {
   assert.equal(typeof scripts["openclaw-bot:status"], "string");
   assert.match(scripts["openclaw-bot:diagnose:bg"], /start-openclaw-diagnose\.sh/);
   assert.match(scripts["openclaw-bot:status"], /check-openclaw-status\.sh/);
-  assert.match(scripts["openclaw-bot:diagnose"], /CODEX_IM_OPENCLAW_VOICE_DIAGNOSTICS=true/);
+  assert.match(scripts["openclaw-bot:diagnose"], /CODEX_IM_VERBOSE_LOGS=true/);
   assert.equal(scripts.test, "node --test test/*.test.js");
 });
 
@@ -34,8 +34,6 @@ test("package.json check script covers newly added runtime and workspace modules
     "src/domain/workspace/settings-service.js",
     "src/infra/acpx/session-bridge.js",
     "src/infra/openclaw/client-adapter.js",
-    "src/infra/openclaw/media-adapter.js",
-    "src/infra/stt/transcription-client.js",
     "src/shared/error-text.js",
     "src/shared/model-catalog.js",
   ];

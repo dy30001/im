@@ -11,30 +11,12 @@ const DEFAULT_SESSION_STATE_DIR = path.join(os.homedir(), ".codex-im");
 const LEGACY_DEFAULT_SESSIONS_FILE = path.join(DEFAULT_SESSION_STATE_DIR, "sessions.json");
 const DEFAULT_ACPX_SESSIONS_DIR = path.join(os.homedir(), ".acpx", "sessions");
 const DEFAULT_ACPX_SESSION_INDEX_FILE = path.join(DEFAULT_ACPX_SESSIONS_DIR, "index.json");
-const DEFAULT_TRANSCRIPTION_MAX_BYTES = 25 * 1024 * 1024;
 
 function readConfig() {
   const mode = process.argv[2] || "";
   const openClawBaseUrl = readTextEnv("CODEX_IM_OPENCLAW_BASE_URL");
   const explicitSessionsFile = readTextEnv("CODEX_IM_SESSIONS_FILE");
   const sessionsFile = explicitSessionsFile || resolveDefaultSessionsFile(mode);
-  const localFasterWhisperEnabled = readBooleanEnv(
-    "CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER",
-    readBooleanEnv("CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_WHISPER", false)
-  );
-  const localFasterWhisperModel = readTextEnv("CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER_MODEL")
-    || readTextEnv("CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_WHISPER_MODEL")
-    || "base";
-  const localFasterWhisperPythonBin = readTextEnv("CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER_PYTHON")
-    || readTextEnv("CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_WHISPER_PYTHON")
-    || "python3";
-  const localFasterWhisperScriptPath = readTextEnv("CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER_SCRIPT")
-    || readTextEnv("CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_WHISPER_SCRIPT");
-  const localFasterWhisperCacheDir = readTextEnv("CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER_CACHE_DIR")
-    || readTextEnv("CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_WHISPER_CACHE_DIR");
-  const transcriptionLanguage = readTextEnv("CODEX_IM_OPENCLAW_TRANSCRIPTION_LANGUAGE");
-  const voiceInputEnabled = readBooleanEnv("CODEX_IM_OPENCLAW_VOICE_INPUT_ENABLED", true);
-  const voiceDiagnosticsEnabled = readBooleanEnv("CODEX_IM_OPENCLAW_VOICE_DIAGNOSTICS", false);
 
   return {
     mode,
@@ -54,8 +36,6 @@ function readConfig() {
       baseUrlExplicit: Boolean(openClawBaseUrl),
       token: readTextEnv("CODEX_IM_OPENCLAW_TOKEN"),
       threadSource: readThreadSourceEnv("CODEX_IM_OPENCLAW_THREAD_SOURCE", "acpx"),
-      voiceInputEnabled,
-      voiceDiagnosticsEnabled,
       longPollTimeoutMs: readIntegerEnv(
         "CODEX_IM_OPENCLAW_LONG_POLL_TIMEOUT_MS",
         DEFAULT_OPENCLAW_LONG_POLL_TIMEOUT_MS
@@ -63,18 +43,6 @@ function readConfig() {
       credentialsFile: readTextEnv("CODEX_IM_OPENCLAW_CREDENTIALS_FILE") || DEFAULT_OPENCLAW_CREDENTIALS_FILE,
       acpxSessionsDir: readTextEnv("CODEX_IM_OPENCLAW_ACPX_SESSIONS_DIR") || DEFAULT_ACPX_SESSIONS_DIR,
       acpxSessionIndexFile: readTextEnv("CODEX_IM_OPENCLAW_ACPX_SESSION_INDEX_FILE") || DEFAULT_ACPX_SESSION_INDEX_FILE,
-      transcription: {
-        localFasterWhisperEnabled,
-        localFasterWhisperModel,
-        localFasterWhisperPythonBin,
-        localFasterWhisperScriptPath,
-        localFasterWhisperCacheDir,
-        language: transcriptionLanguage,
-        maxBytes: readIntegerEnv(
-          "CODEX_IM_OPENCLAW_TRANSCRIPTION_MAX_BYTES",
-          DEFAULT_TRANSCRIPTION_MAX_BYTES
-        ),
-      },
     },
     defaultWorkspaceId: process.env.CODEX_IM_DEFAULT_WORKSPACE_ID || "default",
     feishuStreamingOutput: readBooleanEnv("CODEX_IM_FEISHU_STREAMING_OUTPUT", true),
@@ -151,7 +119,6 @@ module.exports = {
   DEFAULT_OPENCLAW_BASE_URL,
   DEFAULT_OPENCLAW_CREDENTIALS_FILE,
   DEFAULT_OPENCLAW_LONG_POLL_TIMEOUT_MS,
-  DEFAULT_TRANSCRIPTION_MAX_BYTES,
   LEGACY_DEFAULT_SESSIONS_FILE,
   readConfig,
 };

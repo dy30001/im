@@ -80,47 +80,6 @@ class OpenClawClientAdapter {
     });
   }
 
-  async downloadMedia({ downloadUrl, timeoutMs = 15_000, signal } = {}) {
-    const normalizedDownloadUrl = String(downloadUrl || "").trim();
-    if (!normalizedDownloadUrl) {
-      return null;
-    }
-    return fetchBinary({
-      downloadUrl: normalizedDownloadUrl,
-      baseUrl: this.baseUrl,
-      token: this.token,
-      timeoutMs,
-      fetchImpl: this.fetchImpl,
-      signal,
-    });
-  }
-
-  async downloadMediaById({ mediaId, timeoutMs = 15_000, signal } = {}) {
-    const normalizedMediaId = String(mediaId || "").trim();
-    if (!normalizedMediaId) {
-      return null;
-    }
-
-    const candidates = buildMediaDownloadCandidates(normalizedMediaId);
-    let lastError = null;
-    for (const candidateUrl of candidates) {
-      try {
-        return await fetchBinary({
-          downloadUrl: candidateUrl,
-          baseUrl: this.baseUrl,
-          token: this.token,
-          timeoutMs,
-          fetchImpl: this.fetchImpl,
-          signal,
-        });
-      } catch (error) {
-        lastError = error;
-      }
-    }
-
-    const reason = String(lastError?.message || "unknown").trim();
-    throw new Error(`downloadMediaById failed media_id=${maskValue(normalizedMediaId)}: ${reason}`);
-  }
 }
 
 function buildBaseInfo() {
@@ -220,56 +179,6 @@ function buildAuthHeaders({ token }) {
   return headers;
 }
 
-async function fetchBinary({
-  downloadUrl,
-  baseUrl,
-  token,
-  timeoutMs,
-  fetchImpl,
-  signal,
-}) {
-  if (typeof fetchImpl !== "function") {
-    throw new Error("OpenClaw fetch implementation is unavailable");
-  }
-
-  const url = new URL(downloadUrl, baseUrl);
-  const controller = new AbortController();
-  const abortHandler = () => controller.abort();
-  if (signal) {
-    if (signal.aborted) {
-      controller.abort();
-    } else {
-      signal.addEventListener("abort", abortHandler, { once: true });
-    }
-  }
-
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetchImpl(url.toString(), {
-      method: "GET",
-      headers: buildAuthHeaders({ token }),
-      signal: controller.signal,
-    });
-    if (!response.ok) {
-      const rawText = typeof response.text === "function" ? await response.text() : "";
-      throw new Error(`downloadMedia ${response.status}: ${rawText}`);
-    }
-    const arrayBuffer = await response.arrayBuffer();
-    return {
-      buffer: Buffer.from(arrayBuffer),
-      mimeType: typeof response.headers?.get === "function"
-        ? String(response.headers.get("content-type") || "").trim()
-        : "",
-      fileName: "",
-    };
-  } finally {
-    clearTimeout(timer);
-    if (signal) {
-      signal.removeEventListener("abort", abortHandler);
-    }
-  }
-}
-
 function buildClientId() {
   return `openclaw-weixin:${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
 }
@@ -351,21 +260,6 @@ function summarizeResponseBody(body) {
   }
 
   return "<object>";
-}
-
-function buildMediaDownloadCandidates(mediaId) {
-  const encodedMediaId = encodeURIComponent(String(mediaId || "").trim());
-  return [
-    `ilink/media/download?media_id=${encodedMediaId}`,
-    `ilink/media/download?file_id=${encodedMediaId}`,
-    `ilink/media/get?media_id=${encodedMediaId}`,
-    `ilink/bot/getmedia?media_id=${encodedMediaId}`,
-    `ilink/bot/getmedia?file_id=${encodedMediaId}`,
-    `ilink/bot/get_media?media_id=${encodedMediaId}`,
-    `ilink/bot/get_media?file_id=${encodedMediaId}`,
-    `ilink/bot/downloadmedia?media_id=${encodedMediaId}`,
-    `ilink/bot/download_media?media_id=${encodedMediaId}`,
-  ];
 }
 
 function maskValue(value) {

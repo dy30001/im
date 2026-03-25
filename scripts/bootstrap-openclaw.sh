@@ -31,17 +31,6 @@ fi
 echo "[codex-im] installing npm dependencies ..."
 npm install
 
-if command -v python3 >/dev/null 2>&1; then
-  echo "[codex-im] installing optional local voice dependencies (faster-whisper, ffmpeg-python) ..."
-  python3 -m pip install --disable-pip-version-check faster-whisper ffmpeg-python || true
-else
-  echo "[codex-im] python3 not found, skip local voice dependencies."
-fi
-
-if ! command -v ffmpeg >/dev/null 2>&1; then
-  echo "[codex-im] warning: ffmpeg not found. voice transcription may fail."
-fi
-
 echo "[codex-im] starting OpenClaw bot ..."
 echo "[codex-im] if CODEX_IM_OPENCLAW_TOKEN is empty, startup will open browser for WeChat QR login."
 exec npm run openclaw-bot

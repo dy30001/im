@@ -1,6 +1,3 @@
-const {
-  extractVoiceAttachmentFromItemList,
-} = require("../../infra/openclaw/media-adapter");
 const codexMessageUtils = require("../../infra/codex/message-utils");
 const { COMMAND_ROOTS, detectNaturalCommand } = require("../../shared/command-parsing");
 
@@ -31,12 +28,12 @@ function normalizeFeishuTextEvent(event, config) {
 
 function normalizeOpenClawTextEvent(message, config) {
   const text = extractOpenClawText(message?.item_list);
-  const voiceAttachment = extractVoiceAttachmentFromItemList(message?.item_list);
-  const voiceTranscript = !text && !voiceAttachment ? extractOpenClawVoiceTranscript(message?.item_list) : "";
-  if (text && !voiceAttachment && Number(message?.message_type) !== 1) {
+  const voiceText = extractOpenClawVoiceText(message?.item_list);
+  const messageType = Number(message?.message_type) || 0;
+  if (messageType !== 1 && messageType !== 3) {
     return null;
   }
-  if (!text && !voiceAttachment && !voiceTranscript) {
+  if (!text && !voiceText) {
     return null;
   }
 
@@ -50,8 +47,7 @@ function normalizeOpenClawTextEvent(message, config) {
     ? new Date(Number(message.create_time_ms)).toISOString()
     : new Date().toISOString();
 
-  const normalizedText = text || voiceTranscript;
-  const useVoiceInput = !normalizedText && !!voiceAttachment;
+  const normalizedText = text || voiceText;
 
   return {
     provider: "openclaw",
@@ -64,19 +60,7 @@ function normalizeOpenClawTextEvent(message, config) {
     command: normalizedText ? parseCommand(normalizedText) : "message",
     receivedAt: createdAt,
     contextToken: normalizeIdentifier(message?.context_token),
-    inputKind: useVoiceInput ? "voice" : "text",
-    voiceAttachment: useVoiceInput ? voiceAttachment : null,
-  };
-}
-
-function applyNormalizedText(normalized, text) {
-  const nextText = String(text || "").trim();
-  return {
-    ...normalized,
-    text: nextText,
-    command: nextText ? parseCommand(nextText) : "message",
     inputKind: "text",
-    originalInputKind: normalized?.inputKind || "text",
   };
 }
 
@@ -179,36 +163,27 @@ function extractOpenClawText(itemList) {
   return textParts.join("\n\n");
 }
 
-function extractOpenClawVoiceTranscript(itemList) {
+function extractOpenClawVoiceText(itemList) {
   if (!Array.isArray(itemList)) {
     return "";
   }
 
   for (const item of itemList) {
-    const transcript = extractOpenClawVoiceTranscriptFromItem(item);
-    if (transcript) {
-      return transcript;
+    const voiceText = extractOpenClawVoiceTextFromItem(item);
+    if (voiceText) {
+      return voiceText;
     }
   }
 
   return "";
 }
 
-function extractOpenClawVoiceTranscriptFromItem(item) {
+function extractOpenClawVoiceTextFromItem(item) {
   if (!item || typeof item !== "object") {
     return "";
   }
 
-  const payload = pickFirstObject(
-    item.voice_item,
-    item.voiceItem,
-    item.record_item,
-    item.recordItem,
-    item.audio_item,
-    item.audioItem,
-    item.media_item,
-    item.mediaItem
-  );
+  const payload = pickFirstObject(item.voice_item, item.voiceItem);
   if (!payload || typeof payload !== "object") {
     return "";
   }
@@ -389,7 +364,6 @@ function normalizeActionPage(value) {
 }
 
 module.exports = {
-  applyNormalizedText,
   extractCardAction,
   mapCodexMessageToImEvent,
   normalizeCardActionContext,

@@ -5,8 +5,6 @@
 
 `微信 -> OpenClaw HTTP API -> 本机 codex app-server -> 微信回复`
 
-我在测试的文字。
-
 仓库地址：`https://github.com/dy30001/im`
 
 ## 一键安装 + 启动（推荐）
@@ -22,18 +20,16 @@ bash ./scripts/bootstrap-openclaw.sh
 1. 检查 Node.js（要求 18+）
 2. 自动生成 `.env`（如果不存在）
 3. 自动安装 npm 依赖
-4. 自动安装本地语音依赖（`faster-whisper`、`ffmpeg-python`，可选）
-5. 拉起 `openclaw-bot`
-6. 如果 `.env` 里 `CODEX_IM_OPENCLAW_TOKEN` 为空，会自动触发微信二维码登录，并尝试自动打开浏览器
+4. 自动拉起 `openclaw-bot`
+5. 如果 `.env` 里 `CODEX_IM_OPENCLAW_TOKEN` 为空，会自动触发微信二维码登录，并尝试自动打开浏览器
 
 ## 依赖要求
 
 - Node.js 18+
 - npm
 - 已可用的 Codex CLI / Codex app-server 环境
-- （语音可选）Python3 + `ffmpeg`
 
-如果只先跑文本模式，不装语音也可以使用。
+默认启动不需要额外的语音环境；语音消息会直接使用平台返回的 `voice_item.text`，后面和普通文本走同一条链路。
 
 ## 让 Codex 直接按 README 自动部署
 
@@ -43,7 +39,7 @@ bash ./scripts/bootstrap-openclaw.sh
 请在仓库根目录执行：bash ./scripts/bootstrap-openclaw.sh
 ```
 
-脚本会自动安装并启动。首次未配置 token 时，会自动进入扫码登录流程。
+脚本会自动安装依赖、拉起服务；首次未配置 token 时，会自动进入扫码登录流程。
 
 ## 首次配置（最少配置）
 
@@ -51,9 +47,9 @@ bash ./scripts/bootstrap-openclaw.sh
 至少确认以下变量存在（默认模板已给出）：
 
 ```env
-CODEX_IM_DEFAULT_CODEX_MODEL=gpt-5.3-codex
-CODEX_IM_DEFAULT_CODEX_EFFORT=medium
-CODEX_IM_DEFAULT_CODEX_ACCESS_MODE=default
+CODEX_IM_DEFAULT_CODEX_MODEL=gpt-5.4
+CODEX_IM_DEFAULT_CODEX_EFFORT=xhigh
+CODEX_IM_DEFAULT_CODEX_ACCESS_MODE=full-access
 
 CODEX_IM_OPENCLAW_BASE_URL=https://ilinkai.weixin.qq.com
 CODEX_IM_OPENCLAW_TOKEN=
@@ -62,6 +58,7 @@ CODEX_IM_OPENCLAW_TOKEN=
 说明：
 - `CODEX_IM_OPENCLAW_TOKEN` 为空时，启动后自动扫码登录。
 - 登录成功后，token 会写入本地凭据文件，后续一般无需重复扫码。
+- 语音消息不需要单独安装语音转文字依赖。
 
 ## 手动启动方式
 
@@ -75,7 +72,7 @@ npm run openclaw-bot
 npm run openclaw-bot:status
 ```
 
-语音诊断模式（推荐排查“发了语音没反应”时使用）：
+诊断模式（推荐排查连接、收发或授权问题）：
 
 ```bash
 npm run openclaw-bot:diagnose
@@ -89,7 +86,6 @@ npm run openclaw-bot:diagnose:bg
 
 等价于开启：
 - `CODEX_IM_VERBOSE_LOGS=true`
-- `CODEX_IM_OPENCLAW_VOICE_DIAGNOSTICS=true`
 
 开发态自动重启：
 
@@ -116,10 +112,12 @@ npm run watch:openclaw-bot
 2. 扫码后仍未连接  
 重启一次进程，确认本地凭据文件已生成：`~/.codex-im/openclaw-credentials.json`。
 
-3. 语音不可用  
-先确认系统有 `ffmpeg`，再确认 `python3 -m pip show faster-whisper` 可用。
+3. 语音没有按预期回复  
+当前版本直接使用平台提供的 `voice_item.text`；如果这段文本为空，先确认 OpenClaw 返回的 payload 是否已经变化。
 
-4. 发了语音但机器人无响应（手机端优先流程）  
+4. 发了语音但机器人无响应  
+重点看消息是否进入入口，以及 `voice_item.text` 是否存在。
+
 在电脑执行：
 
 ```bash
@@ -136,18 +134,15 @@ tail -f /tmp/codex-im-openclaw.log
 如果你是通过 `nohup` 启动，可用：
 
 ```bash
-CODEX_IM_VERBOSE_LOGS=true CODEX_IM_OPENCLAW_VOICE_DIAGNOSTICS=true nohup node ./bin/codex-im.js openclaw-bot > /tmp/codex-im-openclaw.log 2>&1 &
+CODEX_IM_VERBOSE_LOGS=true nohup node ./bin/codex-im.js openclaw-bot > /tmp/codex-im-openclaw.log 2>&1 &
 ```
 
 你发语音后，重点看这几段日志是否出现：
-- `[codex-im][voice] ingress`
-- `[codex-im][voice] normalized`
-- `[codex-im][voice] media-download-success`
-- `[codex-im][voice] stt-success`
+- `openclaw normalized command=...`
+- `sendMessage`
+- `thread/resume ok`
 
-若只看到 `ingress` 或 `drop`，说明消息进来了但被归一化过滤；  
-若到 `media-download-start` 后失败，说明是媒体下载问题；  
-若到 `transcribe-start` 后失败，说明是本地转写环境问题。
+如果 `voice_item.text` 为空，则先回看 OpenClaw 的消息结构是否变了。
 
 ## 安全说明
 

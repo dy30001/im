@@ -12,7 +12,6 @@ pkill -f "codex-im.js openclaw-bot" 2>/dev/null || true
 cd "$APP_ROOT"
 nohup env \
   CODEX_IM_VERBOSE_LOGS=true \
-  CODEX_IM_OPENCLAW_VOICE_DIAGNOSTICS=true \
   node ./bin/codex-im.js openclaw-bot > "$LOG_FILE" 2>&1 &
 
 echo "[codex-im] openclaw diagnose started pid=$!"
