@@ -39,9 +39,9 @@ function normalizeOpenClawTextEvent(message, config) {
     return null;
   }
 
-  const fromUserId = normalizeIdentifier(message?.from_user_id);
-  const sessionId = normalizeIdentifier(message?.session_id);
-  const messageId = normalizeIdentifier(message?.message_id == null ? "" : String(message.message_id));
+  const fromUserId = resolveOpenClawSenderId(message);
+  const sessionId = resolveOpenClawSessionId(message);
+  const messageId = resolveOpenClawMessageId(message);
   if (!fromUserId || !messageId) {
     return null;
   }
@@ -264,6 +264,50 @@ function extractCardSelectedValue(action, value) {
 
 function normalizeIdentifier(value) {
   return typeof value === "string" && value.trim() ? value.trim() : "";
+}
+
+function normalizeLooseIdentifier(value) {
+  if (typeof value === "string" && value.trim()) {
+    return value.trim();
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+  return "";
+}
+
+function resolveOpenClawSenderId(message) {
+  return (
+    normalizeLooseIdentifier(message?.from_user_id)
+    || normalizeLooseIdentifier(message?.fromUserId)
+    || normalizeLooseIdentifier(message?.sender_id)
+    || normalizeLooseIdentifier(message?.senderId)
+    || normalizeLooseIdentifier(message?.from_id)
+    || normalizeLooseIdentifier(message?.fromId)
+    || normalizeLooseIdentifier(message?.from?.user_id)
+    || normalizeLooseIdentifier(message?.from?.userId)
+    || normalizeLooseIdentifier(message?.user_id)
+    || normalizeLooseIdentifier(message?.userId)
+  );
+}
+
+function resolveOpenClawSessionId(message) {
+  return (
+    normalizeLooseIdentifier(message?.session_id)
+    || normalizeLooseIdentifier(message?.sessionId)
+    || normalizeLooseIdentifier(message?.chat_id)
+    || normalizeLooseIdentifier(message?.chatId)
+  );
+}
+
+function resolveOpenClawMessageId(message) {
+  return (
+    normalizeLooseIdentifier(message?.message_id)
+    || normalizeLooseIdentifier(message?.messageId)
+    || normalizeLooseIdentifier(message?.msg_id)
+    || normalizeLooseIdentifier(message?.msgId)
+    || normalizeLooseIdentifier(message?.id)
+  );
 }
 
 function normalizeActionPage(value) {

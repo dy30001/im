@@ -20,7 +20,7 @@
 - `src/infra/openclaw/client-adapter.js`
 - `src/infra/openclaw/media-adapter.js`
 - `src/infra/stt/transcription-client.js`
-- `test/openclaw-voice-flow.test.js`
+- `test/openclaw-voice-flow.test.js`（备份文件名：`openclaw-voice-flow.test.js.bak`，避免被 `node --test` 自动发现）
 
 ## 校验摘要（SHA256）
 - `.env` `87add77c7a4a3cba3681eedfbeaa9980d6a1c68844534e17b9b8874608215f84`
@@ -33,7 +33,7 @@
 - `local-faster-whisper-transcribe.py` `3d6f6a368c0f04f4fddc6e86901dd89ca3c948513e3c37e640974ee4de64f69c`
 - `media-adapter.js` `b3dd02caf1336af5e5a12cb12544119edfa4ee91695bc30d62a40fc5bd17f9b9`
 - `openclaw-bot-runtime.js` `a30006aa5e727bc11d77146a2660072d3dc0cb9991985ab53110ea37eec44340`
-- `openclaw-voice-flow.test.js` `44d9016f9174e1db31dbfde3207075486077f30c0e1605b64bfbbb300b9e5cf1`
+- `openclaw-voice-flow.test.js.bak` `44d9016f9174e1db31dbfde3207075486077f30c0e1605b64bfbbb300b9e5cf1`
 - `openclaw-voice-service.js` `fbf9e70c08001178d6b32b06b3e1dd714b4f222888f859c5f2059be883982478`
 - `package.json` `01f25ebe4be3001be182b760b6ea022de6b20f4cffa539e6dae25ba83d177d63`
 - `transcription-client.js` `6fa67e47dc9778e0e341b470ff0508f91208510bec476961c6f1a4af32a12cb5`

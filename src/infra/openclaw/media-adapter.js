@@ -91,12 +91,35 @@ function normalizeVoiceAttachment(item, kind, payload) {
   }
 
   const downloadUrl = normalizeText(
-    payload.download_url || payload.downloadUrl || payload.url || item.download_url || item.url
+    payload.download_url
+      || payload.downloadUrl
+      || payload.downloadurl
+      || payload.file_download_url
+      || payload.fileDownloadUrl
+      || payload.media_url
+      || payload.mediaUrl
+      || payload.url
+      || item.download_url
+      || item.downloadUrl
+      || item.url
   );
   const dataUrl = normalizeText(
-    payload.data_url || payload.dataUrl || item.data_url || item.dataUrl
+    payload.data_url
+      || payload.dataUrl
+      || payload.dataurl
+      || item.data_url
+      || item.dataUrl
   );
-  const base64Data = normalizeText(payload.base64 || payload.data || item.base64 || "");
+  const base64Data = normalizeText(
+    payload.base64
+      || payload.base64_data
+      || payload.base64Data
+      || payload.data
+      || item.base64
+      || item.base64_data
+      || item.base64Data
+      || ""
+  );
   const fileName = normalizeText(
     payload.file_name || payload.fileName || item.file_name || item.fileName
   ) || inferDefaultFileName(payload.mime_type || payload.mimeType || item.mime_type || item.mimeType);
@@ -104,7 +127,18 @@ function normalizeVoiceAttachment(item, kind, payload) {
     payload.mime_type || payload.mimeType || item.mime_type || item.mimeType
   ) || inferMimeTypeFromFileName(fileName);
   const mediaId = normalizeText(
-    payload.media_id || payload.mediaId || payload.file_id || payload.fileId || item.media_id || item.file_id
+    payload.media_id
+      || payload.mediaId
+      || payload.mediaid
+      || payload.file_id
+      || payload.fileId
+      || payload.fileid
+      || payload.voice_id
+      || payload.voiceId
+      || item.media_id
+      || item.mediaId
+      || item.file_id
+      || item.fileId
   );
   const durationMs = normalizePositiveNumber(
     payload.duration_ms ?? payload.durationMs ?? item.duration_ms ?? item.durationMs
@@ -211,7 +245,13 @@ function normalizeItemType(value) {
 }
 
 function normalizeText(value) {
-  return typeof value === "string" ? value.trim() : "";
+  if (typeof value === "string") {
+    return value.trim();
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+  return "";
 }
 
 module.exports = {

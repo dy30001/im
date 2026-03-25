@@ -313,3 +313,30 @@ test("normalizeOpenClawTextEvent keeps text priority when text and voice coexist
   assert.equal(normalized?.command, "where");
   assert.equal(normalized?.voiceAttachment, null);
 });
+
+test("normalizeOpenClawTextEvent accepts sender/message id aliases for voice payloads", () => {
+  const normalized = normalizeOpenClawTextEvent(
+    {
+      from_id: "wx-user-alias-1",
+      msg_id: 188,
+      sessionId: "session-alias-1",
+      message_type: 3,
+      item_list: [
+        {
+          type: 4,
+          voice_item: {
+            media_id: 99123,
+            mime_type: "audio/ogg",
+          },
+        },
+      ],
+    },
+    { defaultWorkspaceId: "default" }
+  );
+
+  assert.equal(normalized?.chatId, "wx-user-alias-1");
+  assert.equal(normalized?.messageId, "188");
+  assert.equal(normalized?.threadKey, "session-alias-1");
+  assert.equal(normalized?.inputKind, "voice");
+  assert.equal(normalized?.voiceAttachment?.mediaId, "99123");
+});

@@ -34,6 +34,21 @@ test("extractVoiceAttachmentFromItemList recognizes audio items with inline data
   });
 });
 
+test("extractVoiceAttachmentFromItemList normalizes numeric media_id values", () => {
+  const attachment = extractVoiceAttachmentFromItemList([
+    {
+      type: 4,
+      voice_item: {
+        media_id: 778899,
+        mime_type: "audio/ogg",
+      },
+    },
+  ]);
+
+  assert.equal(attachment?.mediaId, "778899");
+  assert.equal(attachment?.mimeType, "audio/ogg");
+});
+
 test("OpenClawMediaAdapter decodes inline voice data without downloading", async () => {
   const adapter = new OpenClawMediaAdapter({
     clientAdapter: {
