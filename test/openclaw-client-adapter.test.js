@@ -6,7 +6,7 @@ const {
   isOpenClawCredentialError,
 } = require("../src/infra/openclaw/client-adapter");
 
-test("OpenClawClientAdapter.getUpdates throws when API returns a non-zero ret", async () => {
+test("OpenClawClientAdapter.getUpdates throws when API returns a session timeout", async () => {
   const adapter = new OpenClawClientAdapter({
     baseUrl: "https://ilinkai.weixin.qq.com",
     token: "token-1",
@@ -14,7 +14,6 @@ test("OpenClawClientAdapter.getUpdates throws when API returns a non-zero ret", 
       ok: true,
       async text() {
         return JSON.stringify({
-          ret: -14,
           errcode: -14,
           errmsg: "session timeout",
         });
@@ -25,6 +24,27 @@ test("OpenClawClientAdapter.getUpdates throws when API returns a non-zero ret", 
   await assert.rejects(
     adapter.getUpdates({ cursor: "" }),
     /getUpdates errcode=-14: session timeout/
+  );
+});
+
+test("OpenClawClientAdapter.getUpdates still throws when API returns a non-timeout error", async () => {
+  const adapter = new OpenClawClientAdapter({
+    baseUrl: "https://ilinkai.weixin.qq.com",
+    token: "token-1",
+    fetchImpl: async () => ({
+      ok: true,
+      async text() {
+        return JSON.stringify({
+          errcode: -2,
+          errmsg: "temporary network error",
+        });
+      },
+    }),
+  });
+
+  await assert.rejects(
+    adapter.getUpdates({ cursor: "" }),
+    /getUpdates errcode=-2: temporary network error/
   );
 });
 
@@ -71,6 +91,8 @@ test("OpenClawClientAdapter.sendTextMessage aligns the payload with the Weixin p
 
 test("isOpenClawCredentialError recognizes session timeout style failures", () => {
   assert.equal(isOpenClawCredentialError(new Error("getUpdates errcode=-14: session timeout")), true);
+  assert.equal(isOpenClawCredentialError(new Error("sendMessage invalid token")), true);
+  assert.equal(isOpenClawCredentialError(new Error("authorization failed: unauthorized")), true);
   assert.equal(isOpenClawCredentialError(new Error("getUpdates errcode=-2: temporary network error")), false);
 });
 
@@ -108,4 +130,44 @@ test("OpenClawClientAdapter.downloadMedia forwards auth headers and returns byte
   assert.equal(capturedRequest?.options?.headers?.AuthorizationType, "ilink_bot_token");
   assert.equal(result.mimeType, "audio/mpeg");
   assert.deepEqual([...result.buffer], [1, 2, 3]);
+});
+
+test("OpenClawClientAdapter.downloadMediaById tries media_id candidate endpoints", async () => {
+  const seenUrls = [];
+  const adapter = new OpenClawClientAdapter({
+    baseUrl: "https://ilinkai.weixin.qq.com",
+    token: "token-1",
+    fetchImpl: async (url) => {
+      seenUrls.push(url);
+      if (String(url).includes("ilink/bot/get_media")) {
+        return {
+          ok: true,
+          headers: {
+            get() {
+              return "audio/ogg";
+            },
+          },
+          async arrayBuffer() {
+            return Uint8Array.from([9, 8, 7]).buffer;
+          },
+        };
+      }
+      return {
+        ok: false,
+        async text() {
+          return "not found";
+        },
+      };
+    },
+  });
+
+  const result = await adapter.downloadMediaById({
+    mediaId: "voice-22",
+  });
+
+  assert.ok(seenUrls.some((url) => String(url).includes("ilink/media/download?media_id=voice-22")));
+  assert.ok(seenUrls.some((url) => String(url).includes("ilink/bot/getmedia?media_id=voice-22")));
+  assert.ok(seenUrls.some((url) => String(url).includes("ilink/bot/get_media?media_id=voice-22")));
+  assert.equal(result.mimeType, "audio/ogg");
+  assert.deepEqual([...result.buffer], [9, 8, 7]);
 });

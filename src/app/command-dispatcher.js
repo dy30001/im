@@ -198,7 +198,7 @@ async function dispatchTextCommand(runtime, normalized) {
 
 function resolveContextualTextCommand(runtime, normalized) {
   const command = String(normalized?.command || "").trim();
-  if (!command || command === "unknown_command") {
+  if (!command) {
     return command;
   }
 
@@ -210,7 +210,7 @@ function resolveContextualTextCommand(runtime, normalized) {
     return command;
   }
 
-  if (selectionCommand === "threads" && command === "message") {
+  if (selectionCommand === "threads" && (command === "message" || command === "unknown_command")) {
     const threadListCommand = extractNaturalThreadListCommand(normalized?.text, { allowBare: true });
     if (threadListCommand) {
       return threadListCommand;
@@ -222,15 +222,15 @@ function resolveContextualTextCommand(runtime, normalized) {
   }
 
   if (selectionCommand === "threads") {
-    return command === "message" || command === "browse" ? "switch" : command;
+    return command === "message" || command === "browse" || command === "unknown_command" ? "switch" : command;
   }
 
   if (selectionCommand === "workspace") {
-    return command === "message" || command === "browse" ? "workspace" : command;
+    return command === "message" || command === "browse" || command === "unknown_command" ? "workspace" : command;
   }
 
   if (selectionCommand === "browse") {
-    return command === "message" ? "browse" : command;
+    return command === "message" || command === "unknown_command" ? "browse" : command;
   }
 
   return command;

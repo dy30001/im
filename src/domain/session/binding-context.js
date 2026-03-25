@@ -100,6 +100,7 @@ function rememberSelectionContext(runtime, bindingKey, selectionContext) {
   const storedContext = {
     bindingKey: normalizedBindingKey,
     command: normalizedCommand,
+    page: normalizeSelectionPage(selectionContext?.page),
     messageId: String(selectionContext?.messageId || "").trim(),
     replyToMessageId: String(selectionContext?.replyToMessageId || "").trim(),
     updatedAt: new Date().toISOString(),
@@ -138,6 +139,14 @@ function setBoundedMapEntry(runtime, map, key, value, limit) {
     }
     map.delete(oldestKey);
   }
+}
+
+function normalizeSelectionPage(page) {
+  const numericPage = Number(page);
+  if (!Number.isFinite(numericPage)) {
+    return 0;
+  }
+  return Math.max(Math.floor(numericPage), 0);
 }
 
 function resolveBindingKeyForThread(runtime, threadId) {

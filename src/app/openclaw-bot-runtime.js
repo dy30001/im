@@ -59,6 +59,23 @@ const {
   attachRuntimeForwarders: attachSharedRuntimeForwarders,
   initializeCommonRuntimeState,
 } = require("./runtime-base");
+const {
+  applyOpenClawPollResponse,
+  dispatchOpenClawMessages,
+  logOpenClawPolledMessages,
+} = require("./openclaw-polling-service");
+const {
+  markThreadSyncLocalActivity,
+  rememberSelectedThreadForSync,
+  syncSelectedDesktopSessionBinding,
+  syncSelectedThreadBinding,
+  syncSelectedThreads,
+  threadSyncLoop,
+} = require("./openclaw-thread-sync-service");
+const {
+  reportVoiceTranscriptionStatus,
+  transcribeOpenClawVoiceMessage,
+} = require("./openclaw-voice-service");
 const approvalRuntime = require("../domain/approval/approval-service");
 const runtimeState = require("../domain/session/binding-context");
 const threadRuntime = require("../domain/thread/thread-service");
@@ -66,7 +83,6 @@ const workspaceRuntime = require("../domain/workspace/workspace-service");
 const eventsRuntime = require("./codex-event-service");
 const approvalPolicyRuntime = require("../domain/approval/approval-policy");
 const appDispatcher = require("./dispatcher");
-const codexMessageUtils = require("../infra/codex/message-utils");
 const { extractModelCatalogFromListResponse } = require("../shared/model-catalog");
 const fs = require("fs");
 
@@ -190,14 +206,7 @@ class OpenClawBotRuntime {
   }
 
   reportVoiceTranscriptionStatus() {
-    const transcription = this.config.openclaw?.transcription || {};
-    if (!transcription.localFasterWhisperEnabled) {
-      console.warn("[codex-im] voice transcription disabled: set CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER=1 and install faster-whisper + ffmpeg");
-      return;
-    }
-    if (typeof fetch !== "function") {
-      console.warn("[codex-im] voice transcription unavailable: current runtime lacks fetch support for voice downloads");
-    }
+    reportVoiceTranscriptionStatus(this.config);
   }
 
   async ensureOpenClawCredentials() {
@@ -331,33 +340,9 @@ class OpenClawBotRuntime {
           break;
         }
 
-        if (typeof response?.get_updates_buf === "string") {
-          this.syncCursor = response.get_updates_buf;
-        }
-        const messages = Array.isArray(response?.msgs) ? response.msgs : [];
-        if (this.config.verboseCodexLogs && messages.length) {
-          console.log(`[codex-im] openclaw poll received ${messages.length} message(s)`);
-        }
-        for (const message of messages) {
-          if (this.config.verboseCodexLogs) {
-            console.log(
-              "[codex-im] openclaw message",
-              JSON.stringify({
-                messageId: message?.message_id ?? "",
-                fromUserId: message?.from_user_id ?? "",
-                toUserId: message?.to_user_id ?? "",
-                sessionId: message?.session_id ?? "",
-                messageType: message?.message_type ?? "",
-                itemTypes: Array.isArray(message?.item_list)
-                  ? message.item_list.map((item) => item?.type ?? "")
-                  : [],
-              })
-            );
-          }
-          await appDispatcher.onOpenClawTextEvent(this, message).catch((error) => {
-            console.error(`[codex-im] failed to process OpenClaw message: ${error.message}`);
-          });
-        }
+        const messages = applyOpenClawPollResponse(this, response);
+        logOpenClawPolledMessages(this, messages);
+        await dispatchOpenClawMessages(this, messages);
       } catch (error) {
         if (signal.aborted || this.isStopping) {
           break;
@@ -373,245 +358,27 @@ class OpenClawBotRuntime {
   }
 
   rememberSelectedThreadForSync(bindingKey, workspaceRoot, threadId) {
-    const syncKey = buildThreadSyncKey(bindingKey, workspaceRoot);
-    const normalizedThreadId = String(threadId || "").trim();
-    if (!syncKey || !normalizedThreadId) {
-      return;
-    }
-
-    const current = this.threadSyncStateByKey.get(syncKey) || null;
-    if (current?.threadId === normalizedThreadId) {
-      return;
-    }
-    this.threadSyncStateByKey.set(syncKey, {
-      threadId: normalizedThreadId,
-      lastUpdatedAt: 0,
-      lastMessageSignature: "",
-      needsBaseline: true,
-      skipNextSync: false,
-      lastError: "",
-    });
+    return rememberSelectedThreadForSync(this, bindingKey, workspaceRoot, threadId);
   }
 
   markThreadSyncLocalActivity(threadId) {
-    const normalizedThreadId = String(threadId || "").trim();
-    if (!normalizedThreadId) {
-      return;
-    }
-
-    for (const state of this.threadSyncStateByKey.values()) {
-      if (state?.threadId === normalizedThreadId) {
-        state.skipNextSync = true;
-      }
-    }
+    return markThreadSyncLocalActivity(this, threadId);
   }
 
   async threadSyncLoop(signal) {
-    await delay(THREAD_SYNC_POLL_INTERVAL_MS, signal);
-    while (!signal.aborted && !this.isStopping) {
-      try {
-        await this.syncSelectedThreads(signal);
-      } catch (error) {
-        if (signal.aborted || this.isStopping) {
-          break;
-        }
-        console.error(`[codex-im] openclaw thread sync failed: ${error.message}`);
-      }
-      await delay(THREAD_SYNC_POLL_INTERVAL_MS, signal);
-    }
+    return threadSyncLoop(this, signal, THREAD_SYNC_POLL_INTERVAL_MS);
   }
 
   async syncSelectedThreads(signal) {
-    const bindings = typeof this.sessionStore.listBindings === "function"
-      ? this.sessionStore.listBindings()
-      : [];
-
-    for (const entry of bindings) {
-      if (signal.aborted || this.isStopping) {
-        break;
-      }
-      if (!this.isRuntimeBindingEntry(entry?.binding)) {
-        continue;
-      }
-      await this.syncSelectedThreadBinding(entry).catch((error) => {
-        console.error(`[codex-im] failed to sync selected thread: ${error.message}`);
-      });
-    }
+    return syncSelectedThreads(this, signal);
   }
 
   async syncSelectedThreadBinding({ bindingKey, binding }) {
-    if (this.usesDesktopSessionSource()) {
-      return this.syncSelectedDesktopSessionBinding({ bindingKey, binding });
-    }
-
-    const workspaceRoot = String(binding?.activeWorkspaceRoot || "").trim();
-    const chatId = String(binding?.chatId || "").trim();
-    const threadId = String(binding?.threadIdByWorkspaceRoot?.[workspaceRoot] || "").trim();
-    if (!bindingKey || !workspaceRoot || !chatId || !threadId) {
-      return;
-    }
-    if (this.activeTurnIdByThreadId.has(threadId) || this.pendingApprovalByThreadId.has(threadId)) {
-      return;
-    }
-
-    this.rememberSelectedThreadForSync(bindingKey, workspaceRoot, threadId);
-    const syncKey = buildThreadSyncKey(bindingKey, workspaceRoot);
-    const state = this.threadSyncStateByKey.get(syncKey);
-    if (!state || state.threadId !== threadId) {
-      return;
-    }
-
-    const threads = await this.refreshWorkspaceThreads(bindingKey, workspaceRoot, {
-      workspaceId: binding?.workspaceId || this.config.defaultWorkspaceId,
-      chatId,
-      threadKey: binding?.threadKey || "",
-      senderId: binding?.senderId || "",
-      messageId: "",
-    });
-    const selectedThread = threads.find((thread) => thread?.id === threadId) || null;
-    if (!selectedThread) {
-      await this.maybeSendThreadSyncWarning(state, {
-        chatId,
-        text: [
-          "当前选中的线程已不可用，请重新切换线程。",
-          `项目：\`${workspaceRoot}\``,
-          `线程ID：\`${threadId}\``,
-        ].join("\n"),
-        errorKey: `missing:${threadId}`,
-      });
-      return;
-    }
-
-    const updatedAt = Number(selectedThread.updatedAt || 0);
-    if (!state.needsBaseline && updatedAt > 0 && updatedAt <= state.lastUpdatedAt) {
-      state.lastError = "";
-      return;
-    }
-
-    const resumeResponse = await this.codex.resumeThread({ threadId });
-    const recentMessages = codexMessageUtils.extractRecentConversationFromResumeResponse(resumeResponse);
-    const signature = codexMessageUtils.buildRecentConversationSignature(recentMessages);
-
-    if (state.needsBaseline) {
-      state.needsBaseline = false;
-      state.lastUpdatedAt = updatedAt;
-      state.lastMessageSignature = signature;
-      state.skipNextSync = false;
-      state.lastError = "";
-      return;
-    }
-
-    if ((signature && signature === state.lastMessageSignature) || !recentMessages.length) {
-      state.lastUpdatedAt = updatedAt;
-      state.lastMessageSignature = signature;
-      state.lastError = "";
-      return;
-    }
-
-    if (state.skipNextSync) {
-      state.lastUpdatedAt = updatedAt;
-      state.lastMessageSignature = signature;
-      state.skipNextSync = false;
-      state.lastError = "";
-      return;
-    }
-
-    await this.sendTextMessage({
-      chatId,
-      text: this.buildThreadSyncText({
-        workspaceRoot,
-        thread: selectedThread,
-        recentMessages,
-      }),
-    });
-    state.lastUpdatedAt = updatedAt;
-    state.lastMessageSignature = signature;
-    state.lastError = "";
+    return syncSelectedThreadBinding(this, { bindingKey, binding });
   }
 
   async syncSelectedDesktopSessionBinding({ bindingKey, binding }) {
-    const workspaceRoot = String(binding?.activeWorkspaceRoot || "").trim();
-    const chatId = String(binding?.chatId || "").trim();
-    const threadId = String(binding?.threadIdByWorkspaceRoot?.[workspaceRoot] || "").trim();
-    if (!bindingKey || !workspaceRoot || !chatId || !threadId) {
-      return;
-    }
-
-    this.rememberSelectedThreadForSync(bindingKey, workspaceRoot, threadId);
-    const syncKey = buildThreadSyncKey(bindingKey, workspaceRoot);
-    const state = this.threadSyncStateByKey.get(syncKey);
-    if (!state || state.threadId !== threadId) {
-      return;
-    }
-
-    const sessions = await this.listDesktopSessionsForWorkspace(workspaceRoot);
-    const selectedSession = sessions.find((session) => (
-      session?.id === threadId
-      || session?.acpSessionId === threadId
-      || session?.acpxRecordId === threadId
-    )) || null;
-    if (!selectedSession) {
-      await this.maybeSendThreadSyncWarning(state, {
-        chatId,
-        text: [
-          "当前选中的桌面会话已不可用，请重新切换会话。",
-          `项目：\`${workspaceRoot}\``,
-          `会话ID：\`${threadId}\``,
-        ].join("\n"),
-        errorKey: `missing:${threadId}`,
-      });
-      return;
-    }
-
-    const hydrated = await this.hydrateDesktopSession(selectedSession);
-    if (!hydrated) {
-      return;
-    }
-
-    const updatedAt = Number(hydrated.updatedAt || selectedSession.updatedAt || 0);
-    if (!state.needsBaseline && updatedAt > 0 && updatedAt <= state.lastUpdatedAt) {
-      state.lastError = "";
-      return;
-    }
-
-    const recentMessages = Array.isArray(hydrated.recentMessages) ? hydrated.recentMessages : [];
-    const signature = codexMessageUtils.buildRecentConversationSignature(recentMessages);
-
-    if (state.needsBaseline) {
-      state.needsBaseline = false;
-      state.lastUpdatedAt = updatedAt;
-      state.lastMessageSignature = signature;
-      state.skipNextSync = false;
-      state.lastError = "";
-      return;
-    }
-
-    if ((signature && signature === state.lastMessageSignature) || !recentMessages.length) {
-      state.lastUpdatedAt = updatedAt;
-      state.lastMessageSignature = signature;
-      state.lastError = "";
-      return;
-    }
-
-    if (state.skipNextSync) {
-      state.lastUpdatedAt = updatedAt;
-      state.lastMessageSignature = signature;
-      state.skipNextSync = false;
-      state.lastError = "";
-      return;
-    }
-
-    await this.sendTextMessage({
-      chatId,
-      text: this.buildThreadSyncText({
-        workspaceRoot,
-        thread: hydrated,
-        recentMessages,
-      }),
-    });
-    state.lastUpdatedAt = updatedAt;
-    state.lastMessageSignature = signature;
-    state.lastError = "";
+    return syncSelectedDesktopSessionBinding(this, { bindingKey, binding });
   }
 
   async maybeSendThreadSyncWarning(state, { chatId, text, errorKey }) {
@@ -667,6 +434,16 @@ class OpenClawBotRuntime {
     }
   }
 
+  forgetInboundContext(normalized) {
+    if (!normalized?.messageId) {
+      return;
+    }
+    this.messageContextByMessageId.delete(normalized.messageId);
+    if (normalized.chatId) {
+      this.latestMessageContextByChatId.delete(normalized.chatId);
+    }
+  }
+
   resolveMessageContext({ replyToMessageId = "", chatId = "" } = {}) {
     const byMessageId = replyToMessageId ? this.messageContextByMessageId.get(replyToMessageId) || null : null;
     if (byMessageId) {
@@ -718,14 +495,7 @@ class OpenClawBotRuntime {
   }
 
   async transcribeOpenClawVoiceMessage(normalized) {
-    const media = await this.openclawMediaAdapter.downloadVoiceAttachment(normalized?.voiceAttachment, {
-      signal: this.pollAbortController?.signal,
-    });
-    const result = await this.transcriptionClient.transcribeAudio({
-      ...media,
-      signal: this.pollAbortController?.signal,
-    });
-    return result.text;
+    return transcribeOpenClawVoiceMessage(this, normalized);
   }
 
   isRuntimeBindingEntry(binding) {
@@ -894,15 +664,6 @@ function startsWithAny(value, prefixes) {
     return false;
   }
   return prefixes.some((prefix) => value.startsWith(prefix));
-}
-
-function buildThreadSyncKey(bindingKey, workspaceRoot) {
-  const normalizedBindingKey = String(bindingKey || "").trim();
-  const normalizedWorkspaceRoot = String(workspaceRoot || "").trim();
-  if (!normalizedBindingKey || !normalizedWorkspaceRoot) {
-    return "";
-  }
-  return `${normalizedBindingKey}::${normalizedWorkspaceRoot}`;
 }
 
 async function delay(ms, signal) {

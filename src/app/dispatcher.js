@@ -15,10 +15,23 @@ async function onOpenClawTextEvent(runtime, message) {
     return;
   }
   const normalized = messageNormalizers.normalizeOpenClawTextEvent(message, runtime.config);
-  if (normalized && typeof runtime.rememberInboundContext === "function") {
+  const shouldStageVoiceContext =
+    normalized?.inputKind === "voice"
+    && runtime.config?.openclaw?.voiceInputEnabled !== false
+    && typeof runtime.rememberInboundContext === "function";
+  if (shouldStageVoiceContext) {
     runtime.rememberInboundContext(normalized);
   }
   const prepared = await prepareOpenClawNormalizedEvent(runtime, normalized);
+  if (shouldStageVoiceContext && typeof runtime.forgetInboundContext === "function") {
+    runtime.forgetInboundContext(normalized);
+  }
+  if (!prepared) {
+    return;
+  }
+  if (typeof runtime.rememberInboundContext === "function") {
+    runtime.rememberInboundContext(prepared);
+  }
   if (runtime.config.verboseCodexLogs) {
     console.log(
       `[codex-im] openclaw normalized command=${prepared?.command || "-"} `
@@ -86,8 +99,32 @@ async function prepareOpenClawNormalizedEvent(runtime, normalized) {
   if (!normalized || normalized.inputKind !== "voice") {
     return normalized;
   }
+  if (runtime.config?.openclaw?.voiceInputEnabled === false) {
+    if (runtime.config.verboseCodexLogs) {
+      console.log(
+        `[codex-im] openclaw voice input disabled: skipping voice message=${normalized.messageId}`
+      );
+    }
+    return null;
+  }
 
   try {
+    if (runtime.config.verboseCodexLogs) {
+      const voiceAttachment = normalized?.voiceAttachment || {};
+      console.log(
+        "[codex-im] openclaw voice attachment",
+        JSON.stringify({
+          messageId: normalized.messageId || "",
+          itemType: voiceAttachment.itemType || 0,
+          hasDownloadUrl: Boolean(voiceAttachment.downloadUrl),
+          hasDataUrl: Boolean(voiceAttachment.dataUrl),
+          hasBase64Data: Boolean(voiceAttachment.base64Data),
+          hasMediaId: Boolean(voiceAttachment.mediaId),
+          mimeType: voiceAttachment.mimeType || "",
+          fileName: voiceAttachment.fileName || "",
+        })
+      );
+    }
     const transcribedText = await runtime.transcribeOpenClawVoiceMessage(normalized);
     if (runtime.config.verboseCodexLogs) {
       const previewLength = String(transcribedText || "").length;
@@ -101,6 +138,7 @@ async function prepareOpenClawNormalizedEvent(runtime, normalized) {
     await runtime.sendInfoCardMessage({
       chatId: normalized.chatId,
       replyToMessageId: normalized.messageId,
+      contextToken: normalized.contextToken,
       text: formatFailureText("语音转写失败", error),
     });
     return null;

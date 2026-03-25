@@ -14,7 +14,15 @@ const {
 
 async function sendInfoCardMessage(
   runtime,
-  { chatId, text, replyToMessageId = "", replyInThread = false, kind = "info", selectionContext = null }
+  {
+    chatId,
+    text,
+    replyToMessageId = "",
+    replyInThread = false,
+    kind = "info",
+    selectionContext = null,
+    contextToken = "",
+  }
 ) {
   if (!chatId || !text) {
     return null;
@@ -24,6 +32,7 @@ async function sendInfoCardMessage(
     const response = await runtime.sendTextMessage({
       chatId,
       replyToMessageId,
+      contextToken,
       text: formatPlainTextNotice(text, kind),
     });
     rememberSelectionContext(runtime, {
@@ -147,10 +156,19 @@ function rememberSelectionContext(runtime, { chatId, replyToMessageId = "", sele
   runtime.rememberSelectionContext({
     bindingKey,
     command,
+    page: normalizeSelectionPage(selectionContext?.page),
     messageId: codexMessageUtils.extractCreatedMessageId(response),
     chatId,
     replyToMessageId,
   });
+}
+
+function normalizeSelectionPage(page) {
+  const numericPage = Number(page);
+  if (!Number.isFinite(numericPage)) {
+    return 0;
+  }
+  return Math.max(Math.floor(numericPage), 0);
 }
 
 async function handleCardAction(runtime, data) {

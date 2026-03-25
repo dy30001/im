@@ -33,6 +33,7 @@ function readConfig() {
   const localFasterWhisperCacheDir = readTextEnv("CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER_CACHE_DIR")
     || readTextEnv("CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_WHISPER_CACHE_DIR");
   const transcriptionLanguage = readTextEnv("CODEX_IM_OPENCLAW_TRANSCRIPTION_LANGUAGE");
+  const voiceInputEnabled = readBooleanEnv("CODEX_IM_OPENCLAW_VOICE_INPUT_ENABLED", true);
 
   return {
     mode,
@@ -52,6 +53,7 @@ function readConfig() {
       baseUrlExplicit: Boolean(openClawBaseUrl),
       token: readTextEnv("CODEX_IM_OPENCLAW_TOKEN"),
       threadSource: readThreadSourceEnv("CODEX_IM_OPENCLAW_THREAD_SOURCE", "acpx"),
+      voiceInputEnabled,
       longPollTimeoutMs: readIntegerEnv(
         "CODEX_IM_OPENCLAW_LONG_POLL_TIMEOUT_MS",
         DEFAULT_OPENCLAW_LONG_POLL_TIMEOUT_MS

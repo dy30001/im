@@ -30,6 +30,20 @@ class OpenClawMediaAdapter {
         mimeType: downloaded.mimeType || attachment.mimeType || "application/octet-stream",
       };
     }
+    if (attachment.mediaId) {
+      if (!this.clientAdapter || typeof this.clientAdapter.downloadMediaById !== "function") {
+        throw new Error("收到语音消息，但只有 media_id/file_id，当前适配器不支持按 media_id 下载。");
+      }
+      const downloaded = await this.clientAdapter.downloadMediaById({
+        mediaId: attachment.mediaId,
+        signal,
+      });
+      return {
+        ...downloaded,
+        fileName: attachment.fileName || downloaded.fileName || inferDefaultFileName(attachment.mimeType),
+        mimeType: downloaded.mimeType || attachment.mimeType || "application/octet-stream",
+      };
+    }
 
     throw new Error("收到语音消息，但当前 payload 没有可下载的媒体地址。");
   }

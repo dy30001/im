@@ -115,6 +115,7 @@ codex-im feishu-bot
 - `CODEX_IM_OPENCLAW_BASE_URL`（默认 `https://ilinkai.weixin.qq.com`）
 - `CODEX_IM_OPENCLAW_TOKEN`（可选；为空时首次启动自动扫码，并写入本地凭据文件）
 - `CODEX_IM_OPENCLAW_THREAD_SOURCE`（默认 `acpx`；`acpx` 表示按桌面 App 可见会话工作，`codex` 表示回退到后台 `thread/list` 模式）
+- `CODEX_IM_OPENCLAW_VOICE_INPUT_ENABLED`（可选；`false` 时临时关闭语音前置，只保留纯文本链路，默认 `true`）
 - `CODEX_IM_OPENCLAW_LONG_POLL_TIMEOUT_MS`（默认 `35000`）
 - `CODEX_IM_OPENCLAW_STREAMING_OUTPUT`（默认 `false`，微信 text-only 模式建议保持关闭）
 - `CODEX_IM_OPENCLAW_CREDENTIALS_FILE`（默认 `~/.codex-im/openclaw-credentials.json`）
@@ -174,6 +175,7 @@ npm run openclaw-bot
 ## OpenClaw / 微信模式说明
 
 - 当前支持普通文本和语音输入；语音消息会先下载并转写成文本，再复用现有命令/聊天链路
+- 如果你要做纯文本 A/B，可把 `CODEX_IM_OPENCLAW_VOICE_INPUT_ENABLED=false`，这样语音消息会被前置跳过，不会进入转写链路
 - 转写只走本地 `faster-whisper`；请把 `CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER=true` 打开
 - 本地 `faster-whisper` 依赖：`pip install faster-whisper ffmpeg-python`，并确保系统已安装 `ffmpeg`
 - 卡片、reaction、文件发送会自动降级为纯文本提示
@@ -191,7 +193,7 @@ npm run openclaw-bot
 - 如果你更希望沿用旧的后台 `thread/list` 线程模型，可以把 `CODEX_IM_OPENCLAW_THREAD_SOURCE=codex`
 - 如果你是在仓库源码目录里直接跑，而不是全局安装 npm 包，请用 `npm run openclaw-bot` 或 `node ./bin/codex-im.js openclaw-bot`
 - 已有 `~/.codex-im/openclaw-credentials.json` 时，重启会优先复用本地 token，不需要每次重新扫码
-- 轮询遇到 `session timeout / errcode=-14` 一类凭证问题时，会先尝试重新加载本地凭据；如果本地没有更新过的 token，日志会明确提示需要重新扫码
+- 轮询遇到 `getUpdates errcode=-14: session timeout` 这类凭证问题时，会先尝试重新加载本地凭据；如果本地没有更新过的 token，日志会明确提示需要重新扫码
 
 ## macOS 开机自启
 

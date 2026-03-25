@@ -39,6 +39,14 @@ test("detectNaturalCommand recognizes conservative natural-language control comm
   assert.equal(detectNaturalCommand("现在有哪几个绑定"), "workspace");
   assert.equal(detectNaturalCommand("切换工程目录"), "workspace");
   assert.equal(detectNaturalCommand("选择第二绑定"), "workspace");
+  assert.equal(detectNaturalCommand("上一页线程"), "prev_page");
+  assert.equal(detectNaturalCommand("下一页会话"), "next_page");
+  assert.equal(detectNaturalCommand("刷新线程列表"), "refresh_threads");
+  assert.equal(detectNaturalCommand("刷新一下线程列表"), "refresh_threads");
+  assert.equal(detectNaturalCommand("帮我刷新线程列表"), "refresh_threads");
+  assert.equal(detectNaturalCommand("上一页"), "");
+  assert.equal(detectNaturalCommand("下一页"), "");
+  assert.equal(detectNaturalCommand("刷新"), "");
   assert.equal(detectNaturalCommand("状态"), "status");
   assert.equal(detectNaturalCommand("查看最近消息"), "inspect_message");
   assert.equal(detectNaturalCommand("请问怎么用"), "help");

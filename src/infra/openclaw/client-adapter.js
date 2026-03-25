@@ -94,6 +94,33 @@ class OpenClawClientAdapter {
       signal,
     });
   }
+
+  async downloadMediaById({ mediaId, timeoutMs = 15_000, signal } = {}) {
+    const normalizedMediaId = String(mediaId || "").trim();
+    if (!normalizedMediaId) {
+      return null;
+    }
+
+    const candidates = buildMediaDownloadCandidates(normalizedMediaId);
+    let lastError = null;
+    for (const candidateUrl of candidates) {
+      try {
+        return await fetchBinary({
+          downloadUrl: candidateUrl,
+          baseUrl: this.baseUrl,
+          token: this.token,
+          timeoutMs,
+          fetchImpl: this.fetchImpl,
+          signal,
+        });
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    const reason = String(lastError?.message || "unknown").trim();
+    throw new Error(`downloadMediaById failed media_id=${maskValue(normalizedMediaId)}: ${reason}`);
+  }
 }
 
 function buildBaseInfo() {
@@ -263,15 +290,19 @@ function buildApiError(payload, label) {
   if (!payload || typeof payload !== "object") {
     return null;
   }
-  if (!Number.isFinite(payload.ret) || payload.ret === 0) {
+  const retCode = Number(payload.ret);
+  const errCode = Number(payload.errcode);
+  const resolvedCode = Number.isFinite(errCode)
+    ? errCode
+    : (Number.isFinite(retCode) ? retCode : null);
+  if (resolvedCode == null || resolvedCode === 0) {
     return null;
   }
 
-  const errcode = Number.isFinite(payload.errcode) ? payload.errcode : payload.ret;
   const errmsg = typeof payload.errmsg === "string" && payload.errmsg.trim()
     ? payload.errmsg.trim()
     : "unknown error";
-  return new Error(`${label} errcode=${errcode}: ${errmsg}`);
+  return new Error(`${label} errcode=${resolvedCode}: ${errmsg}`);
 }
 
 function isOpenClawCredentialError(error) {
@@ -320,6 +351,15 @@ function summarizeResponseBody(body) {
   }
 
   return "<object>";
+}
+
+function buildMediaDownloadCandidates(mediaId) {
+  const encodedMediaId = encodeURIComponent(String(mediaId || "").trim());
+  return [
+    `ilink/media/download?media_id=${encodedMediaId}`,
+    `ilink/bot/getmedia?media_id=${encodedMediaId}`,
+    `ilink/bot/get_media?media_id=${encodedMediaId}`,
+  ];
 }
 
 function maskValue(value) {

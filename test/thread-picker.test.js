@@ -3,7 +3,7 @@ const test = require("node:test");
 
 const { buildThreadPickerCard, buildThreadPickerText } = require("../src/presentation/card/builders");
 const { normalizeFeishuTextEvent, extractCardAction } = require("../src/presentation/message/normalizers");
-const { showThreadPicker } = require("../src/domain/workspace/workspace-service");
+const { handleThreadsCommand, showThreadPicker } = require("../src/domain/workspace/workspace-service");
 
 test("normalizeFeishuTextEvent recognizes /codex threads", () => {
   const normalized = normalizeFeishuTextEvent({
@@ -139,6 +139,7 @@ test("showThreadPicker tags the thread list with selection context", async () =>
     {
       bindingKey: "binding-1",
       command: "threads",
+      page: 0,
     },
   ]);
 });
@@ -194,6 +195,11 @@ test("showThreadPicker renders cached threads when refresh falls back", async ()
 
   assert.equal(cards.length, 1);
   assert.match(JSON.stringify(cards[0].card), /最近一次成功结果/);
+  assert.deepEqual(cards[0].selectionContext, {
+    bindingKey: "binding-1",
+    command: "threads",
+    page: 0,
+  });
 });
 
 test("showThreadPicker uses a text summary for providers without interactive cards", async () => {
@@ -226,4 +232,58 @@ test("showThreadPicker uses a text summary for providers without interactive car
   assert.equal(infoMessages.length, 1);
   assert.match(infoMessages[0].text, /thread-1/);
   assert.match(infoMessages[0].text, /\/codex switch <threadId>/);
+  assert.deepEqual(infoMessages[0].selectionContext, {
+    bindingKey: "binding-1",
+    command: "threads",
+    page: 0,
+  });
+});
+
+test("handleThreadsCommand advances and refreshes the remembered thread-list page", async () => {
+  const cards = [];
+  const runtime = {
+    supportsInteractiveCards: () => true,
+    resolveSelectionContext: () => ({ command: "threads", page: 1 }),
+    resolveReplyToMessageId: (_normalized, replyToMessageId = "") => replyToMessageId || "reply-1",
+    getBindingContext: () => ({ bindingKey: "binding-1", workspaceRoot: "/repo" }),
+    refreshWorkspaceThreads: async () => Array.from({ length: 20 }, (_, index) => ({
+      id: `thread-${index + 1}`,
+      title: `Thread ${index + 1}`,
+      updatedAt: index + 1,
+    })),
+    getWorkspaceThreadRefreshState: () => ({ ok: true, fromCache: false, error: "" }),
+    resolveThreadIdForBinding: () => "thread-1",
+    buildThreadPickerCard,
+    sendInteractiveCard: async (payload) => {
+      cards.push(payload);
+    },
+    sendInfoCardMessage: async () => {
+      throw new Error("unexpected info card");
+    },
+  };
+
+  await handleThreadsCommand(runtime, {
+    chatId: "chat-1",
+    messageId: "msg-1",
+    text: "下一页",
+    command: "next_page",
+  });
+  await handleThreadsCommand(runtime, {
+    chatId: "chat-1",
+    messageId: "msg-2",
+    text: "刷新",
+    command: "refresh_threads",
+  });
+
+  assert.equal(cards.length, 2);
+  assert.deepEqual(cards[0].selectionContext, {
+    bindingKey: "binding-1",
+    command: "threads",
+    page: 2,
+  });
+  assert.deepEqual(cards[1].selectionContext, {
+    bindingKey: "binding-1",
+    command: "threads",
+    page: 1,
+  });
 });

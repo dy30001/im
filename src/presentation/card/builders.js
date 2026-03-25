@@ -529,6 +529,7 @@ function buildThreadPickerText({
     ? "<sessionId>"
     : "<threadId>";
   lines.push(
+    "翻页：`上一页` / `下一页` / `刷新`",
     "操作：",
     `\`/codex switch ${switchTargetPlaceholder}\``,
     "`/codex message`",
@@ -566,7 +567,7 @@ function buildHelpCardText() {
     [
       "**查看线程列表**",
       "`/codex threads`",
-      "枚举当前项目下的 Codex 线程，并直接切换进入。",
+      "枚举当前项目下的 Codex 线程，并直接切换进入。线程列表后也可以直接说 `上一页`、`下一页`、`刷新`。",
     ],
     [
       "**查看会话项目**",

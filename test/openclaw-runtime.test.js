@@ -128,6 +128,46 @@ test("OpenClawBotRuntime reports non-recoverable credential failures when no new
   assert.equal(runtime.config.openclaw.token, "same-token");
 });
 
+test("OpenClawBotRuntime warns when voice input frontend is disabled", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-im-openclaw-voice-off-"));
+  const runtime = new OpenClawBotRuntime({
+    mode: "openclaw-bot",
+    workspaceAllowlist: [],
+    codexEndpoint: "",
+    codexCommand: "codex",
+    defaultCodexModel: "gpt-5.3-codex",
+    defaultCodexEffort: "medium",
+    defaultCodexAccessMode: "default",
+    verboseCodexLogs: false,
+    openclaw: {
+      baseUrl: "https://ilinkai.weixin.qq.com",
+      token: "token",
+      longPollTimeoutMs: 35000,
+      voiceInputEnabled: false,
+      transcription: {
+        localFasterWhisperEnabled: true,
+      },
+    },
+    defaultWorkspaceId: "default",
+    openclawStreamingOutput: false,
+    sessionsFile: path.join(tempDir, "sessions.json"),
+  });
+
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => {
+    warnings.push(args.join(" "));
+  };
+  try {
+    runtime.reportVoiceTranscriptionStatus();
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /voice input frontend disabled/i);
+});
+
 test("OpenClawBotRuntime warns when local faster-whisper is disabled", () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-im-openclaw-voice-warn-"));
   const runtime = new OpenClawBotRuntime({
