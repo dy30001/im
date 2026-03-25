@@ -3,19 +3,38 @@ set -euo pipefail
 
 LOCK_DIR="${HOME}/.codex-im/openclaw-bot.lock"
 PID_FILE="${LOCK_DIR}/pid"
+HEARTBEAT_FILE="${CODEX_IM_OPENCLAW_HEARTBEAT_FILE:-${LOCK_DIR}/heartbeat.json}"
 LOG_FILE="${CODEX_IM_OPENCLAW_LOG_FILE:-/tmp/codex-im-openclaw.log}"
 CREDENTIALS_FILE="${CODEX_IM_OPENCLAW_CREDENTIALS_FILE:-${HOME}/.codex-im/openclaw-credentials.json}"
+HEARTBEAT_TIMEOUT_MS="${CODEX_IM_OPENCLAW_HEARTBEAT_TIMEOUT_MS:-10800000}"
 
 echo "[codex-im] openclaw doctor"
 echo "workdir=$(pwd)"
 echo "lock_dir=${LOCK_DIR}"
 echo "pid_file=${PID_FILE}"
 echo "log_file=${LOG_FILE}"
+echo "heartbeat_file=${HEARTBEAT_FILE}"
+echo "heartbeat_timeout_ms=${HEARTBEAT_TIMEOUT_MS}"
 echo "credentials_file=${CREDENTIALS_FILE}"
 if [ -f "${HOME}/Library/LaunchAgents/com.dy3000.codex-im.openclaw.plist" ]; then
   echo "launchd_plist=${HOME}/Library/LaunchAgents/com.dy3000.codex-im.openclaw.plist (present)"
 else
   echo "launchd_plist=${HOME}/Library/LaunchAgents/com.dy3000.codex-im.openclaw.plist (missing)"
+fi
+
+if [ -f "$HEARTBEAT_FILE" ]; then
+  heartbeat_summary="$(node -e 'const fs=require("fs"); try { const p=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); const updatedAt=Number(p.updatedAt||0); const reason=String(p.reason||"").trim()||"unknown"; const age=Math.max(0, Date.now()-updatedAt); process.stdout.write(`${updatedAt}|${age}|${reason}`); } catch { process.stdout.write("||"); }' "$HEARTBEAT_FILE")"
+  heartbeat_updated_at="${heartbeat_summary%%|*}"
+  heartbeat_rest="${heartbeat_summary#*|}"
+  heartbeat_age_ms="${heartbeat_rest%%|*}"
+  heartbeat_reason="${heartbeat_rest#*|}"
+  echo "heartbeat_updated_at=${heartbeat_updated_at:-<unknown>}"
+  echo "heartbeat_age_ms=${heartbeat_age_ms:-<unknown>}"
+  echo "heartbeat_reason=${heartbeat_reason:-<unknown>}"
+else
+  echo "heartbeat_updated_at=<missing>"
+  echo "heartbeat_age_ms=<missing>"
+  echo "heartbeat_reason=<missing>"
 fi
 if command -v launchctl >/dev/null 2>&1 && launchctl print "gui/$(id -u)/com.dy3000.codex-im.openclaw" >/dev/null 2>&1; then
   echo "launchd_status=loaded"
@@ -81,6 +100,11 @@ if [ -f "$LOG_FILE" ] && grep -qi "timeout" "$LOG_FILE"; then
 fi
 if [ -f "$LOG_FILE" ] && grep -q "sendMessage" "$LOG_FILE"; then
   echo "- sendMessage errors found: verify token validity and message payload shape."
+fi
+if [ -f "$HEARTBEAT_FILE" ]; then
+  if node -e 'const fs=require("fs"); try { const p=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); const updatedAt=Number(p.updatedAt||0); const timeoutMs=Number(process.argv[2]||0); process.exit(updatedAt > 0 && Date.now() - updatedAt >= timeoutMs ? 0 : 1); } catch { process.exit(1); }' "$HEARTBEAT_FILE" "$HEARTBEAT_TIMEOUT_MS"; then
+    echo "- heartbeat stale: supervisor should restart the child automatically."
+  fi
 fi
 if [ ! -f "$LOG_FILE" ]; then
   echo "- missing log file: start daemon first with npm run openclaw-bot:daemon"

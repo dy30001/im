@@ -128,6 +128,48 @@ test("OpenClawBotRuntime reports non-recoverable credential failures when no new
   assert.equal(runtime.config.openclaw.token, "same-token");
 });
 
+test("OpenClawBotRuntime writes heartbeat metadata to disk", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-im-openclaw-heartbeat-"));
+  const heartbeatFile = path.join(tempDir, "heartbeat.json");
+  const previousHeartbeatFile = process.env.CODEX_IM_OPENCLAW_HEARTBEAT_FILE;
+  process.env.CODEX_IM_OPENCLAW_HEARTBEAT_FILE = heartbeatFile;
+
+  try {
+    const runtime = new OpenClawBotRuntime({
+      mode: "openclaw-bot",
+      workspaceAllowlist: [],
+      codexEndpoint: "",
+      codexCommand: "codex",
+      defaultCodexModel: "gpt-5.3-codex",
+      defaultCodexEffort: "medium",
+      defaultCodexAccessMode: "default",
+      verboseCodexLogs: false,
+      openclaw: {
+        baseUrl: "https://ilinkai.weixin.qq.com",
+        token: "token",
+        longPollTimeoutMs: 35000,
+      },
+      defaultWorkspaceId: "default",
+      openclawStreamingOutput: false,
+      sessionsFile: path.join(tempDir, "sessions.json"),
+    });
+
+    await runtime.markHeartbeat("poll");
+
+    const heartbeat = JSON.parse(fs.readFileSync(heartbeatFile, "utf8"));
+    assert.equal(heartbeat.reason, "poll");
+    assert.equal(heartbeat.pid, process.pid);
+    assert.equal(typeof heartbeat.updatedAt, "number");
+    assert.ok(heartbeat.updatedAt > 0);
+  } finally {
+    if (previousHeartbeatFile === undefined) {
+      delete process.env.CODEX_IM_OPENCLAW_HEARTBEAT_FILE;
+    } else {
+      process.env.CODEX_IM_OPENCLAW_HEARTBEAT_FILE = previousHeartbeatFile;
+    }
+  }
+});
+
 test("OpenClawBotRuntime retries sendTextMessage without context token on OpenClaw sendMessage failure", async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-im-openclaw-send-retry-"));
   const runtime = new OpenClawBotRuntime({
@@ -164,6 +206,10 @@ test("OpenClawBotRuntime retries sendTextMessage without context token on OpenCl
       return { ret: 0 };
     },
   };
+  const heartbeatReasons = [];
+  runtime.markHeartbeat = async (reason) => {
+    heartbeatReasons.push(reason);
+  };
 
   const warnings = [];
   const originalWarn = console.warn;
@@ -196,4 +242,5 @@ test("OpenClawBotRuntime retries sendTextMessage without context token on OpenCl
   }
 
   assert.equal(warnings.length, 1);
+  assert.deepEqual(heartbeatReasons, ["send-retry", "send-retry"]);
 });

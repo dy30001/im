@@ -81,13 +81,24 @@ const approvalPolicyRuntime = require("../domain/approval/approval-policy");
 const appDispatcher = require("./dispatcher");
 const { extractModelCatalogFromListResponse } = require("../shared/model-catalog");
 const fs = require("fs");
+const os = require("os");
+const path = require("path");
 
 const THREAD_SYNC_POLL_INTERVAL_MS = 5_000;
+const DEFAULT_OPENCLAW_HEARTBEAT_FILE = path.join(
+  os.homedir(),
+  ".codex-im",
+  "openclaw-bot.lock",
+  "heartbeat.json"
+);
 
 class OpenClawBotRuntime {
   constructor(config = readConfig()) {
     this.config = config;
     this.providerKind = "openclaw";
+    this.heartbeatFile = resolveOpenClawHeartbeatFile();
+    this.heartbeatWritePromise = Promise.resolve();
+    this.lastHeartbeatWriteAt = 0;
     this.sessionStore = new SessionStore({
       filePath: config.sessionsFile,
       fallbackFilePaths: config.sessionFallbackFiles,
@@ -119,6 +130,7 @@ class OpenClawBotRuntime {
     await this.codex.connect();
     await this.codex.initialize();
     await this.refreshAvailableModelCatalogAtStartup();
+    await this.markHeartbeat("runtime-ready");
     this.startPolling();
     this.startThreadSyncLoop();
     console.log(`[codex-im] openclaw-bot runtime ready for ${maskUrl(this.config.openclaw.baseUrl)}`);
@@ -236,6 +248,7 @@ class OpenClawBotRuntime {
           break;
         }
 
+        await this.markHeartbeat("poll");
         const messages = applyOpenClawPollResponse(this, response);
         logOpenClawPolledMessages(this, messages);
         await dispatchOpenClawMessages(this, messages);
@@ -405,6 +418,29 @@ class OpenClawBotRuntime {
       throw error;
     }
   }
+
+  async markHeartbeat(reason = "runtime") {
+    const normalizedReason = String(reason || "").trim() || "runtime";
+    const nextUpdatedAt = Date.now();
+    this.lastHeartbeatWriteAt = nextUpdatedAt;
+    const payload = JSON.stringify({
+      updatedAt: nextUpdatedAt,
+      reason: normalizedReason,
+      pid: process.pid,
+    });
+
+    this.heartbeatWritePromise = this.heartbeatWritePromise
+      .catch(() => {})
+      .then(async () => {
+        await fs.promises.mkdir(path.dirname(this.heartbeatFile), { recursive: true });
+        await fs.promises.writeFile(this.heartbeatFile, `${payload}\n`, "utf8");
+      })
+      .catch((error) => {
+        console.error(`[codex-im] failed to write openclaw heartbeat: ${error.message}`);
+      });
+
+    return this.heartbeatWritePromise;
+  }
 }
 
 function attachRuntimeForwarders() {
@@ -533,7 +569,9 @@ async function sendOpenClawTextMessage(runtime, {
   };
 
   try {
-    return await runtime.openclawAdapter.sendTextMessage(payload);
+    const response = await runtime.openclawAdapter.sendTextMessage(payload);
+    runtime.markHeartbeat("send").catch(() => {});
+    return response;
   } catch (error) {
     if (!resolvedContextToken || !shouldRetryOpenClawSendWithoutContextToken(error)) {
       throw error;
@@ -541,11 +579,18 @@ async function sendOpenClawTextMessage(runtime, {
     if (shouldLogOpenClawSendRetryWarning(runtime, resolvedContextToken, error)) {
       console.warn("[codex-im] openclaw sendMessage failed with context token, retrying without context token");
     }
-    return runtime.openclawAdapter.sendTextMessage({
+    const response = await runtime.openclawAdapter.sendTextMessage({
       ...payload,
       contextToken: "",
     });
+    runtime.markHeartbeat("send-retry").catch(() => {});
+    return response;
   }
+}
+
+function resolveOpenClawHeartbeatFile() {
+  const explicitPath = String(process.env.CODEX_IM_OPENCLAW_HEARTBEAT_FILE || "").trim();
+  return explicitPath || DEFAULT_OPENCLAW_HEARTBEAT_FILE;
 }
 
 function shouldLogOpenClawSendRetryWarning(runtime, contextToken, error) {
