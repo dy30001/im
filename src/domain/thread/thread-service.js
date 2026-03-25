@@ -6,6 +6,7 @@ const {
   isNaturalSelectionTextCompatibleWithCommand,
 } = require("../../shared/command-parsing");
 const codexMessageUtils = require("../../infra/codex/message-utils");
+const { buildMissingWorkspaceGuideText } = require("../../shared/error-text");
 
 const THREAD_SOURCE_KINDS = new Set([
   "app",
@@ -325,7 +326,7 @@ async function handleNewCommand(runtime, normalized) {
     await runtime.sendInfoCardMessage({
       chatId: normalized.chatId,
       replyToMessageId: normalized.messageId,
-      text: "当前会话还未绑定项目。先发送 `/codex bind /绝对路径`。",
+      text: buildMissingWorkspaceGuideText(),
     });
     return;
   }
@@ -396,7 +397,7 @@ async function switchThreadByIndex(runtime, normalized, threadIndex, { replyToMe
     await runtime.sendInfoCardMessage({
       chatId: normalized.chatId,
       replyToMessageId: replyTarget,
-      text: "当前会话还未绑定项目。先发送 `/codex bind /绝对路径`。",
+      text: buildMissingWorkspaceGuideText(),
     });
     return;
   }
@@ -539,7 +540,7 @@ async function switchThreadById(runtime, normalized, threadId, { replyToMessageI
     await runtime.sendInfoCardMessage({
       chatId: normalized.chatId,
       replyToMessageId: replyTarget,
-      text: "当前会话还未绑定项目。先发送 `/codex bind /绝对路径`。",
+      text: buildMissingWorkspaceGuideText(),
     });
     return;
   }
@@ -607,7 +608,7 @@ async function switchDesktopSessionById(runtime, normalized, threadId, { replyTo
     await runtime.sendInfoCardMessage({
       chatId: normalized.chatId,
       replyToMessageId: replyTarget,
-      text: "当前会话还未绑定项目。先发送 `/codex bind /绝对路径`。",
+      text: buildMissingWorkspaceGuideText(),
     });
     return;
   }

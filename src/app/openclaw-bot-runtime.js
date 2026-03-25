@@ -563,12 +563,46 @@ async function sendOpenClawTextMessage(runtime, {
     if (!resolvedContextToken || !shouldRetryOpenClawSendWithoutContextToken(error)) {
       throw error;
     }
-    console.warn("[codex-im] openclaw sendMessage failed with context token, retrying without context token");
+    if (shouldLogOpenClawSendRetryWarning(runtime, resolvedContextToken, error)) {
+      console.warn("[codex-im] openclaw sendMessage failed with context token, retrying without context token");
+    }
     return runtime.openclawAdapter.sendTextMessage({
       ...payload,
       contextToken: "",
     });
   }
+}
+
+function shouldLogOpenClawSendRetryWarning(runtime, contextToken, error) {
+  const logKey = buildOpenClawSendRetryWarningKey(contextToken, error);
+  if (!logKey) {
+    return true;
+  }
+  const seenKeys = getRuntimeLogKeySet(runtime, "_openclawSendRetryWarningKeys");
+  if (seenKeys.has(logKey)) {
+    return false;
+  }
+  seenKeys.add(logKey);
+  return true;
+}
+
+function buildOpenClawSendRetryWarningKey(contextToken, error) {
+  const normalizedContextToken = String(contextToken || "").trim();
+  const normalizedError = String(error?.message || "").trim().toLowerCase();
+  if (!normalizedContextToken && !normalizedError) {
+    return "";
+  }
+  return `${normalizedContextToken || "<empty>"}|${normalizedError || "<unknown>"}`;
+}
+
+function getRuntimeLogKeySet(runtime, propertyName) {
+  if (!runtime) {
+    return new Set();
+  }
+  if (!(runtime[propertyName] instanceof Set)) {
+    runtime[propertyName] = new Set();
+  }
+  return runtime[propertyName];
 }
 
 function shouldRetryOpenClawSendWithoutContextToken(error) {

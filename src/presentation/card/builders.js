@@ -614,7 +614,7 @@ function buildHelpCardText() {
     ],
     [
       "**审批命令**",
-      "`/codex approve`\n`/codex approve workspace`\n`/codex reject`",
+      "`/codex approve`\n`/codex approve workspace`\n`/codex reject`\n或语音简写：`同意工作区` / `拒绝工作区`",
       "用于处理 Codex 发起的审批请求。",
     ],
   ];

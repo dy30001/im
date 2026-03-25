@@ -18,6 +18,7 @@ function initializeCommonRuntimeState(runtime) {
   runtime.latestSelectionContextByBindingKey = new Map();
   runtime.workspaceThreadListCache = new Map();
   runtime.workspaceThreadRefreshStateByKey = new Map();
+  runtime.firstUseWorkspaceGuideSentByBindingKey = new Set();
   runtime.isStopping = false;
   runtime.stopPromise = null;
   return runtime;

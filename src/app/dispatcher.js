@@ -1,6 +1,6 @@
 const messageNormalizers = require("../presentation/message/normalizers");
 const eventsRuntime = require("./codex-event-service");
-const { formatFailureText } = require("../shared/error-text");
+const { buildMissingWorkspaceGuideText, formatFailureText } = require("../shared/error-text");
 
 async function onFeishuTextEvent(runtime, event) {
   if (runtime.isStopping) {
@@ -87,7 +87,7 @@ async function onNormalizedTextEvent(runtime, normalized, { alreadyRemembered = 
 
   const workspaceContext = await runtime.resolveWorkspaceContext(normalized, {
     replyToMessageId: normalized.messageId,
-    missingWorkspaceText: "当前会话还未绑定项目。先发送 `/codex bind /绝对路径`。",
+    missingWorkspaceText: buildMissingWorkspaceGuideText(),
   });
   if (!workspaceContext) {
     return;

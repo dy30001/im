@@ -20,7 +20,7 @@ const {
   resolveEffectiveModelForEffort,
 } = require("../../shared/model-catalog");
 const codexMessageUtils = require("../../infra/codex/message-utils");
-const { formatFailureText } = require("../../shared/error-text");
+const { buildMissingWorkspaceGuideText, formatFailureText } = require("../../shared/error-text");
 const browserRuntime = require("./browser-service");
 const settingsRuntime = require("./settings-service");
 
@@ -31,7 +31,7 @@ async function resolveWorkspaceContext(
   normalized,
   {
     replyToMessageId = "",
-    missingWorkspaceText = "当前会话还没有绑定项目。",
+    missingWorkspaceText = buildMissingWorkspaceGuideText(),
   } = {}
 ) {
   const replyTarget = runtime.resolveReplyToMessageId(normalized, replyToMessageId);
@@ -668,7 +668,7 @@ async function showThreadPicker(runtime, normalized, { replyToMessageId, page = 
     await runtime.sendInfoCardMessage({
       chatId: normalized.chatId,
       replyToMessageId: replyTarget,
-      text: "当前会话还未绑定项目。先发送 `/codex bind /绝对路径`。",
+      text: buildMissingWorkspaceGuideText(),
     });
     return;
   }
@@ -916,6 +916,6 @@ function parseUpdateDirective(value) {
 async function resolveCodexSettingWorkspaceContext(runtime, normalized) {
   return resolveWorkspaceContext(runtime, normalized, {
     replyToMessageId: normalized.messageId,
-    missingWorkspaceText: "当前会话还未绑定项目。先发送 `/codex bind /绝对路径`。",
+    missingWorkspaceText: buildMissingWorkspaceGuideText(),
   });
 }

@@ -538,6 +538,7 @@ function buildApprovalFallbackText(approval) {
     "`/codex approve`",
     "`/codex approve workspace`",
     "`/codex reject`",
+    "语音简写：`同意工作区` / `拒绝工作区`",
   ].filter(Boolean).join("\n");
 }
 

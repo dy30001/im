@@ -99,7 +99,10 @@ test("shouldAutoApproveRequest matches persisted command prefixes per workspace"
 test("isWorkspaceApprovalCommand recognizes natural-language workspace approvals", () => {
   assert.equal(isWorkspaceApprovalCommand("/codex approve workspace"), true);
   assert.equal(isWorkspaceApprovalCommand("请同意工作区"), true);
+  assert.equal(isWorkspaceApprovalCommand("同意当前工程"), true);
+  assert.equal(isWorkspaceApprovalCommand("总是同意"), true);
   assert.equal(isWorkspaceApprovalCommand("拒绝当前工作区"), true);
+  assert.equal(isWorkspaceApprovalCommand("拒绝当前项目"), true);
   assert.equal(isWorkspaceApprovalCommand("同意"), false);
 });
 

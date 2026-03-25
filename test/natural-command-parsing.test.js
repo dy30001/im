@@ -53,8 +53,11 @@ test("detectNaturalCommand recognizes conservative natural-language control comm
   assert.equal(detectNaturalCommand("命令列表"), "help");
   assert.equal(detectNaturalCommand("同意"), "approve");
   assert.equal(detectNaturalCommand("请同意工作区"), "approve");
+  assert.equal(detectNaturalCommand("总是同意"), "approve");
+  assert.equal(detectNaturalCommand("同意当前工程"), "approve");
   assert.equal(detectNaturalCommand("拒绝"), "reject");
   assert.equal(detectNaturalCommand("请拒绝当前工作区"), "reject");
+  assert.equal(detectNaturalCommand("拒绝当前项目"), "reject");
 });
 
 test("extractBindPath supports both explicit and natural-language bind requests", () => {

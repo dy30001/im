@@ -165,17 +165,37 @@ test("OpenClawBotRuntime retries sendTextMessage without context token on OpenCl
     },
   };
 
-  const response = await runtime.sendTextMessage({
-    chatId: "wx-user-1",
-    replyToMessageId: "reply-1",
-    text: "hello",
-  });
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => {
+    warnings.push(args.join(" "));
+  };
 
-  assert.equal(runtime.__sendCalls.length, 2);
-  assert.equal(runtime.__sendCalls[0].contextToken, "ctx-1");
-  assert.equal(runtime.__sendCalls[1].contextToken, "");
-  assert.equal(runtime.__sendCalls[0].toUserId, "wx-user-1");
-  assert.deepEqual(response, { ret: 0 });
+  try {
+    const response = await runtime.sendTextMessage({
+      chatId: "wx-user-1",
+      replyToMessageId: "reply-1",
+      text: "hello",
+    });
+    const repeatedResponse = await runtime.sendTextMessage({
+      chatId: "wx-user-1",
+      replyToMessageId: "reply-1",
+      text: "hello again",
+    });
+
+    assert.equal(runtime.__sendCalls.length, 4);
+    assert.equal(runtime.__sendCalls[0].contextToken, "ctx-1");
+    assert.equal(runtime.__sendCalls[1].contextToken, "");
+    assert.equal(runtime.__sendCalls[2].contextToken, "ctx-1");
+    assert.equal(runtime.__sendCalls[3].contextToken, "");
+    assert.equal(runtime.__sendCalls[0].toUserId, "wx-user-1");
+    assert.deepEqual(response, { ret: 0 });
+    assert.deepEqual(repeatedResponse, { ret: 0 });
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.equal(warnings.length, 1);
 });
 
 test("OpenClawBotRuntime warns when voice input frontend is disabled", () => {

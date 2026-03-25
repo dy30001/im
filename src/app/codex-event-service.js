@@ -79,7 +79,7 @@ function handleCodexMessage(runtime, message) {
   const shouldCleanupThreadState = isTerminalTurnMessage(message);
   runtime.deliverToProvider(outbound)
     .catch((error) => {
-      console.error(`[codex-im] failed to deliver provider message: ${error.message}`);
+      logProviderDeliveryFailureOnce(runtime, outbound, error);
     })
     .finally(() => {
       if (!shouldCleanupThreadState || !threadId) {
@@ -89,7 +89,40 @@ function handleCodexMessage(runtime, message) {
         console.error(`[codex-im] failed to clear pending reaction: ${error.message}`);
       });
       runtime.cleanupThreadRuntimeState(threadId);
-    });
+  });
+}
+
+function logProviderDeliveryFailureOnce(runtime, outbound, error) {
+  const logKey = buildProviderDeliveryFailureKey(outbound, error);
+  const seenKeys = getRuntimeLogKeySet(runtime, "_providerDeliveryFailureLogKeys");
+  if (logKey && seenKeys.has(logKey)) {
+    return false;
+  }
+  if (logKey) {
+    seenKeys.add(logKey);
+  }
+  console.error(`[codex-im] failed to deliver provider message: ${error.message}`);
+  return true;
+}
+
+function buildProviderDeliveryFailureKey(outbound, error) {
+  const eventType = String(outbound?.type || "").trim();
+  const threadId = String(outbound?.payload?.threadId || "").trim();
+  const message = String(error?.message || "").trim().toLowerCase();
+  if (!eventType && !threadId && !message) {
+    return "";
+  }
+  return `${eventType || "<event>"}|${threadId || "<thread>"}|${message || "<unknown>"}`;
+}
+
+function getRuntimeLogKeySet(runtime, propertyName) {
+  if (!runtime) {
+    return new Set();
+  }
+  if (!(runtime[propertyName] instanceof Set)) {
+    runtime[propertyName] = new Set();
+  }
+  return runtime[propertyName];
 }
 
 async function deliverToProvider(runtime, event) {
@@ -174,4 +207,5 @@ module.exports = {
   deliverToProvider,
   handleCodexMessage,
   handleStopCommand,
+  logProviderDeliveryFailureOnce,
 };
