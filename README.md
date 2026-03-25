@@ -20,7 +20,7 @@ bash ./scripts/bootstrap-openclaw.sh
 1. 检查 Node.js（要求 18+）
 2. 自动生成 `.env`（如果不存在）
 3. 自动安装 npm 依赖
-4. 自动拉起后台常驻、自动恢复的 `openclaw-bot`
+4. 在 macOS 上自动安装并加载 LaunchAgent，后台常驻、自动恢复
 5. 如果 `.env` 里 `CODEX_IM_OPENCLAW_TOKEN` 为空，会自动触发微信二维码登录，并尝试自动打开浏览器
 
 ## 依赖要求
@@ -69,10 +69,10 @@ npm run openclaw-bot
 后台常驻启动：
 
 ```bash
-npm run openclaw-bot:daemon
+npm run openclaw-bot:launchd
 ```
 
-这个模式会在 child 进程意外退出时自动重启，不需要你手动再起服务。
+这个模式会把 `openclaw-bot` 安装成 macOS LaunchAgent，child 进程意外退出时会自动重启，不需要你手动再起服务。
 
 查看运行状态（进程、锁文件、日志尾部）：
 

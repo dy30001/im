@@ -12,6 +12,16 @@ echo "lock_dir=${LOCK_DIR}"
 echo "pid_file=${PID_FILE}"
 echo "log_file=${LOG_FILE}"
 echo "credentials_file=${CREDENTIALS_FILE}"
+if [ -f "${HOME}/Library/LaunchAgents/com.dy3000.codex-im.openclaw.plist" ]; then
+  echo "launchd_plist=${HOME}/Library/LaunchAgents/com.dy3000.codex-im.openclaw.plist (present)"
+else
+  echo "launchd_plist=${HOME}/Library/LaunchAgents/com.dy3000.codex-im.openclaw.plist (missing)"
+fi
+if command -v launchctl >/dev/null 2>&1 && launchctl print "gui/$(id -u)/com.dy3000.codex-im.openclaw" >/dev/null 2>&1; then
+  echo "launchd_status=loaded"
+else
+  echo "launchd_status=not_loaded"
+fi
 
 lock_pid=""
 if [ -f "$PID_FILE" ]; then
@@ -75,4 +85,3 @@ fi
 if [ ! -f "$LOG_FILE" ]; then
   echo "- missing log file: start daemon first with npm run openclaw-bot:daemon"
 fi
-

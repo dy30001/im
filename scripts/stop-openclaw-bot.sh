@@ -4,6 +4,9 @@ set -euo pipefail
 LOCK_DIR="${HOME}/.codex-im/openclaw-bot.lock"
 SUPERVISOR_PID_FILE="${LOCK_DIR}/pid"
 CHILD_PID_FILE="${LOCK_DIR}/child-pid"
+LABEL="com.dy3000.codex-im.openclaw"
+LAUNCH_AGENT_PLIST="${HOME}/Library/LaunchAgents/${LABEL}.plist"
+LAUNCHD_TARGET="gui/$(id -u)/${LABEL}"
 
 read_pid_file() {
   local file_path="$1"
@@ -36,6 +39,10 @@ stop_pid() {
 
 main() {
   local stopped=0
+  if command -v launchctl >/dev/null 2>&1 && [ -f "$LAUNCH_AGENT_PLIST" ]; then
+    launchctl bootout "$LAUNCHD_TARGET" >/dev/null 2>&1 || true
+  fi
+
   local lock_pid=""
   lock_pid="$(read_pid_file "$SUPERVISOR_PID_FILE")"
   if [ -n "$lock_pid" ] && is_alive "$lock_pid"; then

@@ -6,6 +6,5 @@ APP_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
 
 cd "$APP_ROOT"
 bash ./scripts/stop-openclaw-bot.sh
-node ./scripts/start-openclaw-bot.js
+bash ./scripts/install-openclaw-launch-agent.sh
 bash ./scripts/check-openclaw-status.sh
-

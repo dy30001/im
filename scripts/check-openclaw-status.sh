@@ -4,11 +4,24 @@ set -euo pipefail
 LOCK_DIR="${HOME}/.codex-im/openclaw-bot.lock"
 SUPERVISOR_PID_FILE="${LOCK_DIR}/pid"
 CHILD_PID_FILE="${LOCK_DIR}/child-pid"
+LABEL="com.dy3000.codex-im.openclaw"
+LAUNCH_AGENT_PLIST="${HOME}/Library/LaunchAgents/${LABEL}.plist"
+LAUNCHD_TARGET="gui/$(id -u)/${LABEL}"
 LOG_FILE="${CODEX_IM_OPENCLAW_LOG_FILE:-/tmp/codex-im-openclaw.log}"
 
 echo "[codex-im] openclaw status"
 echo "lock_dir=${LOCK_DIR}"
 echo "log_file=${LOG_FILE}"
+if [ -f "$LAUNCH_AGENT_PLIST" ]; then
+  echo "launchd_plist=${LAUNCH_AGENT_PLIST} (present)"
+else
+  echo "launchd_plist=${LAUNCH_AGENT_PLIST} (missing)"
+fi
+if command -v launchctl >/dev/null 2>&1 && launchctl print "$LAUNCHD_TARGET" >/dev/null 2>&1; then
+  echo "launchd_status=loaded"
+else
+  echo "launchd_status=not_loaded"
+fi
 
 supervisor_pid=""
 if [ -f "$SUPERVISOR_PID_FILE" ]; then

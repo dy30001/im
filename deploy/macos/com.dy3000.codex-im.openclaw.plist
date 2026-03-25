@@ -7,6 +7,7 @@
 
   <key>ProgramArguments</key>
   <array>
+    <string>__NODE_BIN__</string>
     <string>__SCRIPT_PATH__</string>
   </array>
 
@@ -37,6 +38,8 @@
   <dict>
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>CODEX_IM_OPENCLAW_SUPERVISOR_DAEMONIZED</key>
+    <string>1</string>
   </dict>
 </dict>
 </plist>

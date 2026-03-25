@@ -22,7 +22,9 @@ test("package.json exposes dev watch scripts for both runtimes", () => {
   assert.equal(typeof scripts["openclaw-bot:restart"], "string");
   assert.equal(typeof scripts["openclaw-bot:quick"], "string");
   assert.equal(typeof scripts["openclaw-bot:daemon"], "string");
+  assert.equal(typeof scripts["openclaw-bot:launchd"], "string");
   assert.match(scripts["openclaw-bot:daemon"], /start-openclaw-bot\.sh/);
+  assert.match(scripts["openclaw-bot:launchd"], /install-openclaw-launch-agent\.sh/);
   assert.match(scripts["openclaw-bot:diagnose:bg"], /start-openclaw-diagnose\.sh/);
   assert.match(scripts["openclaw-bot:status"], /check-openclaw-status\.sh/);
   assert.match(scripts["openclaw-bot:doctor"], /openclaw-doctor\.sh/);
@@ -32,6 +34,8 @@ test("package.json exposes dev watch scripts for both runtimes", () => {
   assert.match(scripts["openclaw-bot:quick"], /openclaw-quick\.sh/);
   assert.match(scripts["openclaw-bot:diagnose"], /CODEX_IM_VERBOSE_LOGS=true/);
   assert.equal(scripts.test, "node --test test/*.test.js");
+  const packageJsonText = fs.readFileSync(packageJsonPath, "utf8");
+  assert.match(packageJsonText, /openclaw-bot:launchd/);
 });
 
 test("daemon launcher daemonizes the OpenClaw supervisor", () => {
@@ -50,6 +54,28 @@ test("daemon launcher daemonizes the OpenClaw supervisor", () => {
   assert.match(supervisor, /openclaw-bot supervisor ready pid=/);
 });
 
+test("launchd installer renders a persistent macOS LaunchAgent", () => {
+  const installerPath = path.join(__dirname, "..", "scripts", "install-openclaw-launch-agent.sh");
+  const bootstrapPath = path.join(__dirname, "..", "scripts", "bootstrap-openclaw.sh");
+  const stopPath = path.join(__dirname, "..", "scripts", "stop-openclaw-bot.sh");
+  const plistPath = path.join(__dirname, "..", "deploy", "macos", "com.dy3000.codex-im.openclaw.plist");
+  const installer = fs.readFileSync(installerPath, "utf8");
+  const bootstrap = fs.readFileSync(bootstrapPath, "utf8");
+  const stop = fs.readFileSync(stopPath, "utf8");
+  const plist = fs.readFileSync(plistPath, "utf8");
+
+  assert.match(bootstrap, /openclaw-bot:launchd/);
+  assert.match(stop, /launchctl bootout/);
+  assert.match(installer, /launchctl bootout/);
+  assert.match(installer, /launchctl bootstrap/);
+  assert.match(installer, /launchctl kickstart -k/);
+  assert.match(installer, /command -v node/);
+  assert.match(installer, /start-openclaw-bot\.js/);
+  assert.match(plist, /CODEX_IM_OPENCLAW_SUPERVISOR_DAEMONIZED/);
+  assert.match(plist, /__NODE_BIN__/);
+  assert.match(plist, /KeepAlive/);
+});
+
 test("status script reports supervisor and child pids", () => {
   const statusScriptPath = path.join(__dirname, "..", "scripts", "check-openclaw-status.sh");
   const statusScript = fs.readFileSync(statusScriptPath, "utf8");
@@ -57,6 +83,7 @@ test("status script reports supervisor and child pids", () => {
   assert.match(statusScript, /child-pid/);
   assert.match(statusScript, /start-openclaw-bot/);
   assert.match(statusScript, /codex-im\.js openclaw-bot/);
+  assert.match(statusScript, /launchd_status=/);
 });
 
 test("package.json check script covers newly added runtime and workspace modules", () => {
