@@ -69,6 +69,12 @@ CODEX_IM_OPENCLAW_TOKEN=
 npm run openclaw-bot
 ```
 
+查看运行状态（进程、锁文件、日志尾部）：
+
+```bash
+npm run openclaw-bot:status
+```
+
 语音诊断模式（推荐排查“发了语音没反应”时使用）：
 
 ```bash

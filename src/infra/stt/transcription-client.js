@@ -93,6 +93,7 @@ async function runLocalFasterWhisperTranscription({
   const audioPath = path.join(tempDir, `audio${extension}`);
 
   try {
+    await ensureLocalFasterWhisperScriptReadable(scriptPath);
     await fs.promises.writeFile(audioPath, audioBuffer);
     await fs.promises.mkdir(cacheDir, { recursive: true });
     const args = [
@@ -133,6 +134,16 @@ async function runLocalFasterWhisperTranscription({
   }
 }
 
+async function ensureLocalFasterWhisperScriptReadable(scriptPath) {
+  try {
+    await fs.promises.access(scriptPath, fs.constants.R_OK);
+  } catch {
+    throw new Error(
+      `本地faster-whisper脚本不可读：${scriptPath}。请确认文件存在且可读。`
+    );
+  }
+}
+
 function resolveAudioFileExtension(fileName) {
   const ext = path.extname(String(fileName || "").trim());
   return ext || ".mp3";
@@ -170,6 +181,14 @@ function runProcess({ command, args, env = {}, signal }) {
     child.once("error", (error) => {
       if (signal) {
         signal.removeEventListener("abort", abortHandler);
+      }
+      if (error?.code === "ENOENT") {
+        reject(
+          new Error(
+            `本地faster-whisper执行失败：找不到命令 ${command}。请检查 CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER_PYTHON_BIN 配置，并确认 python3 与 ffmpeg 可用。`
+          )
+        );
+        return;
       }
       reject(error);
     });

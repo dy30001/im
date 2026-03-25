@@ -20,10 +20,21 @@ class OpenClawMediaAdapter {
       if (!this.clientAdapter || typeof this.clientAdapter.downloadMedia !== "function") {
         throw new Error("语音媒体下载器不可用。");
       }
-      const downloaded = await this.clientAdapter.downloadMedia({
-        downloadUrl: attachment.downloadUrl,
-        signal,
-      });
+      let downloaded = null;
+      try {
+        downloaded = await this.clientAdapter.downloadMedia({
+          downloadUrl: attachment.downloadUrl,
+          signal,
+        });
+      } catch (error) {
+        if (!attachment.mediaId || !this.clientAdapter || typeof this.clientAdapter.downloadMediaById !== "function") {
+          throw error;
+        }
+        downloaded = await this.clientAdapter.downloadMediaById({
+          mediaId: attachment.mediaId,
+          signal,
+        });
+      }
       return {
         ...downloaded,
         fileName: attachment.fileName || downloaded.fileName || inferDefaultFileName(attachment.mimeType),
@@ -69,10 +80,29 @@ function extractVoiceAttachmentFromItem(item) {
   }
 
   const containers = [
-    { kind: "voice", payload: item.voice_item },
-    { kind: "audio", payload: item.audio_item },
-    { kind: "media", payload: item.media_item },
-    { kind: "file", payload: item.file_item },
+    {
+      kind: "voice",
+      payload: pickFirstObject(
+        item.voice_item,
+        item.voiceItem,
+        item.record_item,
+        item.recordItem,
+        item.voice,
+        item.record
+      ),
+    },
+    {
+      kind: "audio",
+      payload: pickFirstObject(item.audio_item, item.audioItem, item.audio),
+    },
+    {
+      kind: "media",
+      payload: pickFirstObject(item.media_item, item.mediaItem, item.media),
+    },
+    {
+      kind: "file",
+      payload: pickFirstObject(item.file_item, item.fileItem, item.file),
+    },
   ];
 
   for (const candidate of containers) {
@@ -80,6 +110,11 @@ function extractVoiceAttachmentFromItem(item) {
     if (normalized) {
       return normalized;
     }
+  }
+
+  const fallback = normalizeVoiceAttachment(item, inferFallbackKind(item), item);
+  if (fallback) {
+    return fallback;
   }
 
   return null;
@@ -98,9 +133,21 @@ function normalizeVoiceAttachment(item, kind, payload) {
       || payload.fileDownloadUrl
       || payload.media_url
       || payload.mediaUrl
+      || payload.voice_url
+      || payload.voiceUrl
+      || payload.file_url
+      || payload.fileUrl
+      || payload.cdn_url
+      || payload.cdnUrl
+      || payload.oss_url
+      || payload.ossUrl
       || payload.url
       || item.download_url
       || item.downloadUrl
+      || item.voice_url
+      || item.voiceUrl
+      || item.file_url
+      || item.fileUrl
       || item.url
   );
   const dataUrl = normalizeText(
@@ -135,10 +182,14 @@ function normalizeVoiceAttachment(item, kind, payload) {
       || payload.fileid
       || payload.voice_id
       || payload.voiceId
+      || payload.attach_id
+      || payload.attachId
       || item.media_id
       || item.mediaId
       || item.file_id
       || item.fileId
+      || item.attach_id
+      || item.attachId
   );
   const durationMs = normalizePositiveNumber(
     payload.duration_ms ?? payload.durationMs ?? item.duration_ms ?? item.durationMs
@@ -252,6 +303,29 @@ function normalizeText(value) {
     return String(value);
   }
   return "";
+}
+
+function pickFirstObject(...candidates) {
+  for (const candidate of candidates) {
+    if (candidate && typeof candidate === "object") {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function inferFallbackKind(item) {
+  const itemType = Number(item?.type);
+  if (itemType === 3 || itemType === 4) {
+    return "voice";
+  }
+  if (itemType === 6) {
+    return "audio";
+  }
+  if (itemType === 5) {
+    return "file";
+  }
+  return "media";
 }
 
 module.exports = {

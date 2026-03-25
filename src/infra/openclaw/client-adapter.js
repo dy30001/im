@@ -357,8 +357,14 @@ function buildMediaDownloadCandidates(mediaId) {
   const encodedMediaId = encodeURIComponent(String(mediaId || "").trim());
   return [
     `ilink/media/download?media_id=${encodedMediaId}`,
+    `ilink/media/download?file_id=${encodedMediaId}`,
+    `ilink/media/get?media_id=${encodedMediaId}`,
     `ilink/bot/getmedia?media_id=${encodedMediaId}`,
+    `ilink/bot/getmedia?file_id=${encodedMediaId}`,
     `ilink/bot/get_media?media_id=${encodedMediaId}`,
+    `ilink/bot/get_media?file_id=${encodedMediaId}`,
+    `ilink/bot/downloadmedia?media_id=${encodedMediaId}`,
+    `ilink/bot/download_media?media_id=${encodedMediaId}`,
   ];
 }
 

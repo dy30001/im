@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const path = require("node:path");
 const test = require("node:test");
 
 const appDispatcher = require("../src/app/dispatcher");
@@ -106,6 +107,40 @@ test("OpenClawMediaAdapter downloads voice by media_id when download_url is abse
   assert.equal(media.buffer.toString("utf8"), "media-by-id");
 });
 
+test("OpenClawMediaAdapter falls back to media_id when download_url fails", async () => {
+  const adapter = new OpenClawMediaAdapter({
+    clientAdapter: {
+      async downloadMedia() {
+        throw new Error("downloadMedia 404");
+      },
+      async downloadMediaById({ mediaId }) {
+        assert.equal(mediaId, "voice-media-fallback");
+        return {
+          buffer: Buffer.from("fallback-by-id"),
+          mimeType: "audio/ogg",
+          fileName: "",
+        };
+      },
+    },
+  });
+
+  const media = await adapter.downloadVoiceAttachment({
+    kind: "voice",
+    itemType: 4,
+    downloadUrl: "https://ilinkai.weixin.qq.com/media/voice-fallback",
+    dataUrl: "",
+    base64Data: "",
+    mimeType: "audio/ogg",
+    fileName: "voice-fallback.ogg",
+    mediaId: "voice-media-fallback",
+    durationMs: 0,
+  });
+
+  assert.equal(media.fileName, "voice-fallback.ogg");
+  assert.equal(media.mimeType, "audio/ogg");
+  assert.equal(media.buffer.toString("utf8"), "fallback-by-id");
+});
+
 test("LocalFasterWhisperTranscriptionClient requires local mode to be enabled", async () => {
   const client = new LocalFasterWhisperTranscriptionClient();
 
@@ -155,6 +190,37 @@ test("LocalFasterWhisperTranscriptionClient uses local faster-whisper mode when 
   assert.equal(calls[0].cacheDir, "/tmp/local-faster-whisper-cache");
   assert.equal(calls[0].language, "zh");
   assert.equal(calls[0].fileName, "voice.wav");
+});
+
+test("LocalFasterWhisperTranscriptionClient reports unreadable script path", async () => {
+  const client = new LocalFasterWhisperTranscriptionClient({
+    localFasterWhisperEnabled: true,
+    localFasterWhisperScriptPath: "/tmp/codex-im-missing-local-whisper.py",
+  });
+
+  await assert.rejects(
+    () => client.transcribeAudio({
+      buffer: Buffer.from("voice-bytes"),
+      fileName: "voice.mp3",
+    }),
+    /本地faster-whisper脚本不可读/
+  );
+});
+
+test("LocalFasterWhisperTranscriptionClient reports missing python command clearly", async () => {
+  const client = new LocalFasterWhisperTranscriptionClient({
+    localFasterWhisperEnabled: true,
+    localFasterWhisperScriptPath: path.resolve(__dirname, "../scripts/local-faster-whisper-transcribe.py"),
+    localFasterWhisperPythonBin: "python3-command-not-found",
+  });
+
+  await assert.rejects(
+    () => client.transcribeAudio({
+      buffer: Buffer.from("voice-bytes"),
+      fileName: "voice.mp3",
+    }),
+    /找不到命令 python3-command-not-found/
+  );
 });
 
 test("onOpenClawTextEvent transcribes voice input and reuses command parsing", async () => {

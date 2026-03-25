@@ -166,6 +166,7 @@ test("OpenClawClientAdapter.downloadMediaById tries media_id candidate endpoints
   });
 
   assert.ok(seenUrls.some((url) => String(url).includes("ilink/media/download?media_id=voice-22")));
+  assert.ok(seenUrls.some((url) => String(url).includes("ilink/media/download?file_id=voice-22")));
   assert.ok(seenUrls.some((url) => String(url).includes("ilink/bot/getmedia?media_id=voice-22")));
   assert.ok(seenUrls.some((url) => String(url).includes("ilink/bot/get_media?media_id=voice-22")));
   assert.equal(result.mimeType, "audio/ogg");

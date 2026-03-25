@@ -340,3 +340,53 @@ test("normalizeOpenClawTextEvent accepts sender/message id aliases for voice pay
   assert.equal(normalized?.inputKind, "voice");
   assert.equal(normalized?.voiceAttachment?.mediaId, "99123");
 });
+
+test("normalizeOpenClawTextEvent accepts voice payload with recordItem camelCase fields", () => {
+  const normalized = normalizeOpenClawTextEvent(
+    {
+      from_user_id: "wx-user-camel",
+      message_id: 300,
+      message_type: 3,
+      item_list: [
+        {
+          type: 4,
+          recordItem: {
+            fileUrl: "https://ilinkai.weixin.qq.com/media/voice-camel",
+            mimeType: "audio/ogg",
+            fileName: "voice-camel.ogg",
+            mediaId: "voice-camel-id",
+          },
+        },
+      ],
+    },
+    { defaultWorkspaceId: "default" }
+  );
+
+  assert.equal(normalized?.inputKind, "voice");
+  assert.equal(normalized?.voiceAttachment?.downloadUrl, "https://ilinkai.weixin.qq.com/media/voice-camel");
+  assert.equal(normalized?.voiceAttachment?.mediaId, "voice-camel-id");
+});
+
+test("normalizeOpenClawTextEvent accepts fallback item-level voice fields", () => {
+  const normalized = normalizeOpenClawTextEvent(
+    {
+      from_user_id: "wx-user-fallback",
+      message_id: 301,
+      message_type: 3,
+      item_list: [
+        {
+          type: 4,
+          download_url: "https://ilinkai.weixin.qq.com/media/voice-fallback",
+          mime_type: "audio/ogg",
+          file_name: "voice-fallback.ogg",
+          media_id: "voice-fallback-id",
+        },
+      ],
+    },
+    { defaultWorkspaceId: "default" }
+  );
+
+  assert.equal(normalized?.inputKind, "voice");
+  assert.equal(normalized?.voiceAttachment?.downloadUrl, "https://ilinkai.weixin.qq.com/media/voice-fallback");
+  assert.equal(normalized?.voiceAttachment?.mediaId, "voice-fallback-id");
+});
