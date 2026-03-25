@@ -40,16 +40,10 @@ const {
 } = require("../presentation/card/card-service");
 const {
   OpenClawClientAdapter,
-  isOpenClawCredentialError,
 } = require("../infra/openclaw/client-adapter");
 const {
   OpenClawMediaAdapter,
 } = require("../infra/openclaw/media-adapter");
-const { loginWithQr, openQrInBrowser } = require("../infra/openclaw/qr-login");
-const {
-  loadOpenClawCredentials,
-  saveOpenClawCredentials,
-} = require("../infra/openclaw/token-store");
 const {
   LocalFasterWhisperTranscriptionClient,
 } = require("../infra/stt/transcription-client");
@@ -76,6 +70,18 @@ const {
   reportVoiceTranscriptionStatus,
   transcribeOpenClawVoiceMessage,
 } = require("./openclaw-voice-service");
+const {
+  applyOpenClawCredentials,
+  ensureOpenClawCredentials,
+  reloadOpenClawCredentialsFromStore,
+  tryRecoverFromPollError,
+} = require("./openclaw-credentials-service");
+const {
+  forgetInboundContext,
+  rememberInboundContext,
+  resolveMessageContext,
+  resolveReplyToMessageId,
+} = require("./openclaw-message-context-service");
 const approvalRuntime = require("../domain/approval/approval-service");
 const runtimeState = require("../domain/session/binding-context");
 const threadRuntime = require("../domain/thread/thread-service");
@@ -86,7 +92,6 @@ const appDispatcher = require("./dispatcher");
 const { extractModelCatalogFromListResponse } = require("../shared/model-catalog");
 const fs = require("fs");
 
-const MAX_MESSAGE_CONTEXT_ENTRIES = 1_000;
 const THREAD_SYNC_POLL_INTERVAL_MS = 5_000;
 
 class OpenClawBotRuntime {
@@ -210,107 +215,19 @@ class OpenClawBotRuntime {
   }
 
   async ensureOpenClawCredentials() {
-    const storedCredentials = loadOpenClawCredentials(this.config.openclaw.credentialsFile);
-    const resolvedToken = String(this.config.openclaw.token || "").trim() || storedCredentials?.token || "";
-    const resolvedBaseUrl = this.config.openclaw.baseUrlExplicit
-      ? String(this.config.openclaw.baseUrl || "").trim()
-      : (storedCredentials?.baseUrl || String(this.config.openclaw.baseUrl || "").trim());
-
-    if (resolvedToken) {
-      this.applyOpenClawCredentials({
-        token: resolvedToken,
-        baseUrl: resolvedBaseUrl,
-      });
-      return;
-    }
-
-    console.log("[codex-im] no OpenClaw token found, starting Weixin QR login");
-    let lastStatus = "";
-    const loginResult = await loginWithQr({
-      baseUrl: resolvedBaseUrl,
-      onQrCode: async ({ qrcodeUrl, refreshCount }) => {
-        const actionText = refreshCount > 0 ? "二维码已刷新" : "二维码已就绪";
-        console.log(`[codex-im] ${actionText}，请使用微信扫码`);
-        const opened = await openQrInBrowser(qrcodeUrl);
-        if (opened) {
-          console.log("[codex-im] QR link opened in the default browser");
-        }
-        console.log(`[codex-im] QR URL: ${qrcodeUrl}`);
-      },
-      onStatus: (status) => {
-        if (!status || status === lastStatus) {
-          return;
-        }
-        lastStatus = status;
-        if (status === "scaned") {
-          console.log("[codex-im] QR scanned, confirm the login in Weixin");
-        } else if (status === "confirmed") {
-          console.log("[codex-im] QR login confirmed");
-        } else if (status === "expired") {
-          console.log("[codex-im] QR expired, refreshing");
-        }
-      },
-    });
-
-    saveOpenClawCredentials(this.config.openclaw.credentialsFile, {
-      token: loginResult.token,
-      baseUrl: loginResult.baseUrl,
-      accountId: loginResult.accountId,
-      userId: loginResult.userId,
-    });
-    this.applyOpenClawCredentials({
-      token: loginResult.token,
-      baseUrl: loginResult.baseUrl,
-    });
+    return ensureOpenClawCredentials(this);
   }
 
   reloadOpenClawCredentialsFromStore() {
-    const storedCredentials = loadOpenClawCredentials(this.config.openclaw.credentialsFile);
-    const storedToken = String(storedCredentials?.token || "").trim();
-    const storedBaseUrl = String(storedCredentials?.baseUrl || this.config.openclaw.baseUrl || "").trim();
-    if (!storedToken) {
-      return false;
-    }
-
-    const currentToken = String(this.config.openclaw.token || "").trim();
-    const currentBaseUrl = String(this.config.openclaw.baseUrl || "").trim();
-    if (storedToken === currentToken && storedBaseUrl === currentBaseUrl) {
-      return false;
-    }
-
-    this.syncCursor = "";
-    this.applyOpenClawCredentials({
-      token: storedToken,
-      baseUrl: storedBaseUrl,
-    });
-    console.warn("[codex-im] reloaded OpenClaw credentials from the local credentials file");
-    return true;
+    return reloadOpenClawCredentialsFromStore(this);
   }
 
   async tryRecoverFromPollError(error) {
-    if (!isOpenClawCredentialError(error)) {
-      return false;
-    }
-
-    if (this.reloadOpenClawCredentialsFromStore()) {
-      return true;
-    }
-
-    console.error(
-      "[codex-im] OpenClaw credentials may have expired. Run `codex-im openclaw-bot` and complete Weixin QR login again."
-    );
-    return false;
+    return tryRecoverFromPollError(this, error);
   }
 
   applyOpenClawCredentials({ token, baseUrl }) {
-    const resolvedToken = String(token || "").trim();
-    const resolvedBaseUrl = String(baseUrl || this.config.openclaw.baseUrl || "").trim();
-    this.config.openclaw.token = resolvedToken;
-    this.config.openclaw.baseUrl = resolvedBaseUrl;
-    this.openclawAdapter.setCredentials({
-      token: resolvedToken,
-      baseUrl: resolvedBaseUrl,
-    });
+    return applyOpenClawCredentials(this, { token, baseUrl });
   }
 
   startPolling() {
@@ -409,7 +326,7 @@ class OpenClawBotRuntime {
   }
 
   resolveReplyToMessageId(normalized, replyToMessageId = "") {
-    return replyToMessageId || normalized.messageId;
+    return resolveReplyToMessageId(this, normalized, replyToMessageId);
   }
 
   getBindingContext(normalized) {
@@ -425,31 +342,15 @@ class OpenClawBotRuntime {
   }
 
   rememberInboundContext(normalized) {
-    if (!normalized?.messageId) {
-      return;
-    }
-    setBoundedMapEntry(this.messageContextByMessageId, normalized.messageId, normalized, MAX_MESSAGE_CONTEXT_ENTRIES);
-    if (normalized.chatId) {
-      setBoundedMapEntry(this.latestMessageContextByChatId, normalized.chatId, normalized, MAX_MESSAGE_CONTEXT_ENTRIES);
-    }
+    return rememberInboundContext(this, normalized);
   }
 
   forgetInboundContext(normalized) {
-    if (!normalized?.messageId) {
-      return;
-    }
-    this.messageContextByMessageId.delete(normalized.messageId);
-    if (normalized.chatId) {
-      this.latestMessageContextByChatId.delete(normalized.chatId);
-    }
+    return forgetInboundContext(this, normalized);
   }
 
   resolveMessageContext({ replyToMessageId = "", chatId = "" } = {}) {
-    const byMessageId = replyToMessageId ? this.messageContextByMessageId.get(replyToMessageId) || null : null;
-    if (byMessageId) {
-      return byMessageId;
-    }
-    return chatId ? this.latestMessageContextByChatId.get(chatId) || null : null;
+    return resolveMessageContext(this, { replyToMessageId, chatId });
   }
 
   supportsInteractiveCards() {
@@ -630,23 +531,6 @@ function attachRuntimeForwarders() {
     plainForwarders,
     runtimeFirstForwarders,
   });
-}
-
-function setBoundedMapEntry(map, key, value, limit) {
-  if (!map || !key) {
-    return;
-  }
-  if (map.has(key)) {
-    map.delete(key);
-  }
-  map.set(key, value);
-  while (map.size > limit) {
-    const oldestKey = map.keys().next().value;
-    if (!oldestKey) {
-      break;
-    }
-    map.delete(oldestKey);
-  }
 }
 
 function normalizeBindingProvider(binding) {
