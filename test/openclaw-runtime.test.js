@@ -128,6 +128,56 @@ test("OpenClawBotRuntime reports non-recoverable credential failures when no new
   assert.equal(runtime.config.openclaw.token, "same-token");
 });
 
+test("OpenClawBotRuntime retries sendTextMessage without context token on OpenClaw sendMessage failure", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-im-openclaw-send-retry-"));
+  const runtime = new OpenClawBotRuntime({
+    mode: "openclaw-bot",
+    workspaceAllowlist: [],
+    codexEndpoint: "",
+    codexCommand: "codex",
+    defaultCodexModel: "gpt-5.3-codex",
+    defaultCodexEffort: "medium",
+    defaultCodexAccessMode: "default",
+    verboseCodexLogs: false,
+    openclaw: {
+      baseUrl: "https://ilinkai.weixin.qq.com",
+      token: "token",
+      longPollTimeoutMs: 35000,
+    },
+    defaultWorkspaceId: "default",
+    openclawStreamingOutput: false,
+    sessionsFile: path.join(tempDir, "sessions.json"),
+  });
+
+  runtime.messageContextByMessageId = new Map([
+    ["reply-1", {
+      contextToken: "ctx-1",
+    }],
+  ]);
+  runtime.openclawAdapter = {
+    sendTextMessage: async (payload) => {
+      runtime.__sendCalls = runtime.__sendCalls || [];
+      runtime.__sendCalls.push({ ...payload });
+      if (payload.contextToken) {
+        throw new Error("sendMessage errcode=-2: unknown error");
+      }
+      return { ret: 0 };
+    },
+  };
+
+  const response = await runtime.sendTextMessage({
+    chatId: "wx-user-1",
+    replyToMessageId: "reply-1",
+    text: "hello",
+  });
+
+  assert.equal(runtime.__sendCalls.length, 2);
+  assert.equal(runtime.__sendCalls[0].contextToken, "ctx-1");
+  assert.equal(runtime.__sendCalls[1].contextToken, "");
+  assert.equal(runtime.__sendCalls[0].toUserId, "wx-user-1");
+  assert.deepEqual(response, { ret: 0 });
+});
+
 test("OpenClawBotRuntime warns when voice input frontend is disabled", () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-im-openclaw-voice-off-"));
   const runtime = new OpenClawBotRuntime({

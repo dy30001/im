@@ -15,17 +15,7 @@ async function onOpenClawTextEvent(runtime, message) {
     return;
   }
   const normalized = messageNormalizers.normalizeOpenClawTextEvent(message, runtime.config);
-  const shouldStageVoiceContext =
-    normalized?.inputKind === "voice"
-    && runtime.config?.openclaw?.voiceInputEnabled !== false
-    && typeof runtime.rememberInboundContext === "function";
-  if (shouldStageVoiceContext) {
-    runtime.rememberInboundContext(normalized);
-  }
   const prepared = await prepareOpenClawNormalizedEvent(runtime, normalized);
-  if (shouldStageVoiceContext && typeof runtime.forgetInboundContext === "function") {
-    runtime.forgetInboundContext(normalized);
-  }
   if (!prepared) {
     return;
   }

@@ -366,12 +366,11 @@ class OpenClawBotRuntime {
   }
 
   async sendTextMessage({ chatId, text, replyToMessageId = "", contextToken = "" } = {}) {
-    const messageContext = this.resolveMessageContext({ replyToMessageId, chatId });
-    return this.openclawAdapter.sendTextMessage({
-      toUserId: chatId,
+    return sendOpenClawTextMessage(this, {
+      chatId,
       text,
-      contextToken: contextToken || messageContext?.contextToken || "",
-      signal: this.pollAbortController?.signal,
+      replyToMessageId,
+      contextToken,
     });
   }
 
@@ -541,6 +540,43 @@ function looksLikeFeishuBinding(chatId, senderId, threadKey) {
   return startsWithAny(chatId, ["oc_", "chat_"])
     || startsWithAny(senderId, ["ou_", "on_"])
     || startsWithAny(threadKey, ["om_"]);
+}
+
+async function sendOpenClawTextMessage(runtime, {
+  chatId,
+  text,
+  replyToMessageId = "",
+  contextToken = "",
+} = {}) {
+  const messageContext = runtime.resolveMessageContext({ replyToMessageId, chatId });
+  const resolvedContextToken = String(contextToken || messageContext?.contextToken || "").trim();
+  const payload = {
+    toUserId: chatId,
+    text,
+    contextToken: resolvedContextToken,
+    signal: runtime.pollAbortController?.signal,
+  };
+
+  try {
+    return await runtime.openclawAdapter.sendTextMessage(payload);
+  } catch (error) {
+    if (!resolvedContextToken || !shouldRetryOpenClawSendWithoutContextToken(error)) {
+      throw error;
+    }
+    console.warn("[codex-im] openclaw sendMessage failed with context token, retrying without context token");
+    return runtime.openclawAdapter.sendTextMessage({
+      ...payload,
+      contextToken: "",
+    });
+  }
+}
+
+function shouldRetryOpenClawSendWithoutContextToken(error) {
+  const message = String(error?.message || "").toLowerCase();
+  if (!message) {
+    return false;
+  }
+  return message.includes("sendmessage errcode=-2") || message.includes("unknown error");
 }
 
 function startsWithAny(value, prefixes) {

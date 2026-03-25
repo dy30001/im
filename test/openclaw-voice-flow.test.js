@@ -203,8 +203,8 @@ test("onOpenClawTextEvent transcribes voice input and reuses command parsing", a
     ],
   });
 
-  assert.equal(seen.remembered, 2);
-  assert.equal(seen.forgotten, 1);
+  assert.equal(seen.remembered, 1);
+  assert.equal(seen.forgotten, 0);
   assert.equal(seen.messageId, "7");
   assert.equal(seen.command, "where");
   assert.equal(seen.text, "当前在哪个项目");
@@ -372,8 +372,8 @@ test("onOpenClawTextEvent reports a transcription failure back to the user", asy
       text: "语音转写失败：收到语音消息，但当前 payload 没有可下载的媒体地址。",
     },
   ]);
-  assert.equal(seen.remembered, 1);
-  assert.equal(seen.forgotten, 1);
+  assert.equal(seen.remembered, 0);
+  assert.equal(seen.forgotten, 0);
 });
 
 test("onOpenClawTextEvent keeps text command when a message also includes voice", async () => {
