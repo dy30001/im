@@ -27,6 +27,8 @@ test("package.json check script covers newly added runtime and workspace modules
     "src/domain/workspace/settings-service.js",
     "src/infra/acpx/session-bridge.js",
     "src/infra/openclaw/client-adapter.js",
+    "src/infra/openclaw/media-adapter.js",
+    "src/infra/stt/transcription-client.js",
     "src/shared/error-text.js",
     "src/shared/model-catalog.js",
   ];

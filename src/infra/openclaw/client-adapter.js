@@ -79,6 +79,21 @@ class OpenClawClientAdapter {
       label: "sendMessage",
     });
   }
+
+  async downloadMedia({ downloadUrl, timeoutMs = 15_000, signal } = {}) {
+    const normalizedDownloadUrl = String(downloadUrl || "").trim();
+    if (!normalizedDownloadUrl) {
+      return null;
+    }
+    return fetchBinary({
+      downloadUrl: normalizedDownloadUrl,
+      baseUrl: this.baseUrl,
+      token: this.token,
+      timeoutMs,
+      fetchImpl: this.fetchImpl,
+      signal,
+    });
+  }
 }
 
 function buildBaseInfo() {
@@ -160,15 +175,72 @@ async function postJson({
 
 function buildHeaders({ token, bodyText }) {
   const headers = {
+    ...buildAuthHeaders({ token }),
     "Content-Type": "application/json",
-    AuthorizationType: "ilink_bot_token",
     "Content-Length": String(Buffer.byteLength(bodyText, "utf8")),
+  };
+  return headers;
+}
+
+function buildAuthHeaders({ token }) {
+  const headers = {
+    AuthorizationType: "ilink_bot_token",
     "X-WECHAT-UIN": randomWechatUin(),
   };
   if (String(token || "").trim()) {
     headers.Authorization = `Bearer ${String(token).trim()}`;
   }
   return headers;
+}
+
+async function fetchBinary({
+  downloadUrl,
+  baseUrl,
+  token,
+  timeoutMs,
+  fetchImpl,
+  signal,
+}) {
+  if (typeof fetchImpl !== "function") {
+    throw new Error("OpenClaw fetch implementation is unavailable");
+  }
+
+  const url = new URL(downloadUrl, baseUrl);
+  const controller = new AbortController();
+  const abortHandler = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) {
+      controller.abort();
+    } else {
+      signal.addEventListener("abort", abortHandler, { once: true });
+    }
+  }
+
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetchImpl(url.toString(), {
+      method: "GET",
+      headers: buildAuthHeaders({ token }),
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      const rawText = typeof response.text === "function" ? await response.text() : "";
+      throw new Error(`downloadMedia ${response.status}: ${rawText}`);
+    }
+    const arrayBuffer = await response.arrayBuffer();
+    return {
+      buffer: Buffer.from(arrayBuffer),
+      mimeType: typeof response.headers?.get === "function"
+        ? String(response.headers.get("content-type") || "").trim()
+        : "",
+      fileName: "",
+    };
+  } finally {
+    clearTimeout(timer);
+    if (signal) {
+      signal.removeEventListener("abort", abortHandler);
+    }
+  }
 }
 
 function buildClientId() {

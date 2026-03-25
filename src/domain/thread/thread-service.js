@@ -1,5 +1,10 @@
 const { filterThreadsByWorkspaceRoot } = require("../../shared/workspace-paths");
-const { extractSwitchThreadId } = require("../../shared/command-parsing");
+const {
+  extractSwitchThreadId,
+  extractNaturalBrowseSelectionIndex,
+  extractNaturalThreadSelectionIndex,
+  isNaturalSelectionTextCompatibleWithCommand,
+} = require("../../shared/command-parsing");
 const codexMessageUtils = require("../../infra/codex/message-utils");
 
 const THREAD_SOURCE_KINDS = new Set([
@@ -52,13 +57,20 @@ async function resolveWorkspaceThreadState(runtime, {
   return { threads, threadId, selectedThreadId };
 }
 
-async function ensureThreadAndSendMessage(runtime, { bindingKey, workspaceRoot, normalized, threadId }) {
+async function ensureThreadAndSendMessage(runtime, {
+  bindingKey,
+  workspaceRoot,
+  normalized,
+  threadId,
+  forceRecoverThread = false,
+}) {
   if (shouldUseDesktopSessions(runtime)) {
     return ensureDesktopSessionAndSendMessage(runtime, {
       bindingKey,
       workspaceRoot,
       normalized,
       threadId,
+      forceRecoverThread,
     });
   }
 
@@ -134,20 +146,56 @@ async function resolveDesktopSessionState(runtime, {
 }) {
   const threads = await refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, normalized);
   const selectedThreadId = runtime.resolveThreadIdForBinding(bindingKey, workspaceRoot);
-  let selectedThread = selectedThreadId
-    ? findDesktopSessionById(runtime, workspaceRoot, selectedThreadId)
-    : null;
-  let threadId = selectedThread?.id || "";
+  let selectedThread = null;
+  let threadId = "";
 
-  if (!selectedThread && autoSelectThread && threads[0]) {
-    selectedThread = threads[0];
-    threadId = selectedThread.id;
-    runtime.sessionStore.setThreadIdForWorkspace(
-      bindingKey,
-      workspaceRoot,
-      threadId,
-      codexMessageUtils.buildBindingMetadata(normalized)
-    );
+  if (selectedThreadId) {
+    selectedThread = await hydrateSelectedDesktopSession(runtime, workspaceRoot, selectedThreadId);
+    if (selectedThread?.writable && selectedThread?.acpSessionId) {
+      threadId = selectedThread.id;
+    } else if (autoSelectThread) {
+      const recoveredThread = await findWritableDesktopSession(runtime, workspaceRoot, threads, selectedThreadId);
+      if (recoveredThread) {
+        selectedThread = recoveredThread;
+        threadId = recoveredThread.id;
+        runtime.sessionStore.setThreadIdForWorkspace(
+          bindingKey,
+          workspaceRoot,
+          threadId,
+          codexMessageUtils.buildBindingMetadata(normalized)
+        );
+        console.warn(
+          `[codex-im] desktop session ${selectedThreadId} is read-only; auto-switched to writable session ${threadId} for workspace=${workspaceRoot}`
+        );
+      } else {
+        threadId = selectedThread?.id || "";
+      }
+    } else {
+      threadId = selectedThread?.id || "";
+    }
+  }
+
+  if (!threadId && autoSelectThread) {
+    const recoveredThread = await findWritableDesktopSession(runtime, workspaceRoot, threads);
+    if (recoveredThread) {
+      selectedThread = recoveredThread;
+      threadId = recoveredThread.id;
+      runtime.sessionStore.setThreadIdForWorkspace(
+        bindingKey,
+        workspaceRoot,
+        threadId,
+        codexMessageUtils.buildBindingMetadata(normalized)
+      );
+    } else if (threads[0]) {
+      selectedThread = await hydrateSelectedDesktopSession(runtime, workspaceRoot, threads[0].id) || threads[0];
+      threadId = selectedThread.id;
+      runtime.sessionStore.setThreadIdForWorkspace(
+        bindingKey,
+        workspaceRoot,
+        threadId,
+        codexMessageUtils.buildBindingMetadata(normalized)
+      );
+    }
   }
 
   if (!selectedThread && selectedThreadId) {
@@ -170,23 +218,48 @@ async function ensureDesktopSessionAndSendMessage(runtime, {
   workspaceRoot,
   normalized,
   threadId,
+  forceRecoverThread = false,
 }) {
   const codexParams = runtime.getCodexParamsForWorkspace(bindingKey, workspaceRoot);
   if (!threadId) {
     throw new Error("当前项目在桌面 App 里还没有可见会话。请先在电脑端打开该项目并创建/恢复会话。");
   }
 
-  const selectedSession = await hydrateSelectedDesktopSession(runtime, workspaceRoot, threadId);
-  if (!selectedSession) {
-    throw new Error("当前桌面会话不可用，请刷新会话列表后重试。");
-  }
-  if (!selectedSession.writable || !selectedSession.acpSessionId) {
-    throw new Error("当前桌面会话仅支持查看/同步，暂不支持从微信继续聊天。");
+  const originalThreadId = threadId;
+  let selectedSession = await hydrateSelectedDesktopSession(runtime, workspaceRoot, threadId);
+  if (!selectedSession || !selectedSession.writable || !selectedSession.acpSessionId) {
+    const availableThreads = await refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, normalized);
+    const recoveredSession = await findWritableDesktopSession(runtime, workspaceRoot, availableThreads, threadId);
+    if (recoveredSession) {
+      selectedSession = recoveredSession;
+      threadId = recoveredSession.id;
+      console.warn(
+        `[codex-im] desktop session ${originalThreadId} is read-only; auto-switched to writable session ${threadId} for workspace=${workspaceRoot}`
+      );
+    } else if (forceRecoverThread) {
+      threadId = await createWorkspaceThread(runtime, {
+        bindingKey,
+        workspaceRoot,
+        normalized,
+      });
+      selectedSession = {
+        id: threadId,
+        acpSessionId: threadId,
+        writable: true,
+      };
+      console.warn(
+        `[codex-im] desktop session ${originalThreadId} is read-only; created writable recovery session ${threadId} for workspace=${workspaceRoot}`
+      );
+    } else if (!selectedSession) {
+      throw new Error("当前桌面会话不可用，请刷新会话列表后重试。");
+    } else {
+      throw new Error("当前桌面会话仅支持查看/同步，暂不支持从微信继续聊天。");
+    }
   }
 
-  await ensureThreadResumed(runtime, selectedSession.acpSessionId);
+  await ensureThreadResumed(runtime, selectedSession.acpSessionId || threadId);
   await runtime.codex.sendUserMessage({
-    threadId: selectedSession.acpSessionId,
+    threadId: selectedSession.acpSessionId || threadId,
     text: normalized.text,
     model: codexParams.model || null,
     effort: codexParams.effort || null,
@@ -290,17 +363,58 @@ async function handleNewCommand(runtime, normalized) {
 async function handleSwitchCommand(runtime, normalized) {
   const threadId = extractSwitchThreadId(normalized.text);
   if (!threadId) {
+    const selectionContext = typeof runtime.resolveSelectionContext === "function"
+      ? runtime.resolveSelectionContext(normalized)
+      : null;
+    const threadIndex = extractNaturalThreadSelectionIndex(normalized.text);
+    const genericThreadIndex = selectionContext?.command === "threads"
+      && isNaturalSelectionTextCompatibleWithCommand(normalized.text, "threads")
+      ? extractNaturalBrowseSelectionIndex(normalized.text)
+      : 0;
+    const resolvedThreadIndex = threadIndex > 0 ? threadIndex : genericThreadIndex;
+    if (resolvedThreadIndex > 0) {
+      await switchThreadByIndex(runtime, normalized, resolvedThreadIndex, { replyToMessageId: normalized.messageId });
+      return;
+    }
     await runtime.sendInfoCardMessage({
       chatId: normalized.chatId,
       replyToMessageId: normalized.messageId,
       text: shouldUseDesktopSessions(runtime)
-        ? "用法: `/codex switch <sessionId>`"
-        : "用法: `/codex switch <threadId>`",
+        ? "用法: `/codex switch <sessionId>`，或直接说 `切换第二个线程`。"
+        : "用法: `/codex switch <threadId>`，或直接说 `切换第二个线程`。",
     });
     return;
   }
 
   await switchThreadById(runtime, normalized, threadId, { replyToMessageId: normalized.messageId });
+}
+
+async function switchThreadByIndex(runtime, normalized, threadIndex, { replyToMessageId } = {}) {
+  const replyTarget = runtime.resolveReplyToMessageId(normalized, replyToMessageId);
+  const { bindingKey, workspaceRoot } = runtime.getBindingContext(normalized);
+  if (!workspaceRoot) {
+    await runtime.sendInfoCardMessage({
+      chatId: normalized.chatId,
+      replyToMessageId: replyTarget,
+      text: "当前会话还未绑定项目。先发送 `/codex bind /绝对路径`。",
+    });
+    return;
+  }
+
+  const availableThreads = await refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, normalized);
+  const selectedThread = availableThreads[threadIndex - 1] || null;
+  if (!selectedThread) {
+    await runtime.sendInfoCardMessage({
+      chatId: normalized.chatId,
+      replyToMessageId: replyTarget,
+      text: availableThreads.length
+        ? `当前只有 ${availableThreads.length} 个线程，无法选择第 ${threadIndex} 个。`
+        : "当前没有可切换的线程。先发送 `/codex threads` 查看列表。",
+    });
+    return;
+  }
+
+  await switchThreadById(runtime, normalized, selectedThread.id, { replyToMessageId: replyTarget });
 }
 
 async function refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, normalized) {
@@ -612,6 +726,24 @@ async function hydrateSelectedDesktopSession(runtime, workspaceRoot, sessionId) 
     return selectedSession;
   }
   return runtime.hydrateDesktopSession(selectedSession);
+}
+
+async function findWritableDesktopSession(runtime, workspaceRoot, sessions, excludedSessionId = "") {
+  if (!Array.isArray(sessions) || !sessions.length) {
+    return null;
+  }
+
+  for (const session of sessions) {
+    if (!session?.id || session.id === excludedSessionId) {
+      continue;
+    }
+    const hydrated = await hydrateSelectedDesktopSession(runtime, workspaceRoot, session.id);
+    if (hydrated?.writable && hydrated?.acpSessionId) {
+      return hydrated;
+    }
+  }
+
+  return null;
 }
 
 module.exports = {

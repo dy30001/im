@@ -62,8 +62,9 @@ test("OpenClaw selected thread sync sends one summary when the desktop thread ch
     listBindings: () => [{
       bindingKey: "binding-1",
       binding: {
+        provider: "openclaw",
         workspaceId: "default",
-        chatId: "chat-1",
+        chatId: "chat-1@im.wechat",
         activeWorkspaceRoot: "/repo",
         threadIdByWorkspaceRoot: {
           "/repo": "thread-1",
@@ -95,7 +96,7 @@ test("OpenClaw selected thread sync sends one summary when the desktop thread ch
   await runtime.syncSelectedThreads({ aborted: false });
 
   assert.equal(sentMessages.length, 1);
-  assert.equal(sentMessages[0].chatId, "chat-1");
+  assert.equal(sentMessages[0].chatId, "chat-1@im.wechat");
   assert.match(sentMessages[0].text, /检测到电脑端更新/);
   assert.match(sentMessages[0].text, /Desktop Thread/);
   assert.match(sentMessages[0].text, /桌面回答 2/);
@@ -111,8 +112,9 @@ test("OpenClaw selected thread sync skips the next update after local activity",
     listBindings: () => [{
       bindingKey: "binding-1",
       binding: {
+        provider: "openclaw",
         workspaceId: "default",
-        chatId: "chat-1",
+        chatId: "chat-1@im.wechat",
         activeWorkspaceRoot: "/repo",
         threadIdByWorkspaceRoot: {
           "/repo": "thread-1",
@@ -149,4 +151,88 @@ test("OpenClaw selected thread sync skips the next update after local activity",
 
   assert.equal(sentMessages.length, 1);
   assert.match(sentMessages[0].text, /桌面回答 3/);
+});
+
+test("OpenClaw selected thread sync ignores bindings that belong to other providers", async () => {
+  const runtime = createRuntime();
+  const syncedBindingKeys = [];
+
+  runtime.sessionStore = {
+    listBindings: () => [
+      {
+        bindingKey: "feishu-binding",
+        binding: {
+          provider: "feishu",
+          chatId: "oc_feishu_chat",
+          senderId: "ou_feishu_user",
+          activeWorkspaceRoot: "/repo",
+          threadIdByWorkspaceRoot: {
+            "/repo": "thread-feishu",
+          },
+        },
+      },
+      {
+        bindingKey: "openclaw-binding",
+        binding: {
+          provider: "openclaw",
+          chatId: "user@im.wechat",
+          senderId: "user@im.wechat",
+          activeWorkspaceRoot: "/repo",
+          threadIdByWorkspaceRoot: {
+            "/repo": "thread-openclaw",
+          },
+        },
+      },
+    ],
+  };
+
+  runtime.syncSelectedThreadBinding = async ({ bindingKey }) => {
+    syncedBindingKeys.push(bindingKey);
+  };
+
+  await runtime.syncSelectedThreads({ aborted: false });
+
+  assert.deepEqual(syncedBindingKeys, ["openclaw-binding"]);
+});
+
+test("OpenClaw selected thread sync keeps legacy bindings without provider and skips Feishu-like ids", async () => {
+  const runtime = createRuntime();
+  const syncedBindingKeys = [];
+
+  runtime.sessionStore = {
+    listBindings: () => [
+      {
+        bindingKey: "legacy-feishu-binding",
+        binding: {
+          chatId: "oc_feishu_chat",
+          senderId: "ou_feishu_user",
+          threadKey: "om_feishu_thread",
+          activeWorkspaceRoot: "/repo",
+          threadIdByWorkspaceRoot: {
+            "/repo": "thread-feishu",
+          },
+        },
+      },
+      {
+        bindingKey: "legacy-openclaw-binding",
+        binding: {
+          chatId: "wxid_legacy_user",
+          senderId: "wxid_legacy_user",
+          threadKey: "legacy-session-id",
+          activeWorkspaceRoot: "/repo",
+          threadIdByWorkspaceRoot: {
+            "/repo": "thread-openclaw",
+          },
+        },
+      },
+    ],
+  };
+
+  runtime.syncSelectedThreadBinding = async ({ bindingKey }) => {
+    syncedBindingKeys.push(bindingKey);
+  };
+
+  await runtime.syncSelectedThreads({ aborted: false });
+
+  assert.deepEqual(syncedBindingKeys, ["legacy-openclaw-binding"]);
 });

@@ -12,6 +12,9 @@ const {
   extractModelValue,
   extractRemoveWorkspacePath,
   extractSendPath,
+  extractNaturalBrowseSelectionIndex,
+  extractNaturalWorkspaceSelectionIndex,
+  isNaturalSelectionTextCompatibleWithCommand,
 } = require("../../shared/command-parsing");
 const {
   resolveEffectiveModelForEffort,
@@ -124,10 +127,63 @@ async function handleBrowseCommand(
     return;
   }
 
+  const browseSelectionIndex = browsePath ? 0 : extractNaturalBrowseSelectionIndex(normalized.text);
+  if (browseSelectionIndex > 0) {
+    const entries = Array.isArray(browserState.entries) ? browserState.entries : [];
+    const selectedEntry = entries[browseSelectionIndex - 1] || null;
+    if (!selectedEntry) {
+      await runtime.sendInfoCardMessage({
+        chatId: normalized.chatId,
+        replyToMessageId: replyTarget,
+        text: entries.length
+          ? `当前只有 ${entries.length} 个目录项，无法选择第 ${browseSelectionIndex} 个。`
+          : "当前没有可选目录项。先发送 `/codex browse` 查看目录列表。",
+      });
+      return;
+    }
+
+    if (selectedEntry.kind !== "directory") {
+      await runtime.sendInfoCardMessage({
+        chatId: normalized.chatId,
+        replyToMessageId: replyTarget,
+        text: `当前第 ${browseSelectionIndex} 个不是目录，无法进入。`,
+      });
+      return;
+    }
+
+    const selectedBrowserState = await browserRuntime.resolveWorkspaceBrowserState(runtime, {
+      browseRoots,
+      requestedPath: selectedEntry.path,
+    });
+    if (selectedBrowserState.errorText) {
+      await runtime.sendInfoCardMessage({
+        chatId: normalized.chatId,
+        replyToMessageId: replyTarget,
+        text: selectedBrowserState.errorText,
+      });
+      return;
+    }
+
+    await runtime.sendInteractiveCard({
+      chatId: normalized.chatId,
+      replyToMessageId: replyTarget,
+      card: runtime.buildWorkspaceBrowserCard(selectedBrowserState),
+      selectionContext: {
+        bindingKey: runtime.sessionStore.buildBindingKey(normalized),
+        command: "browse",
+      },
+    });
+    return;
+  }
+
   await runtime.sendInteractiveCard({
     chatId: normalized.chatId,
     replyToMessageId: replyTarget,
     card: runtime.buildWorkspaceBrowserCard(browserState),
+    selectionContext: {
+      bindingKey: runtime.sessionStore.buildBindingKey(normalized),
+      command: "browse",
+    },
   });
 }
 
@@ -292,11 +348,11 @@ async function handleHelpCommand(runtime, normalized) {
 }
 
 async function handleUnknownCommand(runtime, normalized) {
-  await runtime.sendInfoCardMessage({
-    chatId: normalized.chatId,
-    replyToMessageId: normalized.messageId,
-    text: "无效的 Codex 命令。\n\n可使用 `/codex help` 查看命令教程。",
-  });
+    await runtime.sendInfoCardMessage({
+      chatId: normalized.chatId,
+      replyToMessageId: normalized.messageId,
+      text: "无效的 Codex 命令。\n\n可使用 `/codex help` 查看命令教程。",
+    });
 }
 
 async function handleSendCommand(runtime, normalized) {
@@ -537,17 +593,71 @@ async function handleWorkspacesCommand(runtime, normalized, { replyToMessageId }
     return;
   }
 
+  const selectionContext = typeof runtime.resolveSelectionContext === "function"
+    ? runtime.resolveSelectionContext(normalized)
+    : null;
+  const workspaceIndex = extractNaturalWorkspaceSelectionIndex(normalized.text);
+  const genericWorkspaceIndex = selectionContext?.command === "workspace"
+    && isNaturalSelectionTextCompatibleWithCommand(normalized.text, "workspace")
+    ? extractNaturalBrowseSelectionIndex(normalized.text)
+    : 0;
+  const resolvedWorkspaceIndex = workspaceIndex > 0 ? workspaceIndex : genericWorkspaceIndex;
+  if (resolvedWorkspaceIndex > 0) {
+    const selectedWorkspace = items[resolvedWorkspaceIndex - 1] || null;
+    if (!selectedWorkspace) {
+      await runtime.sendInfoCardMessage({
+        chatId: normalized.chatId,
+        replyToMessageId: replyTarget,
+        text: `当前只有 ${items.length} 个已绑定项目，无法选择第 ${resolvedWorkspaceIndex} 个。`,
+      });
+      return;
+    }
+
+    await runtime.switchWorkspaceByPath(normalized, selectedWorkspace.workspaceRoot, {
+      replyToMessageId: replyTarget,
+    });
+    return;
+  }
+
   await runtime.sendInteractiveCard({
     chatId: normalized.chatId,
     replyToMessageId: replyTarget,
     card: runtime.buildWorkspaceBindingsCard(items),
+    selectionContext: {
+      bindingKey,
+      command: "workspace",
+    },
   });
 }
 
 async function handleThreadsCommand(runtime, normalized) {
+  const selectionContext = typeof runtime.resolveSelectionContext === "function"
+    ? runtime.resolveSelectionContext(normalized)
+    : null;
+  const hasThreadListContext = String(selectionContext?.command || "").trim() === "threads";
+
+  if (normalized.command !== "threads" && !hasThreadListContext) {
+    await runtime.sendInfoCardMessage({
+      chatId: normalized.chatId,
+      replyToMessageId: normalized.messageId,
+      text: "请先发送 `/codex threads` 打开线程列表，然后再说 `上一页`、`下一页` 或 `刷新`。",
+    });
+    return;
+  }
+
+  const currentPage = normalizeThreadPickerPage(selectionContext?.page);
+  let page = 0;
+  if (normalized.command === "prev_page") {
+    page = Math.max(currentPage - 1, 0);
+  } else if (normalized.command === "next_page") {
+    page = currentPage + 1;
+  } else if (normalized.command === "refresh_threads") {
+    page = currentPage;
+  }
+
   await showThreadPicker(runtime, normalized, {
     replyToMessageId: normalized.messageId,
-    page: 0,
+    page,
   });
 }
 
@@ -564,6 +674,7 @@ async function showThreadPicker(runtime, normalized, { replyToMessageId, page = 
   }
 
   const threads = await runtime.refreshWorkspaceThreads(bindingKey, workspaceRoot, normalized);
+  const safePage = normalizeThreadPickerPage(page, threads.length);
   const refreshState = typeof runtime.getWorkspaceThreadRefreshState === "function"
     ? runtime.getWorkspaceThreadRefreshState(bindingKey, workspaceRoot)
     : { ok: true, fromCache: false, error: "" };
@@ -575,7 +686,7 @@ async function showThreadPicker(runtime, normalized, { replyToMessageId, page = 
       text: refreshState.ok === false
         ? `当前项目：\`${workspaceRoot}\`\n\n线程列表刷新失败：${refreshState.error || "请稍后重试。"}`
         : usesDesktopSessionSource(runtime)
-          ? `当前项目：\`${workspaceRoot}\`\n\n桌面 App 里还没有这个项目的可见会话。请先在电脑端打开该项目并创建/恢复会话。`
+        ? `当前项目：\`${workspaceRoot}\`\n\n桌面 App 里还没有这个项目的可见会话。请先在电脑端打开该项目并创建/恢复会话。`
           : `当前项目：\`${workspaceRoot}\`\n\n还没有可切换的历史线程。`,
     });
     return;
@@ -589,11 +700,16 @@ async function showThreadPicker(runtime, normalized, { replyToMessageId, page = 
         workspaceRoot,
         threads,
         currentThreadId,
-        page,
+        page: safePage,
         noticeText: refreshState.fromCache
           ? "线程列表刷新失败，当前展示最近一次成功结果。"
           : "",
       }),
+      selectionContext: {
+        bindingKey,
+        command: "threads",
+        page: safePage,
+      },
     });
     return;
   }
@@ -605,12 +721,25 @@ async function showThreadPicker(runtime, normalized, { replyToMessageId, page = 
       workspaceRoot,
       threads,
       currentThreadId,
-      page,
+      page: safePage,
       noticeText: refreshState.fromCache
         ? "线程列表刷新失败，当前展示最近一次成功结果。"
         : "",
     }),
+    selectionContext: {
+      bindingKey,
+      command: "threads",
+      page: safePage,
+    },
   });
+}
+
+function normalizeThreadPickerPage(page, totalCount = 0, pageSize = 8) {
+  const normalizedPageSize = Number.isInteger(pageSize) && pageSize > 0 ? pageSize : 8;
+  const totalPages = Math.max(1, Math.ceil(Math.max(Number(totalCount) || 0, 0) / normalizedPageSize));
+  const numericPage = Number(page);
+  const safePage = Number.isFinite(numericPage) ? Math.floor(numericPage) : 0;
+  return Math.min(Math.max(safePage, 0), totalPages - 1);
 }
 
 async function handleRemoveCommand(runtime, normalized) {

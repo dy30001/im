@@ -7,7 +7,11 @@ const test = require("node:test");
 const { buildWorkspaceBrowserCard } = require("../src/presentation/card/builders");
 const browserRuntime = require("../src/domain/workspace/browser-service");
 const { normalizeFeishuTextEvent } = require("../src/presentation/message/normalizers");
-const workspaceService = require("../src/domain/workspace/workspace-service");
+const {
+  handleBindCommand,
+  handleBrowseCommand,
+  handleWorkspacesCommand,
+} = require("../src/domain/workspace/workspace-service");
 
 test("normalizeFeishuTextEvent recognizes /codex browse", () => {
   const normalized = normalizeFeishuTextEvent({
@@ -43,9 +47,13 @@ test("handleBrowseCommand renders allowed roots when multiple allowlist roots ex
     onSendInteractiveCard: (payload) => sentCards.push(payload),
   });
 
-  await workspaceService.handleBrowseCommand(runtime, createNormalizedEvent());
+  await handleBrowseCommand(runtime, createNormalizedEvent());
 
   assert.equal(sentCards.length, 1);
+  assert.deepEqual(sentCards[0].selectionContext, {
+    bindingKey: "binding:1",
+    command: "browse",
+  });
   const cardJson = JSON.stringify(sentCards[0].card);
   assert.match(cardJson, /alpha/);
   assert.match(cardJson, /beta/);
@@ -65,7 +73,7 @@ test("handleBrowseCommand rejects browse paths outside the allowlist", async () 
     onSendInfoCardMessage: (payload) => sentInfo.push(payload),
   });
 
-  await workspaceService.handleBrowseCommand(runtime, createNormalizedEvent(), {
+  await handleBrowseCommand(runtime, createNormalizedEvent(), {
     browsePath: deniedRoot,
   });
 
@@ -81,7 +89,7 @@ test("handleBindCommand rejects direct binds outside the default browse root whe
     onSendInfoCardMessage: (payload) => sentInfo.push(payload),
   });
 
-  await workspaceService.handleBindCommand(runtime, {
+  await handleBindCommand(runtime, {
     ...createNormalizedEvent(),
     text: `/codex bind ${outsideHomeDir}`,
     command: "bind",
@@ -117,7 +125,7 @@ test("handleBindCommand keeps allowing direct binds inside the home directory wh
   runtime.refreshWorkspaceThreads = async () => [];
   runtime.resolveThreadIdForBinding = () => "";
 
-  await workspaceService.handleBindCommand(runtime, {
+  await handleBindCommand(runtime, {
     ...createNormalizedEvent(),
     text: `/codex bind ${os.homedir()}`,
     command: "bind",
@@ -140,7 +148,7 @@ test("handleBrowseCommand lists directories before files inside the allowed root
     onSendInteractiveCard: (payload) => sentCards.push(payload),
   });
 
-  await workspaceService.handleBrowseCommand(runtime, createNormalizedEvent());
+  await handleBrowseCommand(runtime, createNormalizedEvent());
 
   assert.equal(sentCards.length, 1);
   const cardJson = JSON.stringify(sentCards[0].card);
@@ -150,6 +158,33 @@ test("handleBrowseCommand lists directories before files inside the allowed root
   assert.notEqual(noteIndex, -1);
   assert.ok(repoIndex < noteIndex);
   assert.match(cardJson, /browse_bind/);
+});
+
+test("handleBrowseCommand opens the second allowed root by ordinal selection", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-im-browse-select-"));
+  const firstRoot = path.join(tempDir, "alpha");
+  const secondRoot = path.join(tempDir, "beta");
+  fs.mkdirSync(firstRoot);
+  fs.mkdirSync(secondRoot);
+  fs.writeFileSync(path.join(secondRoot, "nested.txt"), "hello");
+
+  const sentCards = [];
+  const runtime = createBrowseRuntime({
+    workspaceAllowlist: [firstRoot, secondRoot],
+    onSendInteractiveCard: (payload) => sentCards.push(payload),
+  });
+
+  await handleBrowseCommand(runtime, {
+    ...createNormalizedEvent(),
+    text: "打开第二个",
+    command: "browse",
+  });
+
+  assert.equal(sentCards.length, 1);
+  const cardJson = JSON.stringify(sentCards[0].card);
+  assert.match(cardJson, /beta/);
+  assert.ok(cardJson.includes("nested\\\\.txt"));
+  assert.doesNotMatch(cardJson, /alpha/);
 });
 
 test("resolveBrowseRoots normalizes allowlist entries and falls back to home when empty", () => {
@@ -162,6 +197,109 @@ test("resolveBrowseRoots normalizes allowlist entries and falls back to home whe
 
   assert.deepEqual(browserRuntime.resolveBrowseRoots(allowlistRuntime), ["/tmp/repo"]);
   assert.deepEqual(browserRuntime.resolveBrowseRoots(fallbackRuntime), [os.homedir()]);
+});
+
+test("handleWorkspacesCommand selects a workspace by ordinal", async () => {
+  const switched = [];
+  const runtime = {
+    sessionStore: {
+      buildBindingKey: () => "binding-1",
+      getBinding: () => ({}),
+    },
+    listBoundWorkspaces: () => ([
+      { workspaceRoot: "/repo/alpha", isActive: true, threadId: "thread-1" },
+      { workspaceRoot: "/repo/beta", isActive: false, threadId: "thread-2" },
+      { workspaceRoot: "/repo/gamma", isActive: false, threadId: "thread-3" },
+    ]),
+    resolveReplyToMessageId: (_normalized, replyToMessageId = "") => replyToMessageId || "reply-1",
+    switchWorkspaceByPath: async (_normalized, workspaceRoot, options) => {
+      switched.push({ workspaceRoot, options });
+    },
+    sendInteractiveCard: async () => {
+      throw new Error("should not render workspace list when selecting by ordinal");
+    },
+    sendInfoCardMessage: async () => {
+      throw new Error("unexpected info card");
+    },
+  };
+
+  await handleWorkspacesCommand(runtime, {
+    chatId: "chat-1",
+    messageId: "msg-1",
+    text: "选择第二绑定",
+  });
+
+  assert.equal(switched.length, 1);
+  assert.equal(switched[0].workspaceRoot, "/repo/beta");
+});
+
+test("handleWorkspacesCommand accepts a bare ordinal when the remembered selection context is workspace", async () => {
+  const switched = [];
+  const runtime = {
+    sessionStore: {
+      buildBindingKey: () => "binding-1",
+      getBinding: () => ({}),
+    },
+    listBoundWorkspaces: () => ([
+      { workspaceRoot: "/repo/alpha", isActive: true, threadId: "thread-1" },
+      { workspaceRoot: "/repo/beta", isActive: false, threadId: "thread-2" },
+      { workspaceRoot: "/repo/gamma", isActive: false, threadId: "thread-3" },
+    ]),
+    resolveReplyToMessageId: (_normalized, replyToMessageId = "") => replyToMessageId || "reply-1",
+    resolveSelectionContext: () => ({ command: "workspace" }),
+    switchWorkspaceByPath: async (_normalized, workspaceRoot, options) => {
+      switched.push({ workspaceRoot, options });
+    },
+    sendInteractiveCard: async () => {
+      throw new Error("should not render workspace list when selecting by bare ordinal");
+    },
+    sendInfoCardMessage: async () => {
+      throw new Error("unexpected info card");
+    },
+  };
+
+  await handleWorkspacesCommand(runtime, {
+    chatId: "chat-1",
+    messageId: "msg-1",
+    text: "第二个",
+  });
+
+  assert.equal(switched.length, 1);
+  assert.equal(switched[0].workspaceRoot, "/repo/beta");
+});
+
+test("handleWorkspacesCommand tags the workspace list with selection context", async () => {
+  const sentCards = [];
+  const runtime = {
+    sessionStore: {
+      buildBindingKey: () => "binding-1",
+      getBinding: () => ({}),
+    },
+    listBoundWorkspaces: () => ([
+      { workspaceRoot: "/repo/alpha", isActive: true, threadId: "thread-1" },
+      { workspaceRoot: "/repo/beta", isActive: false, threadId: "thread-2" },
+    ]),
+    resolveReplyToMessageId: (_normalized, replyToMessageId = "") => replyToMessageId || "reply-1",
+    buildWorkspaceBindingsCard: (items) => ({ items }),
+    sendInteractiveCard: async (payload) => {
+      sentCards.push(payload);
+    },
+    sendInfoCardMessage: async () => {
+      throw new Error("unexpected info card");
+    },
+  };
+
+  await handleWorkspacesCommand(runtime, {
+    chatId: "chat-1",
+    messageId: "msg-1",
+    text: "查看绑定列表",
+  });
+
+  assert.equal(sentCards.length, 1);
+  assert.deepEqual(sentCards[0].selectionContext, {
+    bindingKey: "binding-1",
+    command: "workspace",
+  });
 });
 
 function createBrowseRuntime({

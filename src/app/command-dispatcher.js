@@ -1,5 +1,9 @@
 const { normalizeWorkspacePath } = require("../shared/workspace-paths");
 const {
+  extractNaturalThreadListCommand,
+  isNaturalSelectionTextCompatibleWithCommand,
+} = require("../shared/command-parsing");
+const {
   PANEL_ACTION_CONFIG,
   THREAD_ACTION_CONFIG,
   WORKSPACE_ACTION_CONFIG,
@@ -21,8 +25,12 @@ const TEXT_COMMAND_HANDLER_METHODS = {
   new: "handleNewCommand",
   model: "handleModelCommand",
   effort: "handleEffortCommand",
+  status: "handleWhereCommand",
   approve: "handleApprovalCommand",
   reject: "handleApprovalCommand",
+  prev_page: "handleThreadsCommand",
+  next_page: "handleThreadsCommand",
+  refresh_threads: "handleThreadsCommand",
 };
 
 const CARD_ACTION_KIND_METHODS = {
@@ -171,13 +179,61 @@ const WORKSPACE_CARD_ACTIONS = {
 };
 
 async function dispatchTextCommand(runtime, normalized) {
-  const handlerMethod = TEXT_COMMAND_HANDLER_METHODS[normalized.command];
+  const routedCommand = resolveContextualTextCommand(runtime, normalized);
+  const handlerMethod = TEXT_COMMAND_HANDLER_METHODS[routedCommand];
   if (!handlerMethod || typeof runtime[handlerMethod] !== "function") {
     return false;
   }
 
-  await runtime[handlerMethod](normalized);
+  const routedNormalized = routedCommand === normalized.command
+    ? normalized
+    : {
+      ...normalized,
+      command: routedCommand,
+    };
+
+  await runtime[handlerMethod](routedNormalized);
   return true;
+}
+
+function resolveContextualTextCommand(runtime, normalized) {
+  const command = String(normalized?.command || "").trim();
+  if (!command || command === "unknown_command") {
+    return command;
+  }
+
+  const selectionContext = typeof runtime?.resolveSelectionContext === "function"
+    ? runtime.resolveSelectionContext(normalized)
+    : null;
+  const selectionCommand = String(selectionContext?.command || "").trim();
+  if (!selectionCommand) {
+    return command;
+  }
+
+  if (selectionCommand === "threads" && command === "message") {
+    const threadListCommand = extractNaturalThreadListCommand(normalized?.text, { allowBare: true });
+    if (threadListCommand) {
+      return threadListCommand;
+    }
+  }
+
+  if (!isNaturalSelectionTextCompatibleWithCommand(normalized?.text, selectionCommand)) {
+    return command;
+  }
+
+  if (selectionCommand === "threads") {
+    return command === "message" || command === "browse" ? "switch" : command;
+  }
+
+  if (selectionCommand === "workspace") {
+    return command === "message" || command === "browse" ? "workspace" : command;
+  }
+
+  if (selectionCommand === "browse") {
+    return command === "message" ? "browse" : command;
+  }
+
+  return command;
 }
 
 function dispatchCardAction(runtime, action, normalized) {

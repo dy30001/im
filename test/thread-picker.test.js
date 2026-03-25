@@ -104,6 +104,45 @@ test("buildThreadPickerCard shows stale refresh notice when rendering cached thr
   assert.match(cardJson, /最近一次成功结果/);
 });
 
+test("showThreadPicker tags the thread list with selection context", async () => {
+  const selectionCalls = [];
+  const runtime = {
+    supportsInteractiveCards: () => true,
+    resolveReplyToMessageId: (_normalized, replyToMessageId = "") => replyToMessageId || "reply-1",
+    getBindingContext: () => ({ bindingKey: "binding-1", workspaceRoot: "/repo" }),
+    refreshWorkspaceThreads: async () => ([
+      { id: "thread-1", title: "Thread 1", updatedAt: 1 },
+      { id: "thread-2", title: "Thread 2", updatedAt: 2 },
+    ]),
+    getWorkspaceThreadRefreshState: () => ({ ok: true, fromCache: false, error: "" }),
+    resolveThreadIdForBinding: () => "thread-1",
+    buildThreadPickerCard,
+    sendInteractiveCard: async (payload) => {
+      selectionCalls.push(payload.selectionContext);
+      return {};
+    },
+    sendInfoCardMessage: async () => {
+      throw new Error("unexpected info card");
+    },
+  };
+
+  await showThreadPicker(runtime, {
+    chatId: "chat-1",
+    messageId: "msg-1",
+    text: "/codex threads",
+  }, {
+    replyToMessageId: "reply-1",
+    page: 0,
+  });
+
+  assert.deepEqual(selectionCalls, [
+    {
+      bindingKey: "binding-1",
+      command: "threads",
+    },
+  ]);
+});
+
 test("showThreadPicker distinguishes refresh failure from empty history", async () => {
   const infoMessages = [];
   const runtime = {

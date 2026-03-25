@@ -40,6 +40,8 @@ test("normalizeOpenClawTextEvent maps a Weixin text message into a codex-im even
     command: "where",
     receivedAt: new Date(1_711_111_111_111).toISOString(),
     contextToken: "ctx-123",
+    inputKind: "text",
+    voiceAttachment: null,
   });
 });
 
@@ -83,6 +85,28 @@ test("normalizeOpenClawTextEvent recognizes supported natural-language commands"
   );
   assert.equal(bindNormalized?.command, "bind");
 
+  const browseNormalized = normalizeOpenClawTextEvent(
+    {
+      from_user_id: "wx-user-1",
+      message_id: 20,
+      message_type: 1,
+      item_list: [{ type: 1, text_item: { text: "打开第二个" } }],
+    },
+    { defaultWorkspaceId: "default" }
+  );
+  assert.equal(browseNormalized?.command, "browse");
+
+  const workspaceNormalized = normalizeOpenClawTextEvent(
+    {
+      from_user_id: "wx-user-1",
+      message_id: 21,
+      message_type: 1,
+      item_list: [{ type: 1, text_item: { text: "选择第二绑定" } }],
+    },
+    { defaultWorkspaceId: "default" }
+  );
+  assert.equal(workspaceNormalized?.command, "workspace");
+
   const whereNormalized = normalizeOpenClawTextEvent(
     {
       from_user_id: "wx-user-1",
@@ -95,8 +119,8 @@ test("normalizeOpenClawTextEvent recognizes supported natural-language commands"
   assert.equal(whereNormalized?.command, "where");
 });
 
-test("normalizeOpenClawTextEvent keeps explicit /codex parsing ahead of natural-language fallback", () => {
-  const normalized = normalizeOpenClawTextEvent(
+test("normalizeOpenClawTextEvent recognizes natural-language commands after a /codex prefix", () => {
+  const bindNormalized = normalizeOpenClawTextEvent(
     {
       from_user_id: "wx-user-1",
       message_id: 4,
@@ -105,7 +129,75 @@ test("normalizeOpenClawTextEvent keeps explicit /codex parsing ahead of natural-
     },
     { defaultWorkspaceId: "default" }
   );
-  assert.equal(normalized?.command, "unknown_command");
+  assert.equal(bindNormalized?.command, "bind");
+
+  const statusNormalized = normalizeOpenClawTextEvent(
+    {
+      from_user_id: "wx-user-1",
+      message_id: 10,
+      message_type: 1,
+      item_list: [{ type: 1, text_item: { text: "/codex status" } }],
+    },
+    { defaultWorkspaceId: "default" }
+  );
+  assert.equal(statusNormalized?.command, "status");
+
+  const threadsNormalized = normalizeOpenClawTextEvent(
+    {
+      from_user_id: "wx-user-1",
+      message_id: 11,
+      message_type: 1,
+      item_list: [{ type: 1, text_item: { text: "现在有哪几个线程" } }],
+    },
+    { defaultWorkspaceId: "default" }
+  );
+  assert.equal(threadsNormalized?.command, "threads");
+
+  const switchNormalized = normalizeOpenClawTextEvent(
+    {
+      from_user_id: "wx-user-1",
+      message_id: 12,
+      message_type: 1,
+      item_list: [{ type: 1, text_item: { text: "切换第二个线程" } }],
+    },
+    { defaultWorkspaceId: "default" }
+  );
+  assert.equal(switchNormalized?.command, "switch");
+
+  const approveNormalized = normalizeOpenClawTextEvent(
+    {
+      from_user_id: "wx-user-1",
+      message_id: 13,
+      message_type: 1,
+      item_list: [{ type: 1, text_item: { text: "/codex 请同意工作区" } }],
+    },
+    { defaultWorkspaceId: "default" }
+  );
+  assert.equal(approveNormalized?.command, "approve");
+});
+
+test("normalizeOpenClawTextEvent recognizes natural-language approval replies", () => {
+  const approved = normalizeOpenClawTextEvent(
+    {
+      from_user_id: "wx-user-1",
+      message_id: 14,
+      message_type: 1,
+      item_list: [{ type: 1, text_item: { text: "同意" } }],
+    },
+    { defaultWorkspaceId: "default" }
+  );
+  assert.equal(approved?.command, "approve");
+
+  const rejected = normalizeOpenClawTextEvent(
+    {
+      from_user_id: "wx-user-1",
+      message_id: 15,
+      message_type: 1,
+      item_list: [{ type: 1, text_item: { text: "拒绝" } }],
+    },
+    { defaultWorkspaceId: "default" }
+  );
+  assert.equal(rejected?.command, "reject");
 });
 
 test("normalizeOpenClawTextEvent keeps ordinary natural-language questions as message", () => {
@@ -119,4 +211,105 @@ test("normalizeOpenClawTextEvent keeps ordinary natural-language questions as me
     { defaultWorkspaceId: "default" }
   );
   assert.equal(normalized?.command, "message");
+});
+
+test("normalizeOpenClawTextEvent recognizes a voice payload and keeps it as message input", () => {
+  const normalized = normalizeOpenClawTextEvent(
+    {
+      from_user_id: "wx-user-1",
+      message_id: 6,
+      message_type: 3,
+      item_list: [
+        {
+          type: 4,
+          voice_item: {
+            download_url: "https://ilinkai.weixin.qq.com/media/voice-1",
+            mime_type: "audio/ogg",
+            file_name: "voice-1.ogg",
+            duration_ms: 1200,
+          },
+        },
+      ],
+    },
+    { defaultWorkspaceId: "default" }
+  );
+
+  assert.deepEqual(normalized, {
+    provider: "openclaw",
+    workspaceId: "default",
+    chatId: "wx-user-1",
+    threadKey: "",
+    senderId: "wx-user-1",
+    messageId: "6",
+    text: "",
+    command: "message",
+    receivedAt: normalized.receivedAt,
+    contextToken: "",
+    inputKind: "voice",
+    voiceAttachment: {
+      kind: "voice",
+      itemType: 4,
+      downloadUrl: "https://ilinkai.weixin.qq.com/media/voice-1",
+      dataUrl: "",
+      base64Data: "",
+      mimeType: "audio/ogg",
+      fileName: "voice-1.ogg",
+      mediaId: "",
+      durationMs: 1200,
+    },
+  });
+});
+
+test("normalizeOpenClawTextEvent ignores non-audio file/media payloads", () => {
+  const normalized = normalizeOpenClawTextEvent(
+    {
+      from_user_id: "wx-user-1",
+      message_id: 9,
+      message_type: 3,
+      item_list: [
+        {
+          type: 5,
+          file_item: {
+            media_id: "file-1",
+            mime_type: "application/pdf",
+            file_name: "doc.pdf",
+          },
+        },
+      ],
+    },
+    { defaultWorkspaceId: "default" }
+  );
+
+  assert.equal(normalized, null);
+});
+
+test("normalizeOpenClawTextEvent keeps text priority when text and voice coexist", () => {
+  const normalized = normalizeOpenClawTextEvent(
+    {
+      from_user_id: "wx-user-1",
+      message_id: 10,
+      message_type: 1,
+      item_list: [
+        {
+          type: 1,
+          text_item: {
+            text: "/codex where",
+          },
+        },
+        {
+          type: 4,
+          voice_item: {
+            download_url: "https://ilinkai.weixin.qq.com/media/voice-10",
+            mime_type: "audio/ogg",
+            file_name: "voice-10.ogg",
+          },
+        },
+      ],
+    },
+    { defaultWorkspaceId: "default" }
+  );
+
+  assert.equal(normalized?.inputKind, "text");
+  assert.equal(normalized?.command, "where");
+  assert.equal(normalized?.voiceAttachment, null);
 });

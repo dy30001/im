@@ -1,5 +1,8 @@
+const {
+  extractVoiceAttachmentFromItemList,
+} = require("../../infra/openclaw/media-adapter");
 const codexMessageUtils = require("../../infra/codex/message-utils");
-const { detectNaturalCommand } = require("../../shared/command-parsing");
+const { COMMAND_ROOTS, detectNaturalCommand } = require("../../shared/command-parsing");
 
 function normalizeFeishuTextEvent(event, config) {
   const message = event?.message || {};
@@ -27,12 +30,12 @@ function normalizeFeishuTextEvent(event, config) {
 }
 
 function normalizeOpenClawTextEvent(message, config) {
-  if (Number(message?.message_type) !== 1) {
+  const text = extractOpenClawText(message?.item_list);
+  const voiceAttachment = extractVoiceAttachmentFromItemList(message?.item_list);
+  if (text && !voiceAttachment && Number(message?.message_type) !== 1) {
     return null;
   }
-
-  const text = extractOpenClawText(message?.item_list);
-  if (!text) {
+  if (!text && !voiceAttachment) {
     return null;
   }
 
@@ -46,6 +49,8 @@ function normalizeOpenClawTextEvent(message, config) {
     ? new Date(Number(message.create_time_ms)).toISOString()
     : new Date().toISOString();
 
+  const useVoiceInput = !text && !!voiceAttachment;
+
   return {
     provider: "openclaw",
     workspaceId: config.defaultWorkspaceId,
@@ -54,9 +59,22 @@ function normalizeOpenClawTextEvent(message, config) {
     senderId: fromUserId,
     messageId,
     text,
-    command: parseCommand(text),
+    command: text ? parseCommand(text) : "message",
     receivedAt: createdAt,
     contextToken: normalizeIdentifier(message?.context_token),
+    inputKind: useVoiceInput ? "voice" : "text",
+    voiceAttachment: useVoiceInput ? voiceAttachment : null,
+  };
+}
+
+function applyNormalizedText(normalized, text) {
+  const nextText = String(text || "").trim();
+  return {
+    ...normalized,
+    text: nextText,
+    command: nextText ? parseCommand(nextText) : "message",
+    inputKind: "text",
+    originalInputKind: normalized?.inputKind || "text",
   };
 }
 
@@ -161,8 +179,6 @@ function extractOpenClawText(itemList) {
 
 function parseCommand(text) {
   const normalized = text.trim().toLowerCase();
-  const prefixes = ["/codex "];
-  const exactPrefixes = ["/codex"];
 
   const exactCommands = {
     stop: ["stop"],
@@ -177,6 +193,7 @@ function parseCommand(text) {
     new: ["new"],
     model: ["model"],
     effort: ["effort"],
+    status: ["status"],
     approve: ["approve", "approve workspace"],
     reject: ["reject"],
   };
@@ -205,15 +222,12 @@ function parseCommand(text) {
   if (matchesPrefixCommand(normalized, "effort")) {
     return "effort";
   }
-  if (prefixes.some((prefix) => normalized.startsWith(prefix))) {
-    return "unknown_command";
-  }
-  if (exactPrefixes.includes(normalized)) {
-    return "unknown_command";
-  }
   const naturalCommand = detectNaturalCommand(text);
   if (naturalCommand) {
     return naturalCommand;
+  }
+  if (matchesCommandRoot(normalized)) {
+    return "unknown_command";
   }
   if (text.trim()) {
     return "message";
@@ -223,11 +237,15 @@ function parseCommand(text) {
 }
 
 function matchesExactCommand(text, suffixes) {
-  return suffixes.some((suffix) => text === `/codex ${suffix}`);
+  return suffixes.some((suffix) => COMMAND_ROOTS.some((root) => text === `${root} ${suffix}`));
 }
 
 function matchesPrefixCommand(text, command) {
-  return text.startsWith(`/codex ${command} `);
+  return COMMAND_ROOTS.some((root) => text.startsWith(`${root} ${command} `));
+}
+
+function matchesCommandRoot(text) {
+  return COMMAND_ROOTS.some((root) => text === root || text.startsWith(`${root} `));
 }
 
 function extractCardChatId(data) {
@@ -262,6 +280,7 @@ function normalizeActionPage(value) {
 }
 
 module.exports = {
+  applyNormalizedText,
   extractCardAction,
   mapCodexMessageToImEvent,
   normalizeCardActionContext,

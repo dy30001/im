@@ -15,6 +15,7 @@ function initializeCommonRuntimeState(runtime) {
   runtime.resumedThreadIds = new Set();
   runtime.messageContextByMessageId = new Map();
   runtime.latestMessageContextByChatId = new Map();
+  runtime.latestSelectionContextByBindingKey = new Map();
   runtime.workspaceThreadListCache = new Map();
   runtime.workspaceThreadRefreshStateByKey = new Map();
   runtime.isStopping = false;

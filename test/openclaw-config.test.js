@@ -11,6 +11,13 @@ test("readConfig loads openclaw bot settings from env", () => {
     CODEX_IM_OPENCLAW_TOKEN: process.env.CODEX_IM_OPENCLAW_TOKEN,
     CODEX_IM_OPENCLAW_THREAD_SOURCE: process.env.CODEX_IM_OPENCLAW_THREAD_SOURCE,
     CODEX_IM_OPENCLAW_LONG_POLL_TIMEOUT_MS: process.env.CODEX_IM_OPENCLAW_LONG_POLL_TIMEOUT_MS,
+    CODEX_IM_OPENCLAW_TRANSCRIPTION_LANGUAGE: process.env.CODEX_IM_OPENCLAW_TRANSCRIPTION_LANGUAGE,
+    CODEX_IM_OPENCLAW_TRANSCRIPTION_MAX_BYTES: process.env.CODEX_IM_OPENCLAW_TRANSCRIPTION_MAX_BYTES,
+    CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER: process.env.CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER,
+    CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER_MODEL: process.env.CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER_MODEL,
+    CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER_PYTHON: process.env.CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER_PYTHON,
+    CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER_SCRIPT: process.env.CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER_SCRIPT,
+    CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER_CACHE_DIR: process.env.CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER_CACHE_DIR,
     CODEX_IM_OPENCLAW_STREAMING_OUTPUT: process.env.CODEX_IM_OPENCLAW_STREAMING_OUTPUT,
     CODEX_IM_SESSIONS_FILE: process.env.CODEX_IM_SESSIONS_FILE,
   };
@@ -20,7 +27,15 @@ test("readConfig loads openclaw bot settings from env", () => {
   process.env.CODEX_IM_OPENCLAW_TOKEN = "bot-token";
   process.env.CODEX_IM_OPENCLAW_THREAD_SOURCE = "codex";
   process.env.CODEX_IM_OPENCLAW_LONG_POLL_TIMEOUT_MS = "42000";
+  process.env.CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER = "1";
+  process.env.CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER_MODEL = "large-v3";
+  process.env.CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER_PYTHON = "python3.12";
+  process.env.CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER_SCRIPT = "/tmp/local-faster-whisper-transcribe.py";
+  process.env.CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER_CACHE_DIR = "/tmp/codex-im-hf-cache";
+  process.env.CODEX_IM_OPENCLAW_TRANSCRIPTION_LANGUAGE = "zh";
+  process.env.CODEX_IM_OPENCLAW_TRANSCRIPTION_MAX_BYTES = "123456";
   process.env.CODEX_IM_OPENCLAW_STREAMING_OUTPUT = "false";
+  delete process.env.CODEX_IM_SESSIONS_FILE;
 
   try {
     const config = readConfig();
@@ -29,6 +44,15 @@ test("readConfig loads openclaw bot settings from env", () => {
     assert.equal(config.openclaw.token, "bot-token");
     assert.equal(config.openclaw.threadSource, "codex");
     assert.equal(config.openclaw.longPollTimeoutMs, 42000);
+    assert.deepEqual(config.openclaw.transcription, {
+      localFasterWhisperEnabled: true,
+      localFasterWhisperModel: "large-v3",
+      localFasterWhisperPythonBin: "python3.12",
+      localFasterWhisperScriptPath: "/tmp/local-faster-whisper-transcribe.py",
+      localFasterWhisperCacheDir: "/tmp/codex-im-hf-cache",
+      language: "zh",
+      maxBytes: 123456,
+    });
     assert.equal(config.openclawStreamingOutput, false);
     assert.equal(
       config.sessionsFile,
@@ -47,14 +71,22 @@ test("readConfig defaults openclaw to ACP desktop session mode", () => {
   const previousArgv = process.argv.slice();
   const previousEnv = {
     CODEX_IM_OPENCLAW_THREAD_SOURCE: process.env.CODEX_IM_OPENCLAW_THREAD_SOURCE,
+    CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER:
+      process.env.CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER,
+    CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_WHISPER:
+      process.env.CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_WHISPER,
   };
 
   process.argv = [previousArgv[0], previousArgv[1], "openclaw-bot"];
   delete process.env.CODEX_IM_OPENCLAW_THREAD_SOURCE;
+  delete process.env.CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER;
+  delete process.env.CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_WHISPER;
 
   try {
     const config = readConfig();
     assert.equal(config.openclaw.threadSource, "acpx");
+    assert.equal(config.openclaw.transcription.localFasterWhisperModel, "base");
+    assert.equal(config.openclaw.transcription.localFasterWhisperEnabled, false);
   } finally {
     process.argv = previousArgv;
     restoreEnv(previousEnv);

@@ -13,6 +13,7 @@ const APPROVAL_COMMAND_KEYS = [
 
 function buildBindingMetadata(normalized) {
   return {
+    provider: normalizeIdentifier(normalized.provider),
     workspaceId: normalized.workspaceId,
     chatId: normalized.chatId,
     threadKey: normalized.threadKey,
@@ -365,11 +366,29 @@ function isCommandApprovalMethod(method) {
 }
 
 function isWorkspaceApprovalCommand(rawText) {
-  const normalizedText = typeof rawText === "string" ? rawText.trim().toLowerCase() : "";
-  return (
-    normalizedText === "/codex approve workspace"
-    || normalizedText.endsWith(" approve workspace")
-  );
+  const normalizedText = normalizeWorkspaceApprovalCommandText(rawText);
+  if (!normalizedText) {
+    return false;
+  }
+
+  return normalizedText === "approve workspace"
+    || NATURAL_WORKSPACE_APPROVAL_PHRASES.has(normalizedText);
+}
+
+function normalizeWorkspaceApprovalCommandText(rawText) {
+  let normalizedText = typeof rawText === "string" ? rawText.trim().toLowerCase() : "";
+  if (!normalizedText) {
+    return "";
+  }
+
+  normalizedText = normalizedText.replace(/\s+/g, " ");
+  if (normalizedText.startsWith("/codex ")) {
+    normalizedText = normalizedText.slice("/codex ".length).trim();
+  }
+  normalizedText = normalizedText.replace(/^(?:请帮我|帮我|麻烦你|麻烦|请先|请|先|可以|能不能|能否)\s*/u, "");
+  normalizedText = normalizedText.replace(/^[：:，,。！？!?；;]+/gu, "");
+  normalizedText = normalizedText.replace(/[。！？!?，,；;]+$/gu, "");
+  return normalizedText.trim();
 }
 
 function extractApprovalCommandTokens(params) {
@@ -427,6 +446,31 @@ function extractApprovalDisplayCommand(params, commandTokens) {
   }
   return buildApprovalCommandPreview(commandTokens);
 }
+
+const NATURAL_WORKSPACE_APPROVAL_PHRASES = new Set([
+  "同意工作区",
+  "批准工作区",
+  "允许工作区",
+  "接受工作区",
+  "通过工作区",
+  "同意当前工作区",
+  "批准当前工作区",
+  "允许当前工作区",
+  "接受当前工作区",
+  "通过当前工作区",
+  "拒绝工作区",
+  "驳回工作区",
+  "否决工作区",
+  "不批准工作区",
+  "不允许工作区",
+  "不通过工作区",
+  "拒绝当前工作区",
+  "驳回当前工作区",
+  "否决当前工作区",
+  "不批准当前工作区",
+  "不允许当前工作区",
+  "不通过当前工作区",
+]);
 
 function extractTokens(value) {
   if (!value) {

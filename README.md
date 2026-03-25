@@ -15,11 +15,12 @@ Codex 操作都留在 本地，飞书只负责消息交互。
 ## 特性
 
 - 飞书长连接机器人
-- OpenClaw / 微信 文本轮询接入（text-only MVP，默认对齐桌面 App 可见会话）
+- OpenClaw / 微信 文本轮询接入（支持文字和语音输入，默认对齐桌面 App 可见会话）
 - 普通对话回复
 - 卡片回复与流式更新
 - 先加表情、后输出正文
 - 回复到触发它的原消息
+- 也支持常见自然语言说法，不必每次都写完整命令。
 - `/codex bind` 绑定项目
 - `/codex where` 查看当前项目/线程
 - `/codex workspace` 查看当前会话已记录项目和线程
@@ -119,6 +120,13 @@ codex-im feishu-bot
 - `CODEX_IM_OPENCLAW_CREDENTIALS_FILE`（默认 `~/.codex-im/openclaw-credentials.json`）
 - `CODEX_IM_OPENCLAW_ACPX_SESSIONS_DIR`（默认 `~/.acpx/sessions`）
 - `CODEX_IM_OPENCLAW_ACPX_SESSION_INDEX_FILE`（默认 `~/.acpx/sessions/index.json`）
+- `CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER`（可选；`true` 时启用本地离线转写）
+- `CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER_MODEL`（默认 `base`）
+- `CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER_PYTHON`（默认 `python3`）
+- `CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER_SCRIPT`（可选；覆盖默认脚本路径）
+- `CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER_CACHE_DIR`（可选；默认在 `/tmp/codex-im-hf-cache`）
+- `CODEX_IM_OPENCLAW_TRANSCRIPTION_LANGUAGE`（可选，例：`zh`）
+- `CODEX_IM_OPENCLAW_TRANSCRIPTION_MAX_BYTES`（默认 `26214400`）
 - `CODEX_IM_VERBOSE_LOGS`（默认 `false`，设为 `true` 才打印较详细的 Codex 传输日志）
 - `CODEX_IM_WORKSPACE_ALLOWLIST` 允许绑定的项目白名单；为空时默认只允许绑定和浏览 `home` 目录范围内的路径
 - `CODEX_IM_CODEX_ENDPOINT` 用来指定 Codex 的远程 WebSocket RPC 地址，默认是启动本地服务
@@ -165,8 +173,14 @@ npm run openclaw-bot
 
 ## OpenClaw / 微信模式说明
 
-- 当前是 text-only MVP：普通消息、`/codex bind`、`/codex where`、`/codex new`、`/codex stop`、`/codex message` 可用
+- 当前支持普通文本和语音输入；语音消息会先下载并转写成文本，再复用现有命令/聊天链路
+- 转写只走本地 `faster-whisper`；请把 `CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER=true` 打开
+- 本地 `faster-whisper` 依赖：`pip install faster-whisper ffmpeg-python`，并确保系统已安装 `ffmpeg`
 - 卡片、reaction、文件发送会自动降级为纯文本提示
+- 语音输入依赖本地 `faster-whisper`；未开启时，微信会明确提示需要启用 `CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER`
+- 当前语音实现优先支持 payload 里自带下载地址或内联数据的语音项；如果上游只返回 `media_id/file_id` 但不给下载地址，会提示当前 payload 暂不支持下载
+- 可用 `npm run test:openclaw-voice-smoke` 做本地语音链路联调自检（不访问微信，直接验证解析、转写入口和文本优先策略）
+- 若要执行真实本地转写探针：`CODEX_IM_VOICE_SMOKE_REAL_STT=1 CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER=1 CODEX_IM_VOICE_SMOKE_AUDIO_FILE=/绝对路径/样例音频 npm run test:openclaw-voice-smoke`
 - 若未设置 `CODEX_IM_OPENCLAW_TOKEN`，`codex-im openclaw-bot` 启动时会自动请求二维码，并尝试在默认浏览器中打开二维码链接
 - 扫码成功后会把 `bot_token` 和 `baseurl` 写入本地凭据文件，后续启动默认直接复用，无需重复扫码
 - 当前实现对齐的是 `@tencent-weixin/openclaw-weixin` 2.0.x 暴露的 HTTP JSON 协议

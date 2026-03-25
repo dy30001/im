@@ -11,21 +11,25 @@ let shutdownHooksInstalled = false;
 
 function loadEnv() {
   ensureDefaultConfigDirectory();
-
-  const envCandidates = [
+  loadEnvFromPaths([
     path.join(process.cwd(), ".env"),
     path.join(os.homedir(), ".codex-im", ".env"),
-  ];
+  ]);
+}
 
-  for (const envPath of envCandidates) {
+function loadEnvFromPaths(envPaths = []) {
+  let loadedAny = false;
+  for (const envPath of envPaths) {
     if (!fs.existsSync(envPath)) {
       continue;
     }
     dotenv.config({ path: envPath });
-    return;
+    loadedAny = true;
   }
 
-  dotenv.config();
+  if (!loadedAny) {
+    dotenv.config();
+  }
 }
 
 function ensureDefaultConfigDirectory() {
@@ -105,4 +109,4 @@ function installShutdownHooks(runtime) {
   });
 }
 
-module.exports = { main };
+module.exports = { loadEnvFromPaths, main };

@@ -42,11 +42,17 @@ const {
   OpenClawClientAdapter,
   isOpenClawCredentialError,
 } = require("../infra/openclaw/client-adapter");
+const {
+  OpenClawMediaAdapter,
+} = require("../infra/openclaw/media-adapter");
 const { loginWithQr, openQrInBrowser } = require("../infra/openclaw/qr-login");
 const {
   loadOpenClawCredentials,
   saveOpenClawCredentials,
 } = require("../infra/openclaw/token-store");
+const {
+  LocalFasterWhisperTranscriptionClient,
+} = require("../infra/stt/transcription-client");
 const desktopSessionBridge = require("../infra/acpx/session-bridge");
 const runtimeCommands = require("./command-dispatcher");
 const {
@@ -86,6 +92,12 @@ class OpenClawBotRuntime {
       token: config.openclaw?.token,
       verboseLogs: config.verboseCodexLogs,
     });
+    this.openclawMediaAdapter = new OpenClawMediaAdapter({
+      clientAdapter: this.openclawAdapter,
+    });
+    this.transcriptionClient = new LocalFasterWhisperTranscriptionClient({
+      ...(config.openclaw?.transcription || {}),
+    });
     this.pollAbortController = null;
     this.pollLoopPromise = null;
     this.syncCursor = "";
@@ -98,6 +110,7 @@ class OpenClawBotRuntime {
 
   async start() {
     this.validateConfig();
+    this.reportVoiceTranscriptionStatus();
     await this.ensureOpenClawCredentials();
     await this.codex.connect();
     await this.codex.initialize();
@@ -173,6 +186,17 @@ class OpenClawBotRuntime {
       throw new Error(
         "CODEX_IM_DEFAULT_CODEX_ACCESS_MODE is required and must be one of: default, full-access"
       );
+    }
+  }
+
+  reportVoiceTranscriptionStatus() {
+    const transcription = this.config.openclaw?.transcription || {};
+    if (!transcription.localFasterWhisperEnabled) {
+      console.warn("[codex-im] voice transcription disabled: set CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER=1 and install faster-whisper + ffmpeg");
+      return;
+    }
+    if (typeof fetch !== "function") {
+      console.warn("[codex-im] voice transcription unavailable: current runtime lacks fetch support for voice downloads");
     }
   }
 
@@ -405,6 +429,9 @@ class OpenClawBotRuntime {
     for (const entry of bindings) {
       if (signal.aborted || this.isStopping) {
         break;
+      }
+      if (!this.isRuntimeBindingEntry(entry?.binding)) {
+        continue;
       }
       await this.syncSelectedThreadBinding(entry).catch((error) => {
         console.error(`[codex-im] failed to sync selected thread: ${error.message}`);
@@ -690,6 +717,35 @@ class OpenClawBotRuntime {
     return desktopSessionBridge.hydrateDesktopSession(this, session);
   }
 
+  async transcribeOpenClawVoiceMessage(normalized) {
+    const media = await this.openclawMediaAdapter.downloadVoiceAttachment(normalized?.voiceAttachment, {
+      signal: this.pollAbortController?.signal,
+    });
+    const result = await this.transcriptionClient.transcribeAudio({
+      ...media,
+      signal: this.pollAbortController?.signal,
+    });
+    return result.text;
+  }
+
+  isRuntimeBindingEntry(binding) {
+    const bindingProvider = normalizeBindingProvider(binding);
+    if (bindingProvider) {
+      return bindingProvider === this.providerKind;
+    }
+
+    const chatId = String(binding?.chatId || "").trim().toLowerCase();
+    const senderId = String(binding?.senderId || "").trim().toLowerCase();
+    const threadKey = String(binding?.threadKey || "").trim().toLowerCase();
+    if (chatId.includes("@im.wechat") || senderId.includes("@im.wechat")) {
+      return true;
+    }
+    if (looksLikeFeishuBinding(chatId, senderId, threadKey)) {
+      return false;
+    }
+    return Boolean(chatId || senderId || threadKey);
+  }
+
   async resolveWorkspaceStats(workspaceRoot) {
     try {
       const stats = await fs.promises.stat(workspaceRoot);
@@ -743,6 +799,8 @@ function attachRuntimeForwarders() {
     setPendingThreadContext: runtimeState.setPendingThreadContext,
     setReplyCardEntry: runtimeState.setReplyCardEntry,
     setCurrentRunKeyForThread: runtimeState.setCurrentRunKeyForThread,
+    rememberSelectionContext: runtimeState.rememberSelectionContext,
+    resolveSelectionContext: runtimeState.resolveSelectionContext,
     resolveWorkspaceRootForThread: runtimeState.resolveWorkspaceRootForThread,
     rememberApprovalPrefixForWorkspace: approvalPolicyRuntime.rememberApprovalPrefixForWorkspace,
     shouldAutoApproveRequest: approvalPolicyRuntime.shouldAutoApproveRequest,
@@ -819,6 +877,23 @@ function setBoundedMapEntry(map, key, value, limit) {
     }
     map.delete(oldestKey);
   }
+}
+
+function normalizeBindingProvider(binding) {
+  return String(binding?.provider || "").trim().toLowerCase();
+}
+
+function looksLikeFeishuBinding(chatId, senderId, threadKey) {
+  return startsWithAny(chatId, ["oc_", "chat_"])
+    || startsWithAny(senderId, ["ou_", "on_"])
+    || startsWithAny(threadKey, ["om_"]);
+}
+
+function startsWithAny(value, prefixes) {
+  if (!value) {
+    return false;
+  }
+  return prefixes.some((prefix) => value.startsWith(prefix));
 }
 
 function buildThreadSyncKey(bindingKey, workspaceRoot) {

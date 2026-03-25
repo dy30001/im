@@ -73,3 +73,39 @@ test("isOpenClawCredentialError recognizes session timeout style failures", () =
   assert.equal(isOpenClawCredentialError(new Error("getUpdates errcode=-14: session timeout")), true);
   assert.equal(isOpenClawCredentialError(new Error("getUpdates errcode=-2: temporary network error")), false);
 });
+
+test("OpenClawClientAdapter.downloadMedia forwards auth headers and returns bytes", async () => {
+  let capturedRequest = null;
+  const adapter = new OpenClawClientAdapter({
+    baseUrl: "https://ilinkai.weixin.qq.com",
+    token: "token-1",
+    fetchImpl: async (url, options) => {
+      capturedRequest = { url, options };
+      return {
+        ok: true,
+        headers: {
+          get(name) {
+            if (name.toLowerCase() === "content-type") {
+              return "audio/mpeg";
+            }
+            return "";
+          },
+        },
+        async arrayBuffer() {
+          return Uint8Array.from([1, 2, 3]).buffer;
+        },
+      };
+    },
+  });
+
+  const result = await adapter.downloadMedia({
+    downloadUrl: "https://ilinkai.weixin.qq.com/media/voice-1",
+  });
+
+  assert.equal(capturedRequest?.url, "https://ilinkai.weixin.qq.com/media/voice-1");
+  assert.equal(capturedRequest?.options?.method, "GET");
+  assert.equal(capturedRequest?.options?.headers?.Authorization, "Bearer token-1");
+  assert.equal(capturedRequest?.options?.headers?.AuthorizationType, "ilink_bot_token");
+  assert.equal(result.mimeType, "audio/mpeg");
+  assert.deepEqual([...result.buffer], [1, 2, 3]);
+});

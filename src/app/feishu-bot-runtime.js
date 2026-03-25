@@ -283,6 +283,8 @@ function attachRuntimeForwarders() {
     setPendingThreadContext: runtimeState.setPendingThreadContext,
     setReplyCardEntry: runtimeState.setReplyCardEntry,
     setCurrentRunKeyForThread: runtimeState.setCurrentRunKeyForThread,
+    rememberSelectionContext: runtimeState.rememberSelectionContext,
+    resolveSelectionContext: runtimeState.resolveSelectionContext,
     resolveWorkspaceRootForThread: runtimeState.resolveWorkspaceRootForThread,
     rememberApprovalPrefixForWorkspace: approvalPolicyRuntime.rememberApprovalPrefixForWorkspace,
     shouldAutoApproveRequest: approvalPolicyRuntime.shouldAutoApproveRequest,

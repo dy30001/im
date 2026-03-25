@@ -1,3 +1,7 @@
+const crypto = require("node:crypto");
+const { execFileSync } = require("node:child_process");
+const fs = require("node:fs");
+const path = require("node:path");
 const { spawn } = require("child_process");
 const os = require("os");
 const WebSocket = require("ws");
@@ -11,6 +15,8 @@ const MACOS_CODEX_APP_CANDIDATES = [
   "/Applications/Codex.app/Contents/Resources/codex",
   `${os.homedir()}/Applications/Codex.app/Contents/Resources/codex`,
 ];
+const DEFAULT_WORKSPACE_ALIAS_ROOT = path.join(os.homedir(), ".codex-im", "workspaces");
+const DEFAULT_CODEX_HOME_ROOT = path.join(os.homedir(), ".codex-im", "homes");
 const CODEX_CLIENT_INFO = {
   name: "codex_im_agent",
   title: "Codex IM Agent",
@@ -25,6 +31,9 @@ class CodexRpcClient {
     spawnImpl = spawn,
     webSocketImpl = WebSocket,
     verboseLogs = false,
+    workspaceCwd = process.cwd(),
+    workspaceAliasRoot = DEFAULT_WORKSPACE_ALIAS_ROOT,
+    codexHomeRoot = DEFAULT_CODEX_HOME_ROOT,
   }) {
     this.endpoint = endpoint;
     this.env = env;
@@ -32,6 +41,9 @@ class CodexRpcClient {
     this.spawnImpl = spawnImpl;
     this.webSocketImpl = webSocketImpl;
     this.verboseLogs = verboseLogs;
+    this.workspaceCwd = normalizeNonEmptyString(workspaceCwd);
+    this.workspaceAliasRoot = normalizeNonEmptyString(workspaceAliasRoot) || DEFAULT_WORKSPACE_ALIAS_ROOT;
+    this.codexHomeRoot = normalizeNonEmptyString(codexHomeRoot) || DEFAULT_CODEX_HOME_ROOT;
     this.mode = endpoint ? "websocket" : "spawn";
     this.socket = null;
     this.child = null;
@@ -60,8 +72,9 @@ class CodexRpcClient {
 
     for (const command of commandCandidates) {
       try {
-        const spawnSpec = buildSpawnSpec(command);
-        child = await spawnCodexProcess(this.spawnImpl, spawnSpec, this.env);
+        const spawnCwd = this.resolveCodexSpawnWorkspaceRoot();
+        const spawnSpec = buildSpawnSpec(command, spawnCwd);
+        child = await spawnCodexProcess(this.spawnImpl, spawnSpec, this.env, { cwd: spawnCwd });
         selectedCommand = command;
         this.hasReportedTransportFailure = false;
         console.log(`[codex-im] spawned Codex app-server via ${spawnSpec.command} ${spawnSpec.args.join(" ")}`);
@@ -187,6 +200,7 @@ class CodexRpcClient {
     workspaceRoot = "",
   }) {
     const input = buildTurnInputPayload(text);
+    const codexWorkspaceRoot = this.resolveCodexWorkspaceRoot(workspaceRoot);
     return threadId
       ? this.sendRequest(
         "turn/start",
@@ -196,14 +210,14 @@ class CodexRpcClient {
           model,
           effort,
           accessMode,
-          workspaceRoot,
+          workspaceRoot: codexWorkspaceRoot,
         })
       )
       : this.sendRequest("thread/start", { input });
   }
 
   async startThread({ cwd }) {
-    return this.sendRequest("thread/start", buildStartThreadParams(cwd));
+    return this.sendRequest("thread/start", buildStartThreadParams(this.resolveCodexWorkspaceRoot(cwd)));
   }
 
   async resumeThread({ threadId }) {
@@ -215,11 +229,12 @@ class CodexRpcClient {
   }
 
   async listThreads({ cursor = null, limit = 100, sortKey = "updated_at" } = {}) {
-    return this.sendRequest("thread/list", buildListThreadsParams({
+    const response = await this.sendRequest("thread/list", buildListThreadsParams({
       cursor,
       limit,
       sortKey,
     }));
+    return this.rewriteThreadListResponse(response);
   }
 
   async listModels() {
@@ -274,6 +289,61 @@ class CodexRpcClient {
       throw new Error("Codex process stdin is not writable");
     }
     await writePayloadToWritable(this.child.stdin, `${payload}\n`);
+  }
+
+  resolveCodexSpawnWorkspaceRoot(workspaceRoot = this.workspaceCwd) {
+    const normalizedWorkspaceRoot = normalizeNonEmptyString(workspaceRoot) || this.workspaceCwd;
+    if (this.mode !== "spawn" || !normalizedWorkspaceRoot || isAsciiOnly(normalizedWorkspaceRoot)) {
+      return normalizedWorkspaceRoot;
+    }
+    if (!this.spawnCwd) {
+      this.spawnCwd = resolveCodexSpawnCwd(this.workspaceCwd, this.workspaceAliasRoot);
+    }
+    return this.spawnCwd || normalizedWorkspaceRoot;
+  }
+
+  resolveCodexWorkspaceRoot(workspaceRoot = this.workspaceCwd) {
+    return this.resolveCodexSpawnWorkspaceRoot(workspaceRoot);
+  }
+
+  rewriteThreadListResponse(response) {
+    const threads = Array.isArray(response?.result?.data) ? response.result.data : [];
+    if (!threads.length) {
+      return response;
+    }
+
+    const rewrittenThreads = threads.map((thread) => ({
+      ...thread,
+      cwd: this.restoreWorkspacePath(thread?.cwd),
+    }));
+
+    return {
+      ...response,
+      result: {
+        ...(response.result || {}),
+        data: rewrittenThreads,
+      },
+    };
+  }
+
+  restoreWorkspacePath(workspacePath) {
+    const normalizedWorkspacePath = normalizeNonEmptyString(workspacePath);
+    if (
+      this.mode !== "spawn"
+      || !this.workspaceCwd
+      || !this.spawnCwd
+      || !normalizedWorkspacePath
+      || !normalizedWorkspacePath.startsWith(this.spawnCwd)
+    ) {
+      return normalizedWorkspacePath;
+    }
+
+    if (normalizedWorkspacePath === this.spawnCwd) {
+      return this.workspaceCwd;
+    }
+
+    const suffix = normalizedWorkspacePath.slice(this.spawnCwd.length);
+    return `${this.workspaceCwd}${suffix}`;
   }
 
   handleIncoming(rawMessage) {
@@ -436,21 +506,27 @@ function buildCodexCommandCandidatesWithPlatform(
   return [DEFAULT_CODEX_COMMAND];
 }
 
-function buildSpawnSpec(command) {
-  return buildSpawnSpecWithPlatform(command, { isWindows: IS_WINDOWS });
+function buildSpawnSpec(command, cwd = "") {
+  return buildSpawnSpecWithPlatform(command, { isWindows: IS_WINDOWS, cwd });
 }
 
-function buildSpawnSpecWithPlatform(command, { isWindows = IS_WINDOWS } = {}) {
+function buildSpawnSpecWithPlatform(command, { isWindows = IS_WINDOWS, cwd = "" } = {}) {
+  const normalizedCwd = normalizeNonEmptyString(cwd);
   if (isWindows) {
     return {
       command: "cmd.exe",
-      args: ["/c", command, "app-server"],
+      args: normalizedCwd
+        ? ["/c", command, "--cd", normalizedCwd, "app-server"]
+        : ["/c", command, "app-server"],
     };
   }
 
+  const args = normalizedCwd
+    ? ["--cd", normalizedCwd, "app-server"]
+    : ["app-server"];
   return {
     command,
-    args: ["app-server"],
+    args,
   };
 }
 
@@ -458,12 +534,13 @@ function isSpawnCandidateError(error) {
   return error?.code === "ENOENT" || error?.code === "EINVAL";
 }
 
-function spawnCodexProcess(spawnImpl, spawnSpec, env) {
+function spawnCodexProcess(spawnImpl, spawnSpec, env, { cwd = "", home = "" } = {}) {
   return new Promise((resolve, reject) => {
     let child;
     try {
       child = spawnImpl(spawnSpec.command, spawnSpec.args, {
-        env: { ...env },
+        env: buildCodexProcessEnv(env, cwd, home),
+        cwd: normalizeNonEmptyString(cwd) || undefined,
         stdio: ["pipe", "pipe", "pipe"],
         shell: false,
       });
@@ -537,6 +614,111 @@ function writePayloadToWritable(writable, payload) {
 
 function normalizeNonEmptyString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : "";
+}
+
+function buildCodexProcessEnv(env, cwd, home = "") {
+  const nextEnv = {};
+  for (const [key, value] of Object.entries(env || {})) {
+    if (key.toLowerCase().startsWith("npm_")) {
+      continue;
+    }
+    nextEnv[key] = value;
+  }
+
+  const normalizedHome = normalizeNonEmptyString(home);
+  if (normalizedHome) {
+    nextEnv.HOME = normalizedHome;
+    nextEnv.CODEX_HOME = path.join(normalizedHome, ".codex");
+  }
+
+  const normalizedCwd = normalizeNonEmptyString(cwd);
+  if (normalizedCwd) {
+    nextEnv.PWD = normalizedCwd;
+    nextEnv.INIT_CWD = normalizedCwd;
+  } else {
+    delete nextEnv.PWD;
+    delete nextEnv.INIT_CWD;
+  }
+  return nextEnv;
+}
+
+function resolveCodexHome(workspaceRoot, homeRoot = DEFAULT_CODEX_HOME_ROOT) {
+  const normalizedWorkspaceRoot = normalizeNonEmptyString(workspaceRoot) || "default";
+  const normalizedHomeRoot = normalizeNonEmptyString(homeRoot) || DEFAULT_CODEX_HOME_ROOT;
+  fs.mkdirSync(normalizedHomeRoot, { recursive: true });
+
+  const homePath = path.join(
+    normalizedHomeRoot,
+    `home-${crypto.createHash("sha1").update(normalizedWorkspaceRoot).digest("hex")}`
+  );
+  ensureCodexHome(homePath);
+  return homePath;
+}
+
+function ensureCodexHome(homePath) {
+  const codexHomePath = path.join(homePath, ".codex");
+  fs.mkdirSync(codexHomePath, { recursive: true });
+
+  const sourceCodexHomePath = path.join(os.homedir(), ".codex");
+  for (const fileName of [
+    "auth.json",
+    "config.toml",
+    "ymcodex-login-state.json",
+    ".codex-global-state.json",
+  ]) {
+    const sourcePath = path.join(sourceCodexHomePath, fileName);
+    if (!fs.existsSync(sourcePath)) {
+      continue;
+    }
+    fs.copyFileSync(sourcePath, path.join(codexHomePath, fileName));
+  }
+}
+
+function resolveCodexSpawnCwd(workspaceRoot, aliasRoot = DEFAULT_WORKSPACE_ALIAS_ROOT) {
+  const normalizedWorkspaceRoot = normalizeNonEmptyString(workspaceRoot);
+  if (!normalizedWorkspaceRoot || isAsciiOnly(normalizedWorkspaceRoot)) {
+    return normalizedWorkspaceRoot;
+  }
+
+  const normalizedAliasRoot = normalizeNonEmptyString(aliasRoot) || DEFAULT_WORKSPACE_ALIAS_ROOT;
+  fs.mkdirSync(normalizedAliasRoot, { recursive: true });
+
+  const aliasPath = path.join(
+    normalizedAliasRoot,
+    `workspace-${crypto.createHash("sha1").update(normalizedWorkspaceRoot).digest("hex")}`
+  );
+  ensureWorkspaceMirror(aliasPath, normalizedWorkspaceRoot);
+  return aliasPath;
+}
+
+function ensureWorkspaceMirror(aliasPath, targetPath) {
+  try {
+    fs.rmSync(aliasPath, { recursive: true, force: true });
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw new Error(`Unable to prepare Codex workspace alias at ${aliasPath}: ${error.message}`);
+    }
+  }
+
+  try {
+    execFileSync("cp", ["-al", targetPath, aliasPath], { stdio: "ignore" });
+  } catch (error) {
+    try {
+      fs.cpSync(targetPath, aliasPath, {
+        recursive: true,
+        dereference: false,
+      });
+    } catch (copyError) {
+      throw new Error(
+        `Unable to create ASCII workspace alias for Codex at ${aliasPath}: ${copyError.message}. `
+        + "Move the repository to an ASCII-only path or fix filesystem permissions."
+      );
+    }
+  }
+}
+
+function isAsciiOnly(value) {
+  return /^[\x00-\x7F]*$/.test(String(value || ""));
 }
 
 function buildStartThreadParams(cwd) {
@@ -630,6 +812,8 @@ module.exports = {
   buildSpawnSpec,
   buildSpawnSpecWithPlatform,
   isSpawnCandidateError,
+  resolveCodexHome,
+  resolveCodexSpawnCwd,
   spawnCodexProcess,
   writePayloadToWritable,
 };

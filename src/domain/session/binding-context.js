@@ -2,6 +2,7 @@ const MAX_PENDING_BINDING_CONTEXT_ENTRIES = 300;
 const MAX_PENDING_THREAD_CONTEXT_ENTRIES = 500;
 const MAX_REPLY_CARD_ENTRIES = 500;
 const MAX_THREAD_CONTEXT_CACHE_ENTRIES = 500;
+const MAX_SELECTION_CONTEXT_ENTRIES = 500;
 
 function resolveWorkspaceRootForBinding(runtime, bindingKey) {
   const active = runtime.sessionStore.getActiveWorkspaceRoot(bindingKey);
@@ -87,6 +88,39 @@ function setCurrentRunKeyForThread(runtime, threadId, runKey) {
     runKey,
     MAX_THREAD_CONTEXT_CACHE_ENTRIES
   );
+}
+
+function rememberSelectionContext(runtime, bindingKey, selectionContext) {
+  const normalizedBindingKey = String(bindingKey || "").trim();
+  const normalizedCommand = String(selectionContext?.command || "").trim();
+  if (!normalizedBindingKey || !normalizedCommand) {
+    return;
+  }
+
+  const storedContext = {
+    bindingKey: normalizedBindingKey,
+    command: normalizedCommand,
+    messageId: String(selectionContext?.messageId || "").trim(),
+    replyToMessageId: String(selectionContext?.replyToMessageId || "").trim(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  setBoundedMapEntry(
+    runtime,
+    runtime.latestSelectionContextByBindingKey,
+    normalizedBindingKey,
+    storedContext,
+    MAX_SELECTION_CONTEXT_ENTRIES
+  );
+}
+
+function resolveSelectionContext(runtime, bindingKey) {
+  const normalizedBindingKey = String(bindingKey || "").trim();
+  if (!normalizedBindingKey) {
+    return null;
+  }
+
+  return runtime.latestSelectionContextByBindingKey.get(normalizedBindingKey) || null;
 }
 
 function setBoundedMapEntry(runtime, map, key, value, limit) {
@@ -186,6 +220,8 @@ module.exports = {
   resolveThreadIdForBinding,
   resolveWorkspaceRootForBinding,
   resolveWorkspaceRootForThread,
+  rememberSelectionContext,
+  resolveSelectionContext,
   setCurrentRunKeyForThread,
   setPendingBindingContext,
   setPendingThreadContext,

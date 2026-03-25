@@ -15,20 +15,24 @@ async function onOpenClawTextEvent(runtime, message) {
     return;
   }
   const normalized = messageNormalizers.normalizeOpenClawTextEvent(message, runtime.config);
+  if (normalized && typeof runtime.rememberInboundContext === "function") {
+    runtime.rememberInboundContext(normalized);
+  }
+  const prepared = await prepareOpenClawNormalizedEvent(runtime, normalized);
   if (runtime.config.verboseCodexLogs) {
     console.log(
-      `[codex-im] openclaw normalized command=${normalized?.command || "-"} `
-      + `chat=${normalized?.chatId || "-"} message=${normalized?.messageId || "-"}`
+      `[codex-im] openclaw normalized command=${prepared?.command || "-"} `
+      + `chat=${prepared?.chatId || "-"} message=${prepared?.messageId || "-"}`
     );
   }
-  return onNormalizedTextEvent(runtime, normalized);
+  return onNormalizedTextEvent(runtime, prepared, { alreadyRemembered: true });
 }
 
-async function onNormalizedTextEvent(runtime, normalized) {
+async function onNormalizedTextEvent(runtime, normalized, { alreadyRemembered = false } = {}) {
   if (!normalized) {
     return;
   }
-  if (typeof runtime.rememberInboundContext === "function") {
+  if (!alreadyRemembered && typeof runtime.rememberInboundContext === "function") {
     runtime.rememberInboundContext(normalized);
   }
 
@@ -64,6 +68,7 @@ async function onNormalizedTextEvent(runtime, normalized) {
       workspaceRoot,
       normalized,
       threadId,
+      forceRecoverThread: true,
     });
     runtime.movePendingReactionToThread(bindingKey, resolvedThreadId);
   } catch (error) {
@@ -74,6 +79,31 @@ async function onNormalizedTextEvent(runtime, normalized) {
       text: formatFailureText("处理失败", error),
     });
     throw error;
+  }
+}
+
+async function prepareOpenClawNormalizedEvent(runtime, normalized) {
+  if (!normalized || normalized.inputKind !== "voice") {
+    return normalized;
+  }
+
+  try {
+    const transcribedText = await runtime.transcribeOpenClawVoiceMessage(normalized);
+    if (runtime.config.verboseCodexLogs) {
+      const previewLength = String(transcribedText || "").length;
+      console.log(
+        `[codex-im] openclaw transcribed voice message=${normalized.messageId} `
+        + `text_length=${previewLength}`
+      );
+    }
+    return messageNormalizers.applyNormalizedText(normalized, transcribedText);
+  } catch (error) {
+    await runtime.sendInfoCardMessage({
+      chatId: normalized.chatId,
+      replyToMessageId: normalized.messageId,
+      text: formatFailureText("语音转写失败", error),
+    });
+    return null;
   }
 }
 

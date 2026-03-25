@@ -551,11 +551,11 @@ function buildHelpCardText() {
     [
       "**浏览并选择目录**",
       "`/codex browse`",
-      "浏览允许范围内的本地目录，并把当前目录绑定为工作目录。",
+      "浏览允许范围内的本地目录，列表后也可以直接说 `第二个` 或 `打开第二个目录`。",
     ],
     [
       "**查看当前状态**",
-      "`/codex where`",
+      "`/codex where`\n`/codex status`",
       "查看当前绑定的项目和正在使用的线程。",
     ],
     [
@@ -586,7 +586,7 @@ function buildHelpCardText() {
     [
       "**切换到指定线程**",
       "`/codex switch <threadId>`",
-      "按线程 ID 切换到指定线程。",
+      "按线程 ID 切换到指定线程，或直接说 `切换第二个线程`。",
     ],
     [
       "**新建线程**",
@@ -620,6 +620,8 @@ function buildHelpCardText() {
 
   return [
     "**Codex IM 使用说明**",
+    "也支持常见自然语言说法，不必每次都写完整命令。",
+    "示例：现在有哪几个线程、切换第二个线程、第二个、选择第二个绑定、打开第二个目录、请问怎么用、帮我绑定到 /绝对路径、同意、拒绝",
     sections.map((section) => section.join("\n")).join("\n\n"),
   ].join("\n\n");
 }

@@ -12,17 +12,27 @@ const {
   summarizeCardToText,
 } = require("./builders");
 
-async function sendInfoCardMessage(runtime, { chatId, text, replyToMessageId = "", replyInThread = false, kind = "info" }) {
+async function sendInfoCardMessage(
+  runtime,
+  { chatId, text, replyToMessageId = "", replyInThread = false, kind = "info", selectionContext = null }
+) {
   if (!chatId || !text) {
     return null;
   }
 
   if (!runtime.supportsInteractiveCards()) {
-    return runtime.sendTextMessage({
+    const response = await runtime.sendTextMessage({
       chatId,
       replyToMessageId,
       text: formatPlainTextNotice(text, kind),
     });
+    rememberSelectionContext(runtime, {
+      chatId,
+      replyToMessageId,
+      selectionContext,
+      response,
+    });
+    return response;
   }
 
   return sendInteractiveCard(runtime, {
@@ -30,6 +40,7 @@ async function sendInfoCardMessage(runtime, { chatId, text, replyToMessageId = "
     replyToMessageId,
     replyInThread,
     card: buildInfoCard(text, { kind }),
+    selectionContext,
   });
 }
 
@@ -79,23 +90,37 @@ async function updateInteractiveCard(runtime, { messageId, approval }) {
   });
 }
 
-async function sendInteractiveCard(runtime, { chatId, card, replyToMessageId = "", replyInThread = false }) {
+async function sendInteractiveCard(
+  runtime,
+  { chatId, card, replyToMessageId = "", replyInThread = false, selectionContext = null }
+) {
   if (!chatId || !card) {
     return null;
   }
+
+  let response;
   if (!runtime.supportsInteractiveCards()) {
-    return runtime.sendTextMessage({
+    response = await runtime.sendTextMessage({
       chatId,
       replyToMessageId,
       text: summarizeCardToText(card),
     });
+  } else {
+    response = await runtime.requireFeishuAdapter().sendInteractiveCard({
+      chatId,
+      card,
+      replyToMessageId,
+      replyInThread,
+    });
   }
-  return runtime.requireFeishuAdapter().sendInteractiveCard({
+
+  rememberSelectionContext(runtime, {
     chatId,
-    card,
     replyToMessageId,
-    replyInThread,
+    selectionContext,
+    response,
   });
+  return response;
 }
 
 async function patchInteractiveCard(runtime, { messageId, card }) {
@@ -106,6 +131,26 @@ async function patchInteractiveCard(runtime, { messageId, card }) {
     return null;
   }
   return runtime.requireFeishuAdapter().patchInteractiveCard({ messageId, card });
+}
+
+function rememberSelectionContext(runtime, { chatId, replyToMessageId = "", selectionContext = null, response = null } = {}) {
+  if (typeof runtime.rememberSelectionContext !== "function") {
+    return;
+  }
+
+  const bindingKey = String(selectionContext?.bindingKey || "").trim();
+  const command = String(selectionContext?.command || "").trim();
+  if (!bindingKey || !command) {
+    return;
+  }
+
+  runtime.rememberSelectionContext({
+    bindingKey,
+    command,
+    messageId: codexMessageUtils.extractCreatedMessageId(response),
+    chatId,
+    replyToMessageId,
+  });
 }
 
 async function handleCardAction(runtime, data) {
