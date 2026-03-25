@@ -35,11 +35,19 @@ async function onOpenClawTextEvent(runtime, message) {
       reason: "normalize-returned-null",
       messageId: resolveIncomingMessageId(message),
       messageType: Number(message?.message_type) || 0,
+      itemKeySummary: summarizeOpenClawVoiceItemKeys(message?.item_list),
     });
   }
   const prepared = await prepareOpenClawNormalizedEvent(runtime, normalized);
   if (!prepared) {
     return;
+  }
+  if (shouldLogVoiceDiagnostics(runtime) && normalized?.inputKind === "text" && !extractOpenClawTextPayload(normalized) && normalized?.voiceAttachment == null) {
+    logVoiceDiagnostics(runtime, "transcript-fallback", {
+      traceId: prepared.traceId || traceId,
+      messageId: prepared.messageId || "",
+      textLength: String(prepared?.text || "").length,
+    });
   }
   if (shouldLogVoiceDiagnostics(runtime) && normalized?.inputKind === "voice") {
     logVoiceDiagnostics(runtime, "normalized", {
@@ -240,6 +248,47 @@ function buildOpenClawTraceId(message) {
 
 function logVoiceDiagnostics(_runtime, phase, payload = {}) {
   console.log(`[codex-im][voice] ${phase} ${JSON.stringify(payload)}`);
+}
+
+function summarizeOpenClawVoiceItemKeys(itemList) {
+  if (!Array.isArray(itemList) || !itemList.length) {
+    return [];
+  }
+
+  return itemList.map((item) => ({
+    type: Number(item?.type) || 0,
+    keys: collectObjectKeys(item),
+    voiceItemKeys: collectObjectKeys(item?.voice_item),
+    voiceItemMediaType: describeValueType(item?.voice_item?.media),
+    voiceItemMediaKeys: collectObjectKeys(item?.voice_item?.media),
+    voiceItemMediaLength: typeof item?.voice_item?.media === "string" ? item?.voice_item?.media.length : 0,
+    voiceItemTextType: describeValueType(item?.voice_item?.text),
+    voiceItemTextLength: typeof item?.voice_item?.text === "string" ? item?.voice_item?.text.length : 0,
+    recordItemKeys: collectObjectKeys(item?.record_item),
+    audioItemKeys: collectObjectKeys(item?.audio_item),
+    mediaItemKeys: collectObjectKeys(item?.media_item),
+  }));
+}
+
+function collectObjectKeys(value) {
+  if (!value || typeof value !== "object") {
+    return [];
+  }
+  return Object.keys(value).sort();
+}
+
+function extractOpenClawTextPayload(normalized) {
+  return typeof normalized?.text === "string" ? normalized.text.trim() : "";
+}
+
+function describeValueType(value) {
+  if (Array.isArray(value)) {
+    return "array";
+  }
+  if (value === null) {
+    return "null";
+  }
+  return typeof value;
 }
 
 async function onFeishuCardAction(runtime, data) {

@@ -125,8 +125,31 @@ function normalizeVoiceAttachment(item, kind, payload) {
     return null;
   }
 
+  const nestedMediaPayload = pickFirstObject(
+    payload.media,
+    payload.mediaItem,
+    payload.media_item
+  );
+  const sourcePayload = nestedMediaPayload || payload;
+
   const downloadUrl = normalizeText(
-    payload.download_url
+    sourcePayload.download_url
+      || sourcePayload.downloadUrl
+      || sourcePayload.downloadurl
+      || sourcePayload.file_download_url
+      || sourcePayload.fileDownloadUrl
+      || sourcePayload.media_url
+      || sourcePayload.mediaUrl
+      || sourcePayload.voice_url
+      || sourcePayload.voiceUrl
+      || sourcePayload.file_url
+      || sourcePayload.fileUrl
+      || sourcePayload.cdn_url
+      || sourcePayload.cdnUrl
+      || sourcePayload.oss_url
+      || sourcePayload.ossUrl
+      || sourcePayload.url
+      || payload.download_url
       || payload.downloadUrl
       || payload.downloadurl
       || payload.file_download_url
@@ -151,14 +174,21 @@ function normalizeVoiceAttachment(item, kind, payload) {
       || item.url
   );
   const dataUrl = normalizeText(
-    payload.data_url
+    sourcePayload.data_url
+      || sourcePayload.dataUrl
+      || sourcePayload.dataurl
+      || payload.data_url
       || payload.dataUrl
       || payload.dataurl
       || item.data_url
       || item.dataUrl
   );
   const base64Data = normalizeText(
-    payload.base64
+    sourcePayload.base64
+      || sourcePayload.base64_data
+      || sourcePayload.base64Data
+      || sourcePayload.data
+      || payload.base64
       || payload.base64_data
       || payload.base64Data
       || payload.data
@@ -168,13 +198,40 @@ function normalizeVoiceAttachment(item, kind, payload) {
       || ""
   );
   const fileName = normalizeText(
-    payload.file_name || payload.fileName || item.file_name || item.fileName
-  ) || inferDefaultFileName(payload.mime_type || payload.mimeType || item.mime_type || item.mimeType);
+    sourcePayload.file_name
+      || sourcePayload.fileName
+      || payload.file_name
+      || payload.fileName
+      || item.file_name
+      || item.fileName
+  ) || inferDefaultFileName(
+    sourcePayload.mime_type
+      || sourcePayload.mimeType
+      || payload.mime_type
+      || payload.mimeType
+      || item.mime_type
+      || item.mimeType
+  );
   const mimeType = normalizeText(
-    payload.mime_type || payload.mimeType || item.mime_type || item.mimeType
+    sourcePayload.mime_type
+      || sourcePayload.mimeType
+      || payload.mime_type
+      || payload.mimeType
+      || item.mime_type
+      || item.mimeType
   ) || inferMimeTypeFromFileName(fileName);
   const mediaId = normalizeText(
-    payload.media_id
+    sourcePayload.media_id
+      || sourcePayload.mediaId
+      || sourcePayload.mediaid
+      || sourcePayload.file_id
+      || sourcePayload.fileId
+      || sourcePayload.fileid
+      || sourcePayload.voice_id
+      || sourcePayload.voiceId
+      || sourcePayload.attach_id
+      || sourcePayload.attachId
+      || payload.media_id
       || payload.mediaId
       || payload.mediaid
       || payload.file_id
@@ -192,7 +249,12 @@ function normalizeVoiceAttachment(item, kind, payload) {
       || item.attachId
   );
   const durationMs = normalizePositiveNumber(
-    payload.duration_ms ?? payload.durationMs ?? item.duration_ms ?? item.durationMs
+    sourcePayload.duration_ms
+      ?? sourcePayload.durationMs
+      ?? payload.duration_ms
+      ?? payload.durationMs
+      ?? item.duration_ms
+      ?? item.durationMs
   );
 
   const looksAudio = looksLikeAudio(kind, mimeType, fileName);

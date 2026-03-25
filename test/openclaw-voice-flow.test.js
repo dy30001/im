@@ -276,6 +276,68 @@ test("onOpenClawTextEvent transcribes voice input and reuses command parsing", a
   assert.equal(seen.text, "当前在哪个项目");
 });
 
+test("onOpenClawTextEvent falls back to voice_item.text when media metadata is not directly downloadable", async () => {
+  const seen = {
+    remembered: 0,
+    forgotten: 0,
+    transcribed: false,
+    dispatched: false,
+    command: "",
+    text: "",
+  };
+  const runtime = {
+    isStopping: false,
+    config: {
+      defaultWorkspaceId: "default",
+      verboseCodexLogs: false,
+    },
+    rememberInboundContext(normalized) {
+      seen.remembered += 1;
+      seen.messageId = normalized.messageId;
+    },
+    forgetInboundContext() {
+      seen.forgotten += 1;
+    },
+    async transcribeOpenClawVoiceMessage() {
+      seen.transcribed = true;
+      throw new Error("should not transcribe when voice_item.text is already available");
+    },
+    async dispatchTextCommand(normalized) {
+      seen.dispatched = true;
+      seen.command = normalized.command;
+      seen.text = normalized.text;
+      assert.equal(normalized.inputKind, "text");
+      assert.equal(normalized.text, "你好");
+      return true;
+    },
+  };
+
+  await appDispatcher.onOpenClawTextEvent(runtime, {
+    from_user_id: "wx-user-voice-text",
+    message_id: 14,
+    message_type: 1,
+    item_list: [
+      {
+        type: 3,
+        voice_item: {
+          media: {
+            aes_key: "aes-key",
+            encrypt_query_param: "encrypt-query",
+          },
+          text: "你好",
+        },
+      },
+    ],
+  });
+
+  assert.equal(seen.remembered, 1);
+  assert.equal(seen.forgotten, 0);
+  assert.equal(seen.transcribed, false);
+  assert.equal(seen.dispatched, true);
+  assert.equal(seen.command, "message");
+  assert.equal(seen.text, "你好");
+});
+
 test("onOpenClawTextEvent skips voice transcription when voice input is disabled", async () => {
   const seen = {
     remembered: 0,
@@ -593,4 +655,8 @@ test("onOpenClawTextEvent logs voice diagnostics when voice-like payload is drop
   assert.ok(ingress);
   assert.ok(drop);
   assert.match(drop, /normalize-returned-null/);
+  assert.match(drop, /itemKeySummary/);
+  assert.match(drop, /voice_item/);
+  assert.match(drop, /voiceItemMediaType/);
+  assert.match(drop, /voiceItemTextType/);
 });

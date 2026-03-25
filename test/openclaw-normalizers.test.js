@@ -390,3 +390,60 @@ test("normalizeOpenClawTextEvent accepts fallback item-level voice fields", () =
   assert.equal(normalized?.voiceAttachment?.downloadUrl, "https://ilinkai.weixin.qq.com/media/voice-fallback");
   assert.equal(normalized?.voiceAttachment?.mediaId, "voice-fallback-id");
 });
+
+test("normalizeOpenClawTextEvent accepts nested voice_item.media payloads", () => {
+  const normalized = normalizeOpenClawTextEvent(
+    {
+      from_user_id: "wx-user-nested-media",
+      message_id: 302,
+      message_type: 3,
+      item_list: [
+        {
+          type: 3,
+          voice_item: {
+            media: {
+              download_url: "https://ilinkai.weixin.qq.com/media/voice-nested",
+              mime_type: "audio/ogg",
+              file_name: "voice-nested.ogg",
+              media_id: "voice-nested-id",
+            },
+            text: "你好",
+          },
+        },
+      ],
+    },
+    { defaultWorkspaceId: "default" }
+  );
+
+  assert.equal(normalized?.inputKind, "voice");
+  assert.equal(normalized?.voiceAttachment?.downloadUrl, "https://ilinkai.weixin.qq.com/media/voice-nested");
+  assert.equal(normalized?.voiceAttachment?.mediaId, "voice-nested-id");
+});
+
+test("normalizeOpenClawTextEvent falls back to voice_item.text when attachment metadata is not downloadable", () => {
+  const normalized = normalizeOpenClawTextEvent(
+    {
+      from_user_id: "wx-user-voice-text",
+      message_id: 303,
+      message_type: 1,
+      item_list: [
+        {
+          type: 3,
+          voice_item: {
+            media: {
+              aes_key: "aes-key",
+              encrypt_query_param: "encrypt-query",
+            },
+            text: "你好",
+          },
+        },
+      ],
+    },
+    { defaultWorkspaceId: "default" }
+  );
+
+  assert.equal(normalized?.inputKind, "text");
+  assert.equal(normalized?.text, "你好");
+  assert.equal(normalized?.command, "message");
+  assert.equal(normalized?.voiceAttachment, null);
+});

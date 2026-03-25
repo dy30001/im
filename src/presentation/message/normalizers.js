@@ -32,10 +32,11 @@ function normalizeFeishuTextEvent(event, config) {
 function normalizeOpenClawTextEvent(message, config) {
   const text = extractOpenClawText(message?.item_list);
   const voiceAttachment = extractVoiceAttachmentFromItemList(message?.item_list);
+  const voiceTranscript = !text && !voiceAttachment ? extractOpenClawVoiceTranscript(message?.item_list) : "";
   if (text && !voiceAttachment && Number(message?.message_type) !== 1) {
     return null;
   }
-  if (!text && !voiceAttachment) {
+  if (!text && !voiceAttachment && !voiceTranscript) {
     return null;
   }
 
@@ -49,7 +50,8 @@ function normalizeOpenClawTextEvent(message, config) {
     ? new Date(Number(message.create_time_ms)).toISOString()
     : new Date().toISOString();
 
-  const useVoiceInput = !text && !!voiceAttachment;
+  const normalizedText = text || voiceTranscript;
+  const useVoiceInput = !normalizedText && !!voiceAttachment;
 
   return {
     provider: "openclaw",
@@ -58,8 +60,8 @@ function normalizeOpenClawTextEvent(message, config) {
     threadKey: sessionId,
     senderId: fromUserId,
     messageId,
-    text,
-    command: text ? parseCommand(text) : "message",
+    text: normalizedText,
+    command: normalizedText ? parseCommand(normalizedText) : "message",
     receivedAt: createdAt,
     contextToken: normalizeIdentifier(message?.context_token),
     inputKind: useVoiceInput ? "voice" : "text",
@@ -175,6 +177,69 @@ function extractOpenClawText(itemList) {
     .filter(Boolean);
 
   return textParts.join("\n\n");
+}
+
+function extractOpenClawVoiceTranscript(itemList) {
+  if (!Array.isArray(itemList)) {
+    return "";
+  }
+
+  for (const item of itemList) {
+    const transcript = extractOpenClawVoiceTranscriptFromItem(item);
+    if (transcript) {
+      return transcript;
+    }
+  }
+
+  return "";
+}
+
+function extractOpenClawVoiceTranscriptFromItem(item) {
+  if (!item || typeof item !== "object") {
+    return "";
+  }
+
+  const payload = pickFirstObject(
+    item.voice_item,
+    item.voiceItem,
+    item.record_item,
+    item.recordItem,
+    item.audio_item,
+    item.audioItem,
+    item.media_item,
+    item.mediaItem
+  );
+  if (!payload || typeof payload !== "object") {
+    return "";
+  }
+
+  return normalizeText(
+    payload.text
+      || payload.transcript
+      || payload.transcribed_text
+      || payload.transcribedText
+      || payload.caption
+      || payload.content
+  );
+}
+
+function pickFirstObject(...candidates) {
+  for (const candidate of candidates) {
+    if (candidate && typeof candidate === "object") {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function normalizeText(value) {
+  if (typeof value === "string") {
+    return value.trim();
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+  return "";
 }
 
 function parseCommand(text) {
