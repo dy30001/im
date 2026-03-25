@@ -34,6 +34,7 @@ function readConfig() {
     || readTextEnv("CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_WHISPER_CACHE_DIR");
   const transcriptionLanguage = readTextEnv("CODEX_IM_OPENCLAW_TRANSCRIPTION_LANGUAGE");
   const voiceInputEnabled = readBooleanEnv("CODEX_IM_OPENCLAW_VOICE_INPUT_ENABLED", true);
+  const voiceDiagnosticsEnabled = readBooleanEnv("CODEX_IM_OPENCLAW_VOICE_DIAGNOSTICS", false);
 
   return {
     mode,
@@ -54,6 +55,7 @@ function readConfig() {
       token: readTextEnv("CODEX_IM_OPENCLAW_TOKEN"),
       threadSource: readThreadSourceEnv("CODEX_IM_OPENCLAW_THREAD_SOURCE", "acpx"),
       voiceInputEnabled,
+      voiceDiagnosticsEnabled,
       longPollTimeoutMs: readIntegerEnv(
         "CODEX_IM_OPENCLAW_LONG_POLL_TIMEOUT_MS",
         DEFAULT_OPENCLAW_LONG_POLL_TIMEOUT_MS

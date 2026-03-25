@@ -13,6 +13,11 @@ test("package.json exposes dev watch scripts for both runtimes", () => {
   assert.match(scripts["watch:feishu-bot"], /node --watch/);
   assert.match(scripts["watch:openclaw-bot"], /node --watch/);
   assert.match(scripts["watch:openclaw-bot"], /openclaw-bot/);
+  assert.equal(typeof scripts["openclaw-bot:diagnose"], "string");
+  assert.equal(typeof scripts["openclaw-bot:diagnose:bg"], "string");
+  assert.match(scripts["openclaw-bot:diagnose:bg"], /start-openclaw-diagnose\.sh/);
+  assert.match(scripts["openclaw-bot:diagnose"], /CODEX_IM_OPENCLAW_VOICE_DIAGNOSTICS=true/);
+  assert.equal(scripts.test, "node --test test/*.test.js");
 });
 
 test("package.json check script covers newly added runtime and workspace modules", () => {

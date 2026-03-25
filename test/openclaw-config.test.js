@@ -12,6 +12,7 @@ test("readConfig loads openclaw bot settings from env", () => {
     CODEX_IM_OPENCLAW_THREAD_SOURCE: process.env.CODEX_IM_OPENCLAW_THREAD_SOURCE,
     CODEX_IM_OPENCLAW_LONG_POLL_TIMEOUT_MS: process.env.CODEX_IM_OPENCLAW_LONG_POLL_TIMEOUT_MS,
     CODEX_IM_OPENCLAW_VOICE_INPUT_ENABLED: process.env.CODEX_IM_OPENCLAW_VOICE_INPUT_ENABLED,
+    CODEX_IM_OPENCLAW_VOICE_DIAGNOSTICS: process.env.CODEX_IM_OPENCLAW_VOICE_DIAGNOSTICS,
     CODEX_IM_OPENCLAW_TRANSCRIPTION_LANGUAGE: process.env.CODEX_IM_OPENCLAW_TRANSCRIPTION_LANGUAGE,
     CODEX_IM_OPENCLAW_TRANSCRIPTION_MAX_BYTES: process.env.CODEX_IM_OPENCLAW_TRANSCRIPTION_MAX_BYTES,
     CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER: process.env.CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER,
@@ -29,6 +30,7 @@ test("readConfig loads openclaw bot settings from env", () => {
   process.env.CODEX_IM_OPENCLAW_THREAD_SOURCE = "codex";
   process.env.CODEX_IM_OPENCLAW_LONG_POLL_TIMEOUT_MS = "42000";
   process.env.CODEX_IM_OPENCLAW_VOICE_INPUT_ENABLED = "false";
+  process.env.CODEX_IM_OPENCLAW_VOICE_DIAGNOSTICS = "true";
   process.env.CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER = "1";
   process.env.CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER_MODEL = "large-v3";
   process.env.CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER_PYTHON = "python3.12";
@@ -46,6 +48,7 @@ test("readConfig loads openclaw bot settings from env", () => {
     assert.equal(config.openclaw.token, "bot-token");
     assert.equal(config.openclaw.threadSource, "codex");
     assert.equal(config.openclaw.voiceInputEnabled, false);
+    assert.equal(config.openclaw.voiceDiagnosticsEnabled, true);
     assert.equal(config.openclaw.longPollTimeoutMs, 42000);
     assert.deepEqual(config.openclaw.transcription, {
       localFasterWhisperEnabled: true,
@@ -75,6 +78,7 @@ test("readConfig defaults openclaw to ACP desktop session mode", () => {
   const previousEnv = {
     CODEX_IM_OPENCLAW_THREAD_SOURCE: process.env.CODEX_IM_OPENCLAW_THREAD_SOURCE,
     CODEX_IM_OPENCLAW_VOICE_INPUT_ENABLED: process.env.CODEX_IM_OPENCLAW_VOICE_INPUT_ENABLED,
+    CODEX_IM_OPENCLAW_VOICE_DIAGNOSTICS: process.env.CODEX_IM_OPENCLAW_VOICE_DIAGNOSTICS,
     CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER:
       process.env.CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER,
     CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_WHISPER:
@@ -84,6 +88,7 @@ test("readConfig defaults openclaw to ACP desktop session mode", () => {
   process.argv = [previousArgv[0], previousArgv[1], "openclaw-bot"];
   delete process.env.CODEX_IM_OPENCLAW_THREAD_SOURCE;
   delete process.env.CODEX_IM_OPENCLAW_VOICE_INPUT_ENABLED;
+  delete process.env.CODEX_IM_OPENCLAW_VOICE_DIAGNOSTICS;
   delete process.env.CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_FASTER_WHISPER;
   delete process.env.CODEX_IM_OPENCLAW_TRANSCRIPTION_LOCAL_WHISPER;
 
@@ -91,6 +96,7 @@ test("readConfig defaults openclaw to ACP desktop session mode", () => {
     const config = readConfig();
     assert.equal(config.openclaw.threadSource, "acpx");
     assert.equal(config.openclaw.voiceInputEnabled, true);
+    assert.equal(config.openclaw.voiceDiagnosticsEnabled, false);
     assert.equal(config.openclaw.transcription.localFasterWhisperModel, "base");
     assert.equal(config.openclaw.transcription.localFasterWhisperEnabled, false);
   } finally {

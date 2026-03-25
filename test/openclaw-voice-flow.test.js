@@ -484,3 +484,47 @@ test("onOpenClawTextEvent verbose logs avoid dumping transcribed text", async ()
   assert.match(verboseLine, /text_length=\d+/);
   assert.equal(verboseLine.includes("用户敏感语音内容"), false);
 });
+
+test("onOpenClawTextEvent logs voice diagnostics when voice-like payload is dropped before normalization", async () => {
+  const logs = [];
+  const originalLog = console.log;
+  console.log = (...args) => {
+    logs.push(args.join(" "));
+  };
+
+  const runtime = {
+    isStopping: false,
+    config: {
+      defaultWorkspaceId: "default",
+      verboseCodexLogs: false,
+      openclaw: {
+        voiceDiagnosticsEnabled: true,
+      },
+    },
+    async dispatchTextCommand() {
+      return true;
+    },
+  };
+
+  try {
+    await appDispatcher.onOpenClawTextEvent(runtime, {
+      from_user_id: "wx-user-1",
+      message_id: 13,
+      message_type: 3,
+      item_list: [
+        {
+          type: 4,
+          voice_item: {},
+        },
+      ],
+    });
+  } finally {
+    console.log = originalLog;
+  }
+
+  const ingress = logs.find((line) => line.includes("[codex-im][voice] ingress"));
+  const drop = logs.find((line) => line.includes("[codex-im][voice] drop"));
+  assert.ok(ingress);
+  assert.ok(drop);
+  assert.match(drop, /normalize-returned-null/);
+});

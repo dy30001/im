@@ -5,6 +5,8 @@
 
 `微信 -> OpenClaw HTTP API -> 本机 codex app-server -> 微信回复`
 
+我在测试的文字。
+
 仓库地址：`https://github.com/dy30001/im`
 
 ## 一键安装 + 启动（推荐）
@@ -67,6 +69,22 @@ CODEX_IM_OPENCLAW_TOKEN=
 npm run openclaw-bot
 ```
 
+语音诊断模式（推荐排查“发了语音没反应”时使用）：
+
+```bash
+npm run openclaw-bot:diagnose
+```
+
+后台诊断模式（不占用当前终端，日志固定到 `/tmp/codex-im-openclaw.log`）：
+
+```bash
+npm run openclaw-bot:diagnose:bg
+```
+
+等价于开启：
+- `CODEX_IM_VERBOSE_LOGS=true`
+- `CODEX_IM_OPENCLAW_VOICE_DIAGNOSTICS=true`
+
 开发态自动重启：
 
 ```bash
@@ -94,6 +112,36 @@ npm run watch:openclaw-bot
 
 3. 语音不可用  
 先确认系统有 `ffmpeg`，再确认 `python3 -m pip show faster-whisper` 可用。
+
+4. 发了语音但机器人无响应（手机端优先流程）  
+在电脑执行：
+
+```bash
+cd /Users/dy3000/Documents/test/私人事务/codex-im
+npm run openclaw-bot:diagnose:bg
+```
+
+再开一个终端执行：
+
+```bash
+tail -f /tmp/codex-im-openclaw.log
+```
+
+如果你是通过 `nohup` 启动，可用：
+
+```bash
+CODEX_IM_VERBOSE_LOGS=true CODEX_IM_OPENCLAW_VOICE_DIAGNOSTICS=true nohup node ./bin/codex-im.js openclaw-bot > /tmp/codex-im-openclaw.log 2>&1 &
+```
+
+你发语音后，重点看这几段日志是否出现：
+- `[codex-im][voice] ingress`
+- `[codex-im][voice] normalized`
+- `[codex-im][voice] media-download-success`
+- `[codex-im][voice] stt-success`
+
+若只看到 `ingress` 或 `drop`，说明消息进来了但被归一化过滤；  
+若到 `media-download-start` 后失败，说明是媒体下载问题；  
+若到 `transcribe-start` 后失败，说明是本地转写环境问题。
 
 ## 安全说明
 
