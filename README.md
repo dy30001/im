@@ -10,7 +10,7 @@
 ## 一键安装 + 启动（推荐）
 
 ```bash
-git clone https://github.com/dy30001/im.git
+git clone https://github.com/dy30001/im.git codex-im
 cd codex-im
 bash ./scripts/bootstrap-openclaw.sh
 ```
@@ -20,7 +20,7 @@ bash ./scripts/bootstrap-openclaw.sh
 1. 检查 Node.js（要求 18+）
 2. 自动生成 `.env`（如果不存在）
 3. 自动安装 npm 依赖
-4. 自动拉起后台常驻的 `openclaw-bot`
+4. 自动拉起后台常驻、自动恢复的 `openclaw-bot`
 5. 如果 `.env` 里 `CODEX_IM_OPENCLAW_TOKEN` 为空，会自动触发微信二维码登录，并尝试自动打开浏览器
 
 ## 依赖要求
@@ -39,7 +39,7 @@ bash ./scripts/bootstrap-openclaw.sh
 请在仓库根目录执行：bash ./scripts/bootstrap-openclaw.sh
 ```
 
-脚本会自动安装依赖、拉起后台常驻服务；首次未配置 token 时，会自动进入扫码登录流程。
+脚本会自动安装依赖、拉起后台常驻且自动恢复的服务；首次未配置 token 时，会自动进入扫码登录流程。
 
 ## 首次配置（最少配置）
 
@@ -72,10 +72,18 @@ npm run openclaw-bot
 npm run openclaw-bot:daemon
 ```
 
+这个模式会在 child 进程意外退出时自动重启，不需要你手动再起服务。
+
 查看运行状态（进程、锁文件、日志尾部）：
 
 ```bash
 npm run openclaw-bot:status
+```
+
+快速检查（状态 + 关键错误日志）：
+
+```bash
+npm run openclaw-bot:quick
 ```
 
 一键健康检查（进程、锁、凭据、日志、错误提示）：
@@ -100,6 +108,18 @@ npm run openclaw-bot:diagnose:bg
 
 ```bash
 npm run openclaw-bot:rescan
+```
+
+停止服务：
+
+```bash
+npm run openclaw-bot:stop
+```
+
+重启服务（先停再起并打印状态）：
+
+```bash
+npm run openclaw-bot:restart
 ```
 
 等价于开启：

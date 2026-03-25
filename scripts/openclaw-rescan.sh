@@ -9,8 +9,7 @@ TS="$(date +%Y%m%d%H%M%S)"
 
 echo "[codex-im] openclaw rescan starting"
 
-pkill -f "codex-im.js openclaw-bot" 2>/dev/null || true
-rm -rf "${HOME}/.codex-im/openclaw-bot.lock" || true
+bash "$APP_ROOT/scripts/stop-openclaw-bot.sh"
 
 if [ -f "$CREDENTIALS_FILE" ]; then
   BACKUP_PATH="${CREDENTIALS_FILE}.bak.rescan.${TS}"
@@ -23,4 +22,3 @@ fi
 echo "[codex-im] starting QR login flow ..."
 cd "$APP_ROOT"
 exec env CODEX_IM_OPENCLAW_TOKEN= npm run openclaw-bot:diagnose
-

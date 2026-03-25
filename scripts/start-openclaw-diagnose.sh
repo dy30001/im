@@ -7,7 +7,7 @@ LOG_FILE="${CODEX_IM_OPENCLAW_LOG_FILE:-/tmp/codex-im-openclaw.log}"
 
 mkdir -p "$(dirname "$LOG_FILE")"
 
-pkill -f "codex-im.js openclaw-bot" 2>/dev/null || true
+bash "$APP_ROOT/scripts/stop-openclaw-bot.sh"
 
 cd "$APP_ROOT"
 nohup env \

@@ -2,30 +2,46 @@
 set -euo pipefail
 
 LOCK_DIR="${HOME}/.codex-im/openclaw-bot.lock"
-PID_FILE="${LOCK_DIR}/pid"
+SUPERVISOR_PID_FILE="${LOCK_DIR}/pid"
+CHILD_PID_FILE="${LOCK_DIR}/child-pid"
 LOG_FILE="${CODEX_IM_OPENCLAW_LOG_FILE:-/tmp/codex-im-openclaw.log}"
 
 echo "[codex-im] openclaw status"
 echo "lock_dir=${LOCK_DIR}"
 echo "log_file=${LOG_FILE}"
 
-pid_from_file=""
-if [ -f "$PID_FILE" ]; then
-  pid_from_file="$(cat "$PID_FILE" 2>/dev/null || true)"
+supervisor_pid=""
+if [ -f "$SUPERVISOR_PID_FILE" ]; then
+  supervisor_pid="$(cat "$SUPERVISOR_PID_FILE" 2>/dev/null || true)"
 fi
 
-if [ -n "$pid_from_file" ] && kill -0 "$pid_from_file" >/dev/null 2>&1; then
-  echo "lock_pid=${pid_from_file} (alive)"
+child_pid=""
+if [ -f "$CHILD_PID_FILE" ]; then
+  child_pid="$(cat "$CHILD_PID_FILE" 2>/dev/null || true)"
+fi
+
+if [ -n "$supervisor_pid" ] && kill -0 "$supervisor_pid" >/dev/null 2>&1; then
+  echo "lock_pid=${supervisor_pid} (alive)"
 else
-  if [ -n "$pid_from_file" ]; then
-    echo "lock_pid=${pid_from_file} (stale)"
+  if [ -n "$supervisor_pid" ]; then
+    echo "lock_pid=${supervisor_pid} (stale)"
   else
     echo "lock_pid=<none>"
   fi
 fi
 
+if [ -n "$child_pid" ] && kill -0 "$child_pid" >/dev/null 2>&1; then
+  echo "child_pid=${child_pid} (alive)"
+else
+  if [ -n "$child_pid" ]; then
+    echo "child_pid=${child_pid} (stale)"
+  else
+    echo "child_pid=<none>"
+  fi
+fi
+
 process_lines="$(
-  ps aux 2>/dev/null | grep -E "codex-im.js openclaw-bot|node ./bin/codex-im.js openclaw-bot" | grep -v grep || true
+  ps aux 2>/dev/null | grep -E "start-openclaw-bot\.js|codex-im.js openclaw-bot" | grep -v grep || true
 )"
 if [ -n "$process_lines" ]; then
   process_count="$(printf "%s\n" "$process_lines" | wc -l | tr -d ' ')"

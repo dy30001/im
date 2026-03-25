@@ -27,4 +27,6 @@ NODE_BIN=$(resolve_node_bin) || {
   exit 1
 }
 
+LOCK_DIR="$HOME/.codex-im/openclaw-bot.lock"
+
 exec "$NODE_BIN" "$APP_ROOT/scripts/start-openclaw-bot.js"

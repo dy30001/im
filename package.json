@@ -5,11 +5,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Ben-Lee-2019/codex-im.git"
+    "url": "git+https://github.com/dy30001/im.git"
   },
-  "homepage": "https://github.com/Ben-Lee-2019/codex-im#readme",
+  "homepage": "https://github.com/dy30001/im#readme",
   "bugs": {
-    "url": "https://github.com/Ben-Lee-2019/codex-im/issues"
+    "url": "https://github.com/dy30001/im/issues"
   },
   "type": "commonjs",
   "main": "src/index.js",
@@ -45,6 +45,9 @@
     "openclaw-bot:status": "bash ./scripts/check-openclaw-status.sh",
     "openclaw-bot:doctor": "bash ./scripts/openclaw-doctor.sh",
     "openclaw-bot:rescan": "bash ./scripts/openclaw-rescan.sh",
+    "openclaw-bot:stop": "bash ./scripts/stop-openclaw-bot.sh",
+    "openclaw-bot:restart": "bash ./scripts/restart-openclaw-bot.sh",
+    "openclaw-bot:quick": "bash ./scripts/openclaw-quick.sh",
     "watch:feishu-bot": "node --watch --watch-path=./src --watch-path=./bin --watch-path=./.env ./bin/codex-im.js",
     "watch:openclaw-bot": "node --watch --watch-path=./src --watch-path=./bin --watch-path=./.env ./bin/codex-im.js openclaw-bot",
     "test:openclaw-voice-smoke": "node ./scripts/smoke-openclaw-voice.js",
