@@ -78,6 +78,12 @@ npm run openclaw-bot:daemon
 npm run openclaw-bot:status
 ```
 
+一键健康检查（进程、锁、凭据、日志、错误提示）：
+
+```bash
+npm run openclaw-bot:doctor
+```
+
 诊断模式（推荐排查连接、收发或授权问题）：
 
 ```bash
@@ -88,6 +94,12 @@ npm run openclaw-bot:diagnose
 
 ```bash
 npm run openclaw-bot:diagnose:bg
+```
+
+一键重置扫码（停服务、备份旧凭据、重新进入扫码登录）：
+
+```bash
+npm run openclaw-bot:rescan
 ```
 
 等价于开启：

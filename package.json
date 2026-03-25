@@ -43,6 +43,8 @@
     "openclaw-bot:diagnose": "CODEX_IM_VERBOSE_LOGS=true node ./bin/codex-im.js openclaw-bot",
     "openclaw-bot:diagnose:bg": "bash ./scripts/start-openclaw-diagnose.sh",
     "openclaw-bot:status": "bash ./scripts/check-openclaw-status.sh",
+    "openclaw-bot:doctor": "bash ./scripts/openclaw-doctor.sh",
+    "openclaw-bot:rescan": "bash ./scripts/openclaw-rescan.sh",
     "watch:feishu-bot": "node --watch --watch-path=./src --watch-path=./bin --watch-path=./.env ./bin/codex-im.js",
     "watch:openclaw-bot": "node --watch --watch-path=./src --watch-path=./bin --watch-path=./.env ./bin/codex-im.js openclaw-bot",
     "test:openclaw-voice-smoke": "node ./scripts/smoke-openclaw-voice.js",

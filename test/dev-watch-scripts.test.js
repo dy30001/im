@@ -16,10 +16,14 @@ test("package.json exposes dev watch scripts for both runtimes", () => {
   assert.equal(typeof scripts["openclaw-bot:diagnose"], "string");
   assert.equal(typeof scripts["openclaw-bot:diagnose:bg"], "string");
   assert.equal(typeof scripts["openclaw-bot:status"], "string");
+  assert.equal(typeof scripts["openclaw-bot:doctor"], "string");
+  assert.equal(typeof scripts["openclaw-bot:rescan"], "string");
   assert.equal(typeof scripts["openclaw-bot:daemon"], "string");
   assert.match(scripts["openclaw-bot:daemon"], /start-openclaw-bot\.sh/);
   assert.match(scripts["openclaw-bot:diagnose:bg"], /start-openclaw-diagnose\.sh/);
   assert.match(scripts["openclaw-bot:status"], /check-openclaw-status\.sh/);
+  assert.match(scripts["openclaw-bot:doctor"], /openclaw-doctor\.sh/);
+  assert.match(scripts["openclaw-bot:rescan"], /openclaw-rescan\.sh/);
   assert.match(scripts["openclaw-bot:diagnose"], /CODEX_IM_VERBOSE_LOGS=true/);
   assert.equal(scripts.test, "node --test test/*.test.js");
 });
