@@ -93,7 +93,7 @@ fi
 
 echo "[codex-im] diagnosis hints"
 if [ -f "$LOG_FILE" ] && grep -q "errcode=-14" "$LOG_FILE"; then
-  echo "- errcode=-14: OpenClaw session timeout. Run: npm run openclaw-bot:rescan"
+  echo "- errcode=-14: OpenClaw session timeout. Run: npm run openclaw-bot:diagnose"
 fi
 if [ -f "$LOG_FILE" ] && grep -qi "timeout" "$LOG_FILE"; then
   echo "- timeout detected: check network and OpenClaw base URL, then retry."

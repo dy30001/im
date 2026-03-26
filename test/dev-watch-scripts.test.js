@@ -17,7 +17,6 @@ test("package.json exposes dev watch scripts for both runtimes", () => {
   assert.equal(typeof scripts["openclaw-bot:diagnose:bg"], "string");
   assert.equal(typeof scripts["openclaw-bot:status"], "string");
   assert.equal(typeof scripts["openclaw-bot:doctor"], "string");
-  assert.equal(typeof scripts["openclaw-bot:rescan"], "string");
   assert.equal(typeof scripts["openclaw-bot:stop"], "string");
   assert.equal(typeof scripts["openclaw-bot:restart"], "string");
   assert.equal(typeof scripts["openclaw-bot:quick"], "string");
@@ -28,7 +27,6 @@ test("package.json exposes dev watch scripts for both runtimes", () => {
   assert.match(scripts["openclaw-bot:diagnose:bg"], /start-openclaw-diagnose\.sh/);
   assert.match(scripts["openclaw-bot:status"], /check-openclaw-status\.sh/);
   assert.match(scripts["openclaw-bot:doctor"], /openclaw-doctor\.sh/);
-  assert.match(scripts["openclaw-bot:rescan"], /openclaw-rescan\.sh/);
   assert.match(scripts["openclaw-bot:stop"], /stop-openclaw-bot\.sh/);
   assert.match(scripts["openclaw-bot:restart"], /restart-openclaw-bot\.sh/);
   assert.match(scripts["openclaw-bot:quick"], /openclaw-quick\.sh/);

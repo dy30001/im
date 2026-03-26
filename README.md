@@ -105,12 +105,6 @@ npm run openclaw-bot:diagnose
 npm run openclaw-bot:diagnose:bg
 ```
 
-一键重置扫码（停服务、备份旧凭据、重新进入扫码登录）：
-
-```bash
-npm run openclaw-bot:rescan
-```
-
 停止服务：
 
 ```bash

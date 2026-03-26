@@ -45,7 +45,6 @@
     "openclaw-bot:diagnose:bg": "bash ./scripts/start-openclaw-diagnose.sh",
     "openclaw-bot:status": "bash ./scripts/check-openclaw-status.sh",
     "openclaw-bot:doctor": "bash ./scripts/openclaw-doctor.sh",
-    "openclaw-bot:rescan": "bash ./scripts/openclaw-rescan.sh",
     "openclaw-bot:stop": "bash ./scripts/stop-openclaw-bot.sh",
     "openclaw-bot:restart": "bash ./scripts/restart-openclaw-bot.sh",
     "openclaw-bot:quick": "bash ./scripts/openclaw-quick.sh",
