@@ -1,7 +1,7 @@
 {
   "name": "@vdug/codex-im",
   "version": "0.2.1",
-  "description": "Feishu-first local bridge for Codex.",
+  "description": "Local bridge for Codex over Feishu and OpenClaw.",
   "license": "MIT",
   "repository": {
     "type": "git",
