@@ -51,6 +51,7 @@ test("daemon launcher daemonizes the OpenClaw supervisor", () => {
   assert.match(supervisor, /heartbeat stale age=/);
   assert.match(supervisor, /heartbeat\.json/);
   assert.match(supervisor, /dotenv\.config/);
+  assert.doesNotMatch(supervisor, /heartbeatTimer\.unref\(\)/);
   assert.match(supervisor, /openclaw supervisor daemonized pid=/);
   assert.match(supervisor, /child-pid/);
   assert.match(supervisor, /child\.once\("exit"/);
@@ -77,7 +78,7 @@ test("launchd installer renders a persistent macOS LaunchAgent", () => {
   assert.match(installer, /start-openclaw-bot\.js/);
   assert.match(plist, /CODEX_IM_OPENCLAW_SUPERVISOR_DAEMONIZED/);
   assert.match(plist, /__NODE_BIN__/);
-  assert.match(plist, /KeepAlive/);
+  assert.match(plist, /<key>KeepAlive<\/key>\s*<true\/>/);
 });
 
 test("status script reports supervisor and child pids", () => {

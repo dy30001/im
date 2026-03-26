@@ -227,10 +227,6 @@ function startHeartbeatWatchdog() {
     );
     killPid(currentChild.pid);
   }, HEARTBEAT_CHECK_INTERVAL_MS);
-
-  if (typeof heartbeatTimer.unref === "function") {
-    heartbeatTimer.unref();
-  }
 }
 
 function clearHeartbeatWatchdog() {

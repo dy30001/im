@@ -72,7 +72,7 @@ npm run openclaw-bot
 npm run openclaw-bot:launchd
 ```
 
-这个模式会把 `openclaw-bot` 安装成 macOS LaunchAgent，child 进程意外退出时会自动重启，不需要你手动再起服务。
+这个模式会把 `openclaw-bot` 安装成 macOS LaunchAgent，supervisor 或 child 进程退出时都会自动重启，不需要你手动再起服务。
 另外，supervisor 会持续检查心跳；默认连续 3 小时没有新的轮询/发送心跳时，会判定服务卡住并自动重启。可通过 `.env` 里的 `CODEX_IM_OPENCLAW_HEARTBEAT_TIMEOUT_MS` 和 `CODEX_IM_OPENCLAW_HEARTBEAT_CHECK_INTERVAL_MS` 调整。
 
 查看运行状态（进程、锁文件、日志尾部）：
