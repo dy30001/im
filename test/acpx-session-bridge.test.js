@@ -5,7 +5,6 @@ const path = require("node:path");
 const test = require("node:test");
 
 const {
-  getCachedDesktopSessions,
   hydrateDesktopSession,
   listDesktopSessionsForWorkspace,
   resolveDesktopSessionById,
@@ -40,7 +39,7 @@ function writeSessionFixtures(tempDir) {
   return sessionsDir;
 }
 
-test("listDesktopSessionsForWorkspace caches desktop-visible sessions", async () => {
+test("listDesktopSessionsForWorkspace returns desktop-visible sessions", async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-im-acpx-bridge-"));
   const sessionsDir = writeSessionFixtures(tempDir);
   const runtime = {
@@ -49,14 +48,12 @@ test("listDesktopSessionsForWorkspace caches desktop-visible sessions", async ()
         acpxSessionIndexFile: path.join(sessionsDir, "index.json"),
       },
     },
-    desktopSessionsByWorkspaceRoot: new Map(),
   };
 
   const sessions = await listDesktopSessionsForWorkspace(runtime, "/repo");
 
   assert.equal(sessions.length, 1);
   assert.equal(sessions[0].id, "session-1");
-  assert.equal(getCachedDesktopSessions(runtime, "/repo").length, 1);
   assert.equal(resolveDesktopSessionById(runtime, "/repo", "record-1")?.id, "session-1");
 });
 

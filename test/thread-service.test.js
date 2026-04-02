@@ -97,6 +97,48 @@ test("resolveWorkspaceThreadState auto-switches from read-only desktop sessions 
   }
 });
 
+test("resolveWorkspaceThreadState skips refreshing the thread list when the current thread is already selected", async () => {
+  const bindingKey = "binding-1";
+  const workspaceRoot = "/repo";
+  const normalized = {
+    chatId: "chat-1",
+    messageId: "msg-1",
+    text: "继续聊天",
+  };
+
+  const threadAssignments = new Map([[workspaceRoot, "thread-1"]]);
+  let refreshCalls = 0;
+
+  const runtime = {
+    sessionStore: {
+      getThreadIdForWorkspace: (_bindingKey, currentWorkspaceRoot) => threadAssignments.get(currentWorkspaceRoot) || "",
+      setThreadIdForWorkspace: (_bindingKey, currentWorkspaceRoot, threadId) => {
+        threadAssignments.set(currentWorkspaceRoot, threadId);
+      },
+    },
+    resolveThreadIdForBinding: (_bindingKey, currentWorkspaceRoot) => threadAssignments.get(currentWorkspaceRoot) || "",
+    refreshWorkspaceThreads: async () => {
+      refreshCalls += 1;
+      return [];
+    },
+    setThreadBindingKey: () => {},
+    setThreadWorkspaceRoot: () => {},
+    rememberSelectedThreadForSync: () => {},
+  };
+
+  const result = await resolveWorkspaceThreadState(runtime, {
+    bindingKey,
+    workspaceRoot,
+    normalized,
+    autoSelectThread: true,
+    refreshThreadList: false,
+  });
+
+  assert.equal(refreshCalls, 0);
+  assert.equal(result.selectedThreadId, "thread-1");
+  assert.equal(result.threadId, "thread-1");
+});
+
 test("ensureThreadAndSendMessage creates a writable recovery session when no desktop session can continue", async () => {
   const bindingKey = "binding-1";
   const workspaceRoot = "/repo";

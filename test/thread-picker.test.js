@@ -91,17 +91,17 @@ test("buildThreadPickerCard shows total count and pagination controls", () => {
   assert.doesNotMatch(cardJson, /"threadId":""/);
 });
 
-test("buildThreadPickerCard shows stale refresh notice when rendering cached threads", () => {
+test("buildThreadPickerCard renders explicit notice text", () => {
   const card = buildThreadPickerCard({
     workspaceRoot: "/repo",
     threads: [{ id: "thread-1", title: "Thread 1", updatedAt: 1 }],
     currentThreadId: "thread-1",
     page: 0,
-    noticeText: "线程列表刷新失败，当前展示最近一次成功结果。",
+    noticeText: "线程列表刷新失败，请稍后重试。",
   });
 
   const cardJson = JSON.stringify(card);
-  assert.match(cardJson, /最近一次成功结果/);
+  assert.match(cardJson, /请稍后重试/);
 });
 
 test("showThreadPicker tags the thread list with selection context", async () => {
@@ -170,21 +170,22 @@ test("showThreadPicker distinguishes refresh failure from empty history", async 
   assert.doesNotMatch(infoMessages[0].text, /还没有可切换的历史线程/);
 });
 
-test("showThreadPicker renders cached threads when refresh falls back", async () => {
+test("showThreadPicker does not render stale thread cards when refresh fails", async () => {
   const cards = [];
+  const infoMessages = [];
   const runtime = {
     resolveReplyToMessageId: (_normalized, replyToMessageId = "") => replyToMessageId || "reply-1",
     getBindingContext: () => ({ bindingKey: "binding-1", workspaceRoot: "/repo" }),
-    refreshWorkspaceThreads: async () => [
-      { id: "thread-1", title: "Thread 1", updatedAt: 1, cwd: "/repo" },
-    ],
-    getWorkspaceThreadRefreshState: () => ({ ok: false, fromCache: true, error: "network error" }),
+    refreshWorkspaceThreads: async () => [],
+    getWorkspaceThreadRefreshState: () => ({ ok: false, fromCache: false, error: "network error" }),
     resolveThreadIdForBinding: () => "thread-1",
     buildThreadPickerCard,
     sendInteractiveCard: async (payload) => {
       cards.push(payload);
     },
-    sendInfoCardMessage: async () => {},
+    sendInfoCardMessage: async (payload) => {
+      infoMessages.push(payload);
+    },
   };
   const normalized = {
     chatId: "chat-1",
@@ -193,13 +194,9 @@ test("showThreadPicker renders cached threads when refresh falls back", async ()
 
   await showThreadPicker(runtime, normalized, { replyToMessageId: "reply-1", page: 0 });
 
-  assert.equal(cards.length, 1);
-  assert.match(JSON.stringify(cards[0].card), /最近一次成功结果/);
-  assert.deepEqual(cards[0].selectionContext, {
-    bindingKey: "binding-1",
-    command: "threads",
-    page: 0,
-  });
+  assert.equal(cards.length, 0);
+  assert.equal(infoMessages.length, 1);
+  assert.match(infoMessages[0].text, /线程列表刷新失败/);
 });
 
 test("showThreadPicker uses a text summary for providers without interactive cards", async () => {

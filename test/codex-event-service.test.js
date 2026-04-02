@@ -1,7 +1,10 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { logProviderDeliveryFailureOnce } = require("../src/app/codex-event-service");
+const {
+  deliverToProvider,
+  logProviderDeliveryFailureOnce,
+} = require("../src/app/codex-event-service");
 
 test("logProviderDeliveryFailureOnce de-duplicates repeated provider delivery failures", () => {
   const runtime = {};
@@ -28,4 +31,40 @@ test("logProviderDeliveryFailureOnce de-duplicates repeated provider delivery fa
 
   assert.equal(errors.length, 1);
   assert.match(errors[0], /failed to deliver provider message/);
+});
+
+test("deliverToProvider forwards OpenClaw streaming state even when streaming output is disabled", async () => {
+  const calls = [];
+  const runtime = {
+    isStopping: false,
+    supportsInteractiveCards() {
+      return false;
+    },
+    config: {
+      feishuStreamingOutput: false,
+      openclawStreamingOutput: false,
+    },
+    upsertAssistantReplyCard: async (payload) => {
+      calls.push({ ...payload });
+    },
+  };
+
+  await deliverToProvider(runtime, {
+    type: "im.run_state",
+    payload: {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      chatId: "chat-1",
+      state: "streaming",
+    },
+  });
+
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0], {
+    threadId: "thread-1",
+    turnId: "turn-1",
+    chatId: "chat-1",
+    state: "streaming",
+    deferFlush: true,
+  });
 });

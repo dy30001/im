@@ -1396,9 +1396,7 @@ function buildCacheMetaLine(availableModelsResult, { refreshed = false } = {}) {
   const updatedAt = normalizeText(availableModelsResult?.updatedAt);
   const warning = normalizeText(availableModelsResult?.warning);
   let sourceLabel = "来源：未知";
-  if (source === "cache") {
-    sourceLabel = "来源：本地缓存";
-  } else if (source === "live") {
+  if (source === "live") {
     sourceLabel = "来源：实时拉取";
   } else if (source === "refresh") {
     sourceLabel = "来源：强制刷新";

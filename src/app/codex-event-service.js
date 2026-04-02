@@ -147,14 +147,12 @@ async function deliverToProvider(runtime, event) {
 
   if (event.type === "im.run_state") {
     if (event.payload.state === "streaming") {
-      if (!streamingOutput) {
-        return;
-      }
       await runtime.upsertAssistantReplyCard({
         threadId: event.payload.threadId,
         turnId: event.payload.turnId,
         chatId: event.payload.chatId,
         state: "streaming",
+        deferFlush: !streamingOutput,
       });
     } else if (event.payload.state === "completed") {
       await runtime.upsertAssistantReplyCard({

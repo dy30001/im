@@ -66,6 +66,7 @@ async function onNormalizedTextEvent(runtime, normalized, { alreadyRemembered = 
     workspaceRoot,
     normalized,
     autoSelectThread: true,
+    refreshThreadList: false,
   });
 
   runtime.setPendingBindingContext(bindingKey, normalized);

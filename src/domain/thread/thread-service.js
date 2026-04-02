@@ -27,6 +27,7 @@ async function resolveWorkspaceThreadState(runtime, {
   workspaceRoot,
   normalized,
   autoSelectThread = true,
+  refreshThreadList = true,
 }) {
   if (shouldUseDesktopSessions(runtime)) {
     return resolveDesktopSessionState(runtime, {
@@ -37,8 +38,10 @@ async function resolveWorkspaceThreadState(runtime, {
     });
   }
 
-  const threads = await refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, normalized);
   const selectedThreadId = runtime.resolveThreadIdForBinding(bindingKey, workspaceRoot);
+  const threads = refreshThreadList || !selectedThreadId
+    ? await refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, normalized)
+    : [];
   const threadId = selectedThreadId || (autoSelectThread ? (threads[0]?.id || "") : "");
   if (!selectedThreadId && threadId) {
     runtime.sessionStore.setThreadIdForWorkspace(
@@ -429,7 +432,6 @@ async function refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, norma
         error: "",
         updatedAt: new Date().toISOString(),
       });
-      setWorkspaceThreadCache(runtime, cacheKey, sessions);
       const currentThreadId = runtime.sessionStore.getThreadIdForWorkspace(bindingKey, workspaceRoot);
       if (currentThreadId && !sessions.some((thread) => thread.id === currentThreadId)) {
         runtime.sessionStore.clearThreadIdForWorkspace(bindingKey, workspaceRoot);
@@ -437,14 +439,13 @@ async function refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, norma
       return sessions;
     } catch (error) {
       console.warn(`[codex-im] desktop session refresh failed for workspace=${workspaceRoot}: ${error.message}`);
-      const cachedThreads = getWorkspaceThreadCache(runtime, cacheKey);
       setWorkspaceThreadRefreshState(runtime, cacheKey, {
         ok: false,
-        fromCache: cachedThreads.length > 0,
+        fromCache: false,
         error: error.message,
         updatedAt: new Date().toISOString(),
       });
-      return cachedThreads;
+      return [];
     }
   }
 
@@ -457,7 +458,6 @@ async function refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, norma
       error: "",
       updatedAt: new Date().toISOString(),
     });
-    setWorkspaceThreadCache(runtime, cacheKey, threads);
     const currentThreadId = runtime.sessionStore.getThreadIdForWorkspace(bindingKey, workspaceRoot);
     const shouldKeepCurrentThread = currentThreadId && runtime.resumedThreadIds.has(currentThreadId);
     if (currentThreadId && !shouldKeepCurrentThread && !threads.some((thread) => thread.id === currentThreadId)) {
@@ -466,14 +466,13 @@ async function refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, norma
     return threads;
   } catch (error) {
     console.warn(`[codex-im] thread/list failed for workspace=${workspaceRoot}: ${error.message}`);
-    const cachedThreads = getWorkspaceThreadCache(runtime, cacheKey);
     setWorkspaceThreadRefreshState(runtime, cacheKey, {
       ok: false,
-      fromCache: cachedThreads.length > 0,
+      fromCache: false,
       error: error.message,
       updatedAt: new Date().toISOString(),
     });
-    return cachedThreads;
+    return [];
   }
 }
 
@@ -679,18 +678,6 @@ function setWorkspaceThreadRefreshState(runtime, cacheKey, state) {
     error: typeof state.error === "string" ? state.error : "",
     updatedAt: typeof state.updatedAt === "string" ? state.updatedAt : "",
   });
-}
-
-function getWorkspaceThreadCache(runtime, cacheKey) {
-  const cached = runtime.workspaceThreadListCache?.get(cacheKey);
-  return Array.isArray(cached) ? cached : [];
-}
-
-function setWorkspaceThreadCache(runtime, cacheKey, threads) {
-  if (!runtime.workspaceThreadListCache) {
-    runtime.workspaceThreadListCache = new Map();
-  }
-  runtime.workspaceThreadListCache.set(cacheKey, Array.isArray(threads) ? threads : []);
 }
 
 function buildWorkspaceThreadCacheKey(bindingKey, workspaceRoot) {

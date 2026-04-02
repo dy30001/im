@@ -49,12 +49,14 @@ test("OpenClawClientAdapter.getUpdates still throws when API returns a non-timeo
 });
 
 test("OpenClawClientAdapter.sendTextMessage aligns the payload with the Weixin plugin shape", async () => {
-  let capturedBody = null;
+  const capturedBodies = [];
+  const capturedHeaders = [];
   const adapter = new OpenClawClientAdapter({
     baseUrl: "https://ilinkai.weixin.qq.com",
     token: "token-1",
     fetchImpl: async (_url, options) => {
-      capturedBody = JSON.parse(String(options?.body || "{}"));
+      capturedBodies.push(JSON.parse(String(options?.body || "{}")));
+      capturedHeaders.push({ ...(options?.headers || {}) });
       return {
         ok: true,
         async text() {
@@ -66,20 +68,27 @@ test("OpenClawClientAdapter.sendTextMessage aligns the payload with the Weixin p
 
   await adapter.sendTextMessage({
     toUserId: "wx-user-1",
+    fromUserId: "bot-account-1",
     text: "hello",
     contextToken: "ctx-1",
   });
+  await adapter.sendTextMessage({
+    toUserId: "wx-user-1",
+    fromUserId: "bot-account-1",
+    text: "hello again",
+    contextToken: "ctx-1",
+  });
 
-  assert.equal(capturedBody?.msg?.from_user_id, "");
-  assert.equal(capturedBody?.msg?.to_user_id, "wx-user-1");
-  assert.equal(typeof capturedBody?.msg?.client_id, "string");
-  assert.match(capturedBody?.msg?.client_id, /^openclaw-weixin:\d+-[0-9a-f]{8}$/);
-  assert.equal(capturedBody?.msg?.message_type, 2);
-  assert.equal(capturedBody?.msg?.message_state, 2);
-  assert.equal(capturedBody?.msg?.context_token, "ctx-1");
-  assert.equal(typeof capturedBody?.base_info?.channel_version, "string");
-  assert.notEqual(capturedBody?.base_info?.channel_version, "");
-  assert.deepEqual(capturedBody?.msg?.item_list, [
+  assert.equal(capturedBodies[0]?.msg?.from_user_id, "bot-account-1");
+  assert.equal(capturedBodies[0]?.msg?.to_user_id, "wx-user-1");
+  assert.equal(typeof capturedBodies[0]?.msg?.client_id, "string");
+  assert.match(capturedBodies[0]?.msg?.client_id, /^openclaw-weixin:\d+-[0-9a-f]{8}$/);
+  assert.equal(capturedBodies[0]?.msg?.message_type, 2);
+  assert.equal(capturedBodies[0]?.msg?.message_state, 2);
+  assert.equal(capturedBodies[0]?.msg?.context_token, "ctx-1");
+  assert.equal(typeof capturedBodies[0]?.base_info?.channel_version, "string");
+  assert.notEqual(capturedBodies[0]?.base_info?.channel_version, "");
+  assert.deepEqual(capturedBodies[0]?.msg?.item_list, [
     {
       type: 1,
       text_item: {
@@ -87,6 +96,9 @@ test("OpenClawClientAdapter.sendTextMessage aligns the payload with the Weixin p
       },
     },
   ]);
+  assert.equal(capturedBodies[1]?.msg?.from_user_id, "bot-account-1");
+  assert.equal(capturedHeaders[0]?.["X-WECHAT-UIN"], capturedHeaders[1]?.["X-WECHAT-UIN"]);
+  assert.notEqual(capturedHeaders[0]?.["X-WECHAT-UIN"], "");
 });
 
 test("isOpenClawCredentialError recognizes session timeout style failures", () => {

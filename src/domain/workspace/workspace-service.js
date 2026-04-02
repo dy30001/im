@@ -266,8 +266,8 @@ async function showStatusPanel(runtime, normalized, { replyToMessageId, noticeTe
     : threads.slice(0, 3);
   const status = runtime.describeWorkspaceStatus(threadId);
   const codexParams = runtime.getCodexParamsForWorkspace(bindingKey, workspaceRoot);
-  const availableCatalog = runtime.sessionStore.getAvailableModelCatalog();
-  const availableModels = Array.isArray(availableCatalog?.models) ? availableCatalog.models : [];
+  const availableModelsResult = await settingsRuntime.loadAvailableModels(runtime, { forceRefresh: false });
+  const availableModels = Array.isArray(availableModelsResult?.models) ? availableModelsResult.models : [];
   const modelOptions = settingsRuntime.buildModelSelectOptions(availableModels);
   const effortOptions = settingsRuntime.buildEffortSelectOptions(availableModels, codexParams?.model || "");
   await runtime.sendInteractiveCard({
@@ -701,9 +701,7 @@ async function showThreadPicker(runtime, normalized, { replyToMessageId, page = 
         threads,
         currentThreadId,
         page: safePage,
-        noticeText: refreshState.fromCache
-          ? "线程列表刷新失败，当前展示最近一次成功结果。"
-          : "",
+        noticeText: "",
       }),
       selectionContext: {
         bindingKey,
@@ -722,9 +720,7 @@ async function showThreadPicker(runtime, normalized, { replyToMessageId, page = 
       threads,
       currentThreadId,
       page: safePage,
-      noticeText: refreshState.fromCache
-        ? "线程列表刷新失败，当前展示最近一次成功结果。"
-        : "",
+      noticeText: "",
     }),
     selectionContext: {
       bindingKey,

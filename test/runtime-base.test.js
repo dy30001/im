@@ -18,16 +18,16 @@ test("initializeCommonRuntimeState seeds shared runtime containers", () => {
   assert.ok(runtime.replyCardByRunKey instanceof Map);
   assert.ok(runtime.currentRunKeyByThreadId instanceof Map);
   assert.ok(runtime.replyFlushTimersByRunKey instanceof Map);
+  assert.ok(runtime.replyProgressTimersByRunKey instanceof Map);
+  assert.ok(runtime.replyProgressFollowupTimersByRunKey instanceof Map);
   assert.ok(runtime.pendingReactionByBindingKey instanceof Map);
   assert.ok(runtime.pendingReactionByThreadId instanceof Map);
   assert.ok(runtime.bindingKeyByThreadId instanceof Map);
   assert.ok(runtime.workspaceRootByThreadId instanceof Map);
-  assert.ok(runtime.approvalAllowlistByWorkspaceRoot instanceof Map);
   assert.ok(runtime.inFlightApprovalRequestKeys instanceof Set);
   assert.ok(runtime.resumedThreadIds instanceof Set);
   assert.ok(runtime.messageContextByMessageId instanceof Map);
   assert.ok(runtime.latestMessageContextByChatId instanceof Map);
-  assert.ok(runtime.workspaceThreadListCache instanceof Map);
   assert.ok(runtime.workspaceThreadRefreshStateByKey instanceof Map);
   assert.equal(runtime.isStopping, false);
   assert.equal(runtime.stopPromise, null);

@@ -76,7 +76,6 @@ test("applyApprovalDecision does not persist prefixes for one-off approvals", as
 
 test("shouldAutoApproveRequest matches persisted command prefixes per workspace", () => {
   const runtime = {
-    approvalAllowlistByWorkspaceRoot: new Map(),
     sessionStore: {
       getApprovalCommandAllowlistForWorkspace(workspaceRoot) {
         if (workspaceRoot === "/repo") {
@@ -93,7 +92,6 @@ test("shouldAutoApproveRequest matches persisted command prefixes per workspace"
   assert.equal(shouldAutoApproveRequest(runtime, "/repo", {
     commandTokens: ["npm", "run", "build"],
   }), false);
-  assert.deepEqual(runtime.approvalAllowlistByWorkspaceRoot.get("/repo"), [["npm", "test"]]);
 });
 
 test("isWorkspaceApprovalCommand recognizes natural-language workspace approvals", () => {

@@ -52,7 +52,6 @@ const workspaceRuntime = require("../domain/workspace/workspace-service");
 const eventsRuntime = require("./codex-event-service");
 const approvalPolicyRuntime = require("../domain/approval/approval-policy");
 const appDispatcher = require("./dispatcher");
-const { extractModelCatalogFromListResponse } = require("../shared/model-catalog");
 const fs = require("fs");
 
 class FeishuBotRuntime {
@@ -81,7 +80,6 @@ class FeishuBotRuntime {
     this.initializeFeishuSdk();
     await this.codex.connect();
     await this.codex.initialize();
-    await this.refreshAvailableModelCatalogAtStartup();
     this.startLongConnection();
     console.log(`[codex-im] feishu-bot runtime ready for app ${maskSecret(this.config.feishu.appId)}`);
   }
@@ -97,6 +95,14 @@ class FeishuBotRuntime {
         clearTimeout(timer);
       }
       this.replyFlushTimersByRunKey.clear();
+      for (const timer of this.replyProgressTimersByRunKey.values()) {
+        clearTimeout(timer);
+      }
+      this.replyProgressTimersByRunKey.clear();
+      for (const timer of this.replyProgressFollowupTimersByRunKey.values()) {
+        clearTimeout(timer);
+      }
+      this.replyProgressFollowupTimersByRunKey.clear();
 
       try {
         if (this.wsClient?.close) {
@@ -188,25 +194,6 @@ class FeishuBotRuntime {
 
     this.wsClient.start({ eventDispatcher });
     console.log("[codex-im] Feishu long connection started");
-  }
-
-  async refreshAvailableModelCatalogAtStartup() {
-    const response = await this.codex.listModels();
-    const models = extractModelCatalogFromListResponse(response);
-    if (!models.length) {
-      throw new Error("model/list returned no models at startup");
-    }
-    this.sessionStore.setAvailableModelCatalog(models);
-    const validatedDefaults = workspaceRuntime.validateDefaultCodexParamsConfig(this, models);
-    if (!validatedDefaults.model) {
-      throw new Error(`Invalid CODEX_IM_DEFAULT_CODEX_MODEL: ${this.config.defaultCodexModel}`);
-    }
-    if (!validatedDefaults.effort) {
-      throw new Error(
-        `Invalid CODEX_IM_DEFAULT_CODEX_EFFORT: ${this.config.defaultCodexEffort} for model ${validatedDefaults.model}`
-      );
-    }
-    console.log(`[codex-im] model catalog refreshed at startup: ${models.length} entries`);
   }
 
   resolveReplyToMessageId(normalized, replyToMessageId = "") {

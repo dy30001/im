@@ -7,14 +7,25 @@ const {
   saveOpenClawCredentials,
 } = require("../infra/openclaw/token-store");
 
-function applyOpenClawCredentials(runtime, { token, baseUrl }) {
+function applyOpenClawCredentials(runtime, { token, baseUrl, accountId, userId } = {}) {
   const resolvedToken = String(token || "").trim();
   const resolvedBaseUrl = String(baseUrl || runtime.config.openclaw.baseUrl || "").trim();
+  const resolvedAccountId = String(accountId || runtime.config.openclaw.accountId || "").trim();
+  const resolvedUserId = String(userId || runtime.config.openclaw.userId || "").trim();
+  const resolvedWechatUin = buildWechatUin({
+    accountId: resolvedAccountId,
+    userId: resolvedUserId,
+    token: resolvedToken,
+  });
   runtime.config.openclaw.token = resolvedToken;
   runtime.config.openclaw.baseUrl = resolvedBaseUrl;
+  runtime.config.openclaw.accountId = resolvedAccountId;
+  runtime.config.openclaw.userId = resolvedUserId;
+  runtime.config.openclaw.wechatUin = resolvedWechatUin;
   runtime.openclawAdapter.setCredentials({
     token: resolvedToken,
     baseUrl: resolvedBaseUrl,
+    wechatUin: resolvedWechatUin,
   });
 }
 
@@ -24,11 +35,15 @@ async function ensureOpenClawCredentials(runtime) {
   const resolvedBaseUrl = runtime.config.openclaw.baseUrlExplicit
     ? String(runtime.config.openclaw.baseUrl || "").trim()
     : (storedCredentials?.baseUrl || String(runtime.config.openclaw.baseUrl || "").trim());
+  const resolvedAccountId = String(storedCredentials?.accountId || runtime.config.openclaw.accountId || "").trim();
+  const resolvedUserId = String(storedCredentials?.userId || runtime.config.openclaw.userId || "").trim();
 
   if (resolvedToken) {
     applyOpenClawCredentials(runtime, {
       token: resolvedToken,
       baseUrl: resolvedBaseUrl,
+      accountId: resolvedAccountId,
+      userId: resolvedUserId,
     });
     return;
   }
@@ -70,6 +85,8 @@ async function ensureOpenClawCredentials(runtime) {
   applyOpenClawCredentials(runtime, {
     token: loginResult.token,
     baseUrl: loginResult.baseUrl,
+    accountId: loginResult.accountId,
+    userId: loginResult.userId,
   });
 }
 
@@ -77,13 +94,24 @@ function reloadOpenClawCredentialsFromStore(runtime) {
   const storedCredentials = loadOpenClawCredentials(runtime.config.openclaw.credentialsFile);
   const storedToken = String(storedCredentials?.token || "").trim();
   const storedBaseUrl = String(storedCredentials?.baseUrl || runtime.config.openclaw.baseUrl || "").trim();
+  const storedAccountId = String(storedCredentials?.accountId || "").trim();
+  const storedUserId = String(storedCredentials?.userId || "").trim();
   if (!storedToken) {
     return false;
   }
 
   const currentToken = String(runtime.config.openclaw.token || "").trim();
   const currentBaseUrl = String(runtime.config.openclaw.baseUrl || "").trim();
-  if (storedToken === currentToken && storedBaseUrl === currentBaseUrl) {
+  const currentAccountId = String(runtime.config.openclaw.accountId || "").trim();
+  const currentUserId = String(runtime.config.openclaw.userId || "").trim();
+  const comparisonAccountId = storedAccountId || currentAccountId;
+  const comparisonUserId = storedUserId || currentUserId;
+  if (
+    storedToken === currentToken
+    && storedBaseUrl === currentBaseUrl
+    && comparisonAccountId === currentAccountId
+    && comparisonUserId === currentUserId
+  ) {
     return false;
   }
 
@@ -91,6 +119,8 @@ function reloadOpenClawCredentialsFromStore(runtime) {
   applyOpenClawCredentials(runtime, {
     token: storedToken,
     baseUrl: storedBaseUrl,
+    accountId: storedAccountId,
+    userId: storedUserId,
   });
   console.warn("[codex-im] reloaded OpenClaw credentials from the local credentials file");
   return true;
@@ -117,3 +147,11 @@ module.exports = {
   reloadOpenClawCredentialsFromStore,
   tryRecoverFromPollError,
 };
+
+function buildWechatUin({ accountId = "", userId = "", token = "" } = {}) {
+  const seed = String(accountId || userId || token || "").trim();
+  if (!seed) {
+    return "";
+  }
+  return Buffer.from(seed, "utf8").toString("base64");
+}

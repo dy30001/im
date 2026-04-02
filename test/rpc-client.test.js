@@ -229,6 +229,51 @@ test("CodexRpcClient uses an ASCII workspace mirror for turn requests and maps l
   assert.equal(mappedThreads[0].cwd, unicodeWorkspaceRoot);
 });
 
+test("CodexRpcClient keeps workspace aliases isolated per workspace root", () => {
+  const tempAliasRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-im-alias-"));
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-im-仓库-"));
+  const projectARoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-im-项目A-"));
+  const projectBRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-im-项目B-"));
+  const client = new CodexRpcClient({
+    endpoint: "",
+    env: {},
+    codexCommand: "codex",
+    spawnImpl: () => {
+      throw new Error("spawn should not be used in this test");
+    },
+    webSocketImpl: class FakeWebSocket {},
+    workspaceCwd: repoRoot,
+    workspaceAliasRoot: tempAliasRoot,
+    codexHomeRoot: fs.mkdtempSync(path.join(os.tmpdir(), "codex-im-home-")),
+  });
+
+  const repoAlias = client.resolveCodexSpawnWorkspaceRoot();
+  const aliasA = client.resolveCodexSpawnWorkspaceRoot(projectARoot);
+  const aliasB = client.resolveCodexSpawnWorkspaceRoot(projectBRoot);
+
+  assert.match(repoAlias, /^[\x00-\x7F]+$/);
+  assert.match(aliasA, /^[\x00-\x7F]+$/);
+  assert.match(aliasB, /^[\x00-\x7F]+$/);
+  assert.notEqual(aliasA, aliasB);
+  assert.notEqual(aliasA, repoAlias);
+  assert.notEqual(aliasB, repoAlias);
+  assert.equal(client.restoreWorkspacePath(aliasA), projectARoot);
+  assert.equal(client.restoreWorkspacePath(`${aliasA}/subdir`), `${projectARoot}/subdir`);
+  assert.equal(client.restoreWorkspacePath(aliasB), projectBRoot);
+
+  const rewritten = client.rewriteThreadListResponse({
+    result: {
+      data: [
+        { id: "thread-a", cwd: aliasA, name: "A" },
+        { id: "thread-b", cwd: `${aliasB}/nested`, name: "B" },
+      ],
+    },
+  });
+
+  assert.equal(rewritten.result.data[0].cwd, projectARoot);
+  assert.equal(rewritten.result.data[1].cwd, `${projectBRoot}/nested`);
+});
+
 test("spawnCodexProcess forwards the cwd through both spawn options and environment", async () => {
   let capturedOptions = null;
   const fakeSpawn = () => {

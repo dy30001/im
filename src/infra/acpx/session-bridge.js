@@ -6,11 +6,7 @@ const {
 } = require("./session-index");
 
 async function listDesktopSessionsForWorkspace(runtime, workspaceRoot) {
-  const indexFile = runtime.config.openclaw?.acpxSessionIndexFile || DEFAULT_ACPX_SESSION_INDEX_FILE;
-  const entries = listAcpxSessionsForWorkspace(workspaceRoot, { indexFile });
-  const sessions = entries.map((entry) => normalizeDesktopSession(entry)).filter(Boolean);
-  cacheDesktopSessions(runtime, workspaceRoot, sessions);
-  return sessions;
+  return listNormalizedDesktopSessions(runtime, workspaceRoot);
 }
 
 async function hydrateDesktopSession(runtime, session) {
@@ -56,12 +52,18 @@ function resolveDesktopSessionById(runtime, workspaceRoot, sessionId) {
   if (!normalizedSessionId) {
     return null;
   }
-  const sessions = getCachedDesktopSessions(runtime, workspaceRoot);
+  const sessions = listNormalizedDesktopSessions(runtime, workspaceRoot);
   return sessions.find((session) => (
     session.id === normalizedSessionId
     || session.acpSessionId === normalizedSessionId
     || session.acpxRecordId === normalizedSessionId
   )) || null;
+}
+
+function listNormalizedDesktopSessions(runtime, workspaceRoot) {
+  const indexFile = runtime.config.openclaw?.acpxSessionIndexFile || DEFAULT_ACPX_SESSION_INDEX_FILE;
+  const entries = listAcpxSessionsForWorkspace(workspaceRoot, { indexFile });
+  return entries.map((entry) => normalizeDesktopSession(entry)).filter(Boolean);
 }
 
 function normalizeDesktopSession(entry) {
@@ -93,20 +95,6 @@ function normalizeDesktopSession(entry) {
   };
 }
 
-function cacheDesktopSessions(runtime, workspaceRoot, sessions) {
-  if (!runtime.desktopSessionsByWorkspaceRoot) {
-    runtime.desktopSessionsByWorkspaceRoot = new Map();
-  }
-  runtime.desktopSessionsByWorkspaceRoot.set(String(workspaceRoot || "").trim(), Array.isArray(sessions) ? sessions : []);
-}
-
-function getCachedDesktopSessions(runtime, workspaceRoot) {
-  if (!runtime.desktopSessionsByWorkspaceRoot) {
-    runtime.desktopSessionsByWorkspaceRoot = new Map();
-  }
-  return runtime.desktopSessionsByWorkspaceRoot.get(String(workspaceRoot || "").trim()) || [];
-}
-
 function toEpochSeconds(value) {
   if (typeof value === "number" && Number.isFinite(value) && value > 0) {
     return value;
@@ -123,7 +111,6 @@ function toEpochSeconds(value) {
 }
 
 module.exports = {
-  getCachedDesktopSessions,
   hydrateDesktopSession,
   listDesktopSessionsForWorkspace,
   resolveDesktopSessionById,

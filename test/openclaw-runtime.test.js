@@ -58,6 +58,8 @@ test("OpenClawBotRuntime reloads stored credentials after a credential failure",
   saveOpenClawCredentials(credentialsFile, {
     token: "fresh-token",
     baseUrl: "https://ilinkai.weixin.qq.com",
+    accountId: "account-1",
+    userId: "user-1",
   });
 
   const runtime = new OpenClawBotRuntime({
@@ -88,6 +90,8 @@ test("OpenClawBotRuntime reloads stored credentials after a credential failure",
 
   assert.equal(recovered, true);
   assert.equal(runtime.config.openclaw.token, "fresh-token");
+  assert.equal(runtime.config.openclaw.accountId, "account-1");
+  assert.equal(runtime.config.openclaw.userId, "user-1");
   assert.equal(runtime.openclawAdapter.token, "fresh-token");
   assert.equal(runtime.syncCursor, "");
 });
@@ -126,6 +130,49 @@ test("OpenClawBotRuntime reports non-recoverable credential failures when no new
 
   assert.equal(recovered, false);
   assert.equal(runtime.config.openclaw.token, "same-token");
+});
+
+test("OpenClawBotRuntime sends messages with the bot account id", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-im-openclaw-send-from-id-"));
+  const runtime = new OpenClawBotRuntime({
+    mode: "openclaw-bot",
+    workspaceAllowlist: [],
+    codexEndpoint: "",
+    codexCommand: "codex",
+    defaultCodexModel: "gpt-5.3-codex",
+    defaultCodexEffort: "medium",
+    defaultCodexAccessMode: "default",
+    verboseCodexLogs: false,
+    openclaw: {
+      baseUrl: "https://ilinkai.weixin.qq.com",
+      token: "token",
+      accountId: "account-1",
+      userId: "user-1",
+      longPollTimeoutMs: 35000,
+    },
+    defaultWorkspaceId: "default",
+    openclawStreamingOutput: false,
+    sessionsFile: path.join(tempDir, "sessions.json"),
+  });
+
+  const sendCalls = [];
+  runtime.openclawAdapter = {
+    sendTextMessage: async (payload) => {
+      sendCalls.push({ ...payload });
+      return { ret: 0 };
+    },
+  };
+  runtime.markHeartbeat = async () => {};
+
+  const response = await runtime.sendTextMessage({
+    chatId: "wx-user-1",
+    text: "hello",
+  });
+
+  assert.deepEqual(response, { ret: 0 });
+  assert.equal(sendCalls.length, 1);
+  assert.equal(sendCalls[0].fromUserId, "account-1");
+  assert.equal(sendCalls[0].toUserId, "wx-user-1");
 });
 
 test("OpenClawBotRuntime writes heartbeat metadata to disk", async () => {

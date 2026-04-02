@@ -11,11 +11,8 @@ function applyDefaultCodexParamsOnBind(runtime, bindingKey, workspaceRoot) {
     return;
   }
 
-  const availableCatalog = runtime.sessionStore.getAvailableModelCatalog();
-  const availableModels = Array.isArray(availableCatalog?.models) ? availableCatalog.models : [];
-  const validatedDefaults = validateDefaultCodexParamsConfig(runtime, availableModels);
-  const defaultModel = validatedDefaults.model;
-  const defaultEffort = validatedDefaults.effort;
+  const defaultModel = normalizeText(runtime.config.defaultCodexModel);
+  const defaultEffort = normalizeEffort(runtime.config.defaultCodexEffort);
   if (!defaultModel && !defaultEffort) {
     return;
   }
@@ -75,29 +72,10 @@ async function loadAvailableModelsForSetting(runtime, normalized, { settingType 
 }
 
 async function loadAvailableModels(runtime, { forceRefresh = false } = {}) {
-  const cached = runtime.sessionStore.getAvailableModelCatalog();
-  if (!forceRefresh && cached?.models?.length) {
-    return {
-      models: cached.models,
-      error: "",
-      source: "cache",
-      updatedAt: cached.updatedAt || "",
-    };
-  }
-
   try {
     const response = await runtime.codex.listModels();
     const models = extractModelCatalogFromListResponse(response);
     if (!models.length) {
-      if (cached?.models?.length) {
-        return {
-          models: cached.models,
-          error: "",
-          source: "cache",
-          updatedAt: cached.updatedAt || "",
-          warning: "Codex 未返回模型列表，已回退本地缓存。",
-        };
-      }
       return {
         models: [],
         error: "Codex 未返回可用模型列表。",
@@ -105,23 +83,13 @@ async function loadAvailableModels(runtime, { forceRefresh = false } = {}) {
         updatedAt: "",
       };
     }
-    const saved = runtime.sessionStore.setAvailableModelCatalog(models);
     return {
       models,
       error: "",
       source: forceRefresh ? "refresh" : "live",
-      updatedAt: saved?.updatedAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
     };
   } catch (error) {
-    if (cached?.models?.length) {
-      return {
-        models: cached.models,
-        error: "",
-        source: "cache",
-        updatedAt: cached.updatedAt || "",
-        warning: `拉取失败，已回退本地缓存：${error?.message || "未知错误"}`,
-      };
-    }
     return {
       models: [],
       error: error?.message || "获取模型列表失败。",

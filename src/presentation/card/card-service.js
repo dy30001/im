@@ -12,6 +12,11 @@ const {
   summarizeCardToText,
 } = require("./builders");
 
+const DEFAULT_OPENCLAW_PROGRESS_NOTICE_DELAY_MS = 2500;
+const DEFAULT_OPENCLAW_PROGRESS_FOLLOWUP_DELAY_MS = 5 * 60 * 1000;
+const DEFAULT_OPENCLAW_PROGRESS_NOTICE_TEXT = "已收到，正在处理，请稍等。";
+const DEFAULT_OPENCLAW_PROGRESS_FOLLOWUP_TEXT = "已经处理 5 分钟了，还在继续，请稍等。";
+
 async function sendInfoCardMessage(
   runtime,
   {
@@ -284,6 +289,7 @@ async function upsertAssistantReplyCard(
       state: "streaming",
       threadId,
       turnId: resolvedTurnId,
+      progressNoticeStage: 0,
     };
   }
 
@@ -304,6 +310,9 @@ async function upsertAssistantReplyCard(
   runtime.setCurrentRunKeyForThread(threadId, runKey);
 
   if (!runtime.supportsInteractiveCards()) {
+    if (shouldScheduleOpenClawProgressNotice(runtime, existing)) {
+      scheduleOpenClawProgressNotices(runtime, runKey, existing);
+    }
     if (runtime.config.openclawStreamingOutput && existing.text) {
       const unsentText = existing.text.slice(existing.sentTextLength || 0).trim();
       if (unsentText) {
@@ -318,6 +327,7 @@ async function upsertAssistantReplyCard(
       }
     }
     if (existing.state === "completed" || existing.state === "failed") {
+      clearProgressNoticeTimers(runtime, runKey);
       const remainingText = existing.text.slice(existing.sentTextLength || 0).trim();
       const fallbackText = remainingText || (
         !existing.sentTextLength ? (existing.text || (existing.state === "failed" ? "执行失败" : "执行完成")) : ""
@@ -377,6 +387,174 @@ function clearReplyFlushTimer(runtime, runKey) {
   }
   clearTimeout(timer);
   runtime.replyFlushTimersByRunKey.delete(runKey);
+}
+
+function shouldScheduleOpenClawProgressNotice(runtime, entry) {
+  if (!runtime || (typeof runtime.supportsInteractiveCards === "function" && runtime.supportsInteractiveCards())) {
+    return false;
+  }
+  if (runtime.config?.openclawStreamingOutput) {
+    return false;
+  }
+  if (!entry || entry.state !== "streaming") {
+    return false;
+  }
+  return Boolean(entry.threadId && entry.chatId);
+}
+
+function scheduleOpenClawProgressNotices(runtime, runKey, entry) {
+  if (!shouldScheduleOpenClawProgressNotice(runtime, entry)) {
+    return;
+  }
+  if (Number(entry.progressNoticeStage || 0) < 1) {
+    scheduleOpenClawInitialProgressNotice(runtime, runKey, entry);
+  }
+  if (Number(entry.progressNoticeStage || 0) < 2) {
+    scheduleOpenClawFollowupProgressNotice(runtime, runKey, entry);
+  }
+}
+
+function scheduleOpenClawInitialProgressNotice(runtime, runKey, entry) {
+  if (!runtime || !runKey || !entry) {
+    return;
+  }
+  if (runtime.replyProgressTimersByRunKey instanceof Map && runtime.replyProgressTimersByRunKey.has(runKey)) {
+    return;
+  }
+
+  const delayMs = resolveOpenClawProgressNoticeDelayMs(runtime);
+  const timer = setTimeout(() => {
+    if (runtime.replyProgressTimersByRunKey instanceof Map) {
+      runtime.replyProgressTimersByRunKey.delete(runKey);
+    }
+
+    const currentEntry = runtime.replyCardByRunKey.get(runKey) || entry;
+    if (
+      !currentEntry
+      || currentEntry.state !== "streaming"
+      || Number(currentEntry.progressNoticeStage || 0) >= 1
+      || runtime.isStopping
+    ) {
+      return;
+    }
+
+    currentEntry.progressNoticeStage = 1;
+    runtime.setReplyCardEntry(runKey, currentEntry);
+    runtime.sendTextMessage({
+      chatId: entryChatId(currentEntry, currentEntry.chatId),
+      replyToMessageId: currentEntry.replyToMessageId,
+      contextToken: currentEntry.contextToken,
+      text: buildOpenClawProgressNoticeText(),
+    }).catch((error) => {
+      console.error(`[codex-im] failed to send OpenClaw progress notice: ${error.message}`);
+    });
+  }, delayMs);
+
+  if (typeof timer.unref === "function") {
+    timer.unref();
+  }
+
+  if (runtime.replyProgressTimersByRunKey instanceof Map) {
+    runtime.replyProgressTimersByRunKey.set(runKey, timer);
+  }
+}
+
+function scheduleOpenClawFollowupProgressNotice(runtime, runKey, entry) {
+  if (!runtime || !runKey || !entry) {
+    return;
+  }
+  if (runtime.replyProgressFollowupTimersByRunKey instanceof Map && runtime.replyProgressFollowupTimersByRunKey.has(runKey)) {
+    return;
+  }
+
+  const delayMs = resolveOpenClawProgressFollowupDelayMs(runtime);
+  const timer = setTimeout(() => {
+    if (runtime.replyProgressFollowupTimersByRunKey instanceof Map) {
+      runtime.replyProgressFollowupTimersByRunKey.delete(runKey);
+    }
+
+    const currentEntry = runtime.replyCardByRunKey.get(runKey) || entry;
+    if (
+      !currentEntry
+      || currentEntry.state !== "streaming"
+      || Number(currentEntry.progressNoticeStage || 0) >= 2
+      || runtime.isStopping
+    ) {
+      return;
+    }
+
+    currentEntry.progressNoticeStage = 2;
+    runtime.setReplyCardEntry(runKey, currentEntry);
+    runtime.sendTextMessage({
+      chatId: entryChatId(currentEntry, currentEntry.chatId),
+      replyToMessageId: currentEntry.replyToMessageId,
+      contextToken: currentEntry.contextToken,
+      text: buildOpenClawProgressFollowupText(),
+    }).catch((error) => {
+      console.error(`[codex-im] failed to send OpenClaw progress follow-up: ${error.message}`);
+    });
+  }, delayMs);
+
+  if (typeof timer.unref === "function") {
+    timer.unref();
+  }
+
+  if (runtime.replyProgressFollowupTimersByRunKey instanceof Map) {
+    runtime.replyProgressFollowupTimersByRunKey.set(runKey, timer);
+  }
+}
+
+function clearProgressNoticeTimer(runtime, runKey) {
+  if (!runtime || !(runtime.replyProgressTimersByRunKey instanceof Map) || !runKey) {
+    return;
+  }
+  const timer = runtime.replyProgressTimersByRunKey.get(runKey);
+  if (!timer) {
+    return;
+  }
+  clearTimeout(timer);
+  runtime.replyProgressTimersByRunKey.delete(runKey);
+}
+
+function clearProgressFollowupTimer(runtime, runKey) {
+  if (!runtime || !(runtime.replyProgressFollowupTimersByRunKey instanceof Map) || !runKey) {
+    return;
+  }
+  const timer = runtime.replyProgressFollowupTimersByRunKey.get(runKey);
+  if (!timer) {
+    return;
+  }
+  clearTimeout(timer);
+  runtime.replyProgressFollowupTimersByRunKey.delete(runKey);
+}
+
+function clearProgressNoticeTimers(runtime, runKey) {
+  clearProgressNoticeTimer(runtime, runKey);
+  clearProgressFollowupTimer(runtime, runKey);
+}
+
+function resolveOpenClawProgressNoticeDelayMs(runtime) {
+  const rawDelay = Number(runtime?.config?.openclawProgressNoticeDelayMs);
+  if (Number.isFinite(rawDelay) && rawDelay >= 0) {
+    return rawDelay;
+  }
+  return DEFAULT_OPENCLAW_PROGRESS_NOTICE_DELAY_MS;
+}
+
+function resolveOpenClawProgressFollowupDelayMs(runtime) {
+  const rawDelay = Number(runtime?.config?.openclawProgressFollowupDelayMs);
+  if (Number.isFinite(rawDelay) && rawDelay >= 0) {
+    return rawDelay;
+  }
+  return DEFAULT_OPENCLAW_PROGRESS_FOLLOWUP_DELAY_MS;
+}
+
+function buildOpenClawProgressNoticeText() {
+  return formatPlainTextNotice(DEFAULT_OPENCLAW_PROGRESS_NOTICE_TEXT, "progress");
+}
+
+function buildOpenClawProgressFollowupText() {
+  return formatPlainTextNotice(DEFAULT_OPENCLAW_PROGRESS_FOLLOWUP_TEXT, "progress");
 }
 
 async function flushReplyCard(runtime, runKey) {
@@ -497,6 +675,7 @@ async function deleteReaction(runtime, { messageId, reactionId }) {
 function disposeReplyRunState(runtime, runKey, threadId) {
   if (runKey) {
     clearReplyFlushTimer(runtime, runKey);
+    clearProgressNoticeTimers(runtime, runKey);
     runtime.replyCardByRunKey.delete(runKey);
   }
   if (threadId && runtime.currentRunKeyByThreadId.get(threadId) === runKey) {

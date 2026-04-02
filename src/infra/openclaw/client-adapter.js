@@ -6,16 +6,24 @@ const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
 const CHANNEL_VERSION = readChannelVersion();
 
 class OpenClawClientAdapter {
-  constructor({ baseUrl, token = "", fetchImpl = globalThis.fetch, verboseLogs = false } = {}) {
+  constructor({
+    baseUrl,
+    token = "",
+    wechatUin = "",
+    fetchImpl = globalThis.fetch,
+    verboseLogs = false,
+  } = {}) {
     this.baseUrl = ensureTrailingSlash(String(baseUrl || "").trim());
     this.token = String(token || "").trim();
+    this.wechatUin = String(wechatUin || "").trim();
     this.fetchImpl = fetchImpl;
     this.verboseLogs = Boolean(verboseLogs);
   }
 
-  setCredentials({ baseUrl = this.baseUrl, token = this.token } = {}) {
+  setCredentials({ baseUrl = this.baseUrl, token = this.token, wechatUin = this.wechatUin } = {}) {
     this.baseUrl = ensureTrailingSlash(String(baseUrl || "").trim());
     this.token = String(token || "").trim();
+    this.wechatUin = String(wechatUin || "").trim();
   }
 
   async getUpdates({ cursor = "", timeoutMs = DEFAULT_LONG_POLL_TIMEOUT_MS, signal } = {}) {
@@ -23,6 +31,7 @@ class OpenClawClientAdapter {
       baseUrl: this.baseUrl,
       endpoint: "ilink/bot/getupdates",
       token: this.token,
+      wechatUin: this.wechatUin,
       timeoutMs,
       fetchImpl: this.fetchImpl,
       signal,
@@ -41,9 +50,17 @@ class OpenClawClientAdapter {
     });
   }
 
-  async sendTextMessage({ toUserId, text, contextToken = "", timeoutMs = 15_000, signal } = {}) {
+  async sendTextMessage({
+    toUserId,
+    fromUserId = "",
+    text,
+    contextToken = "",
+    timeoutMs = 15_000,
+    signal,
+  } = {}) {
     const normalizedText = String(text || "").trim();
     const normalizedToUserId = String(toUserId || "").trim();
+    const normalizedFromUserId = String(fromUserId || "").trim();
     const normalizedContextToken = String(contextToken || "").trim();
     if (!String(toUserId || "").trim() || !normalizedText) {
       return null;
@@ -53,13 +70,14 @@ class OpenClawClientAdapter {
       baseUrl: this.baseUrl,
       endpoint: "ilink/bot/sendmessage",
       token: this.token,
+      wechatUin: this.wechatUin,
       timeoutMs,
       fetchImpl: this.fetchImpl,
       signal,
       verboseLogs: this.verboseLogs,
       body: {
         msg: {
-          from_user_id: "",
+          from_user_id: normalizedFromUserId,
           to_user_id: normalizedToUserId,
           client_id: buildClientId(),
           message_type: 2,
@@ -92,6 +110,7 @@ async function postJson({
   baseUrl,
   endpoint,
   token,
+  wechatUin,
   timeoutMs,
   fetchImpl,
   signal,
@@ -129,7 +148,7 @@ async function postJson({
     }
     const response = await fetchImpl(url.toString(), {
       method: "POST",
-      headers: buildHeaders({ token, bodyText }),
+      headers: buildHeaders({ token, wechatUin, bodyText }),
       body: bodyText,
       signal: controller.signal,
     });
@@ -159,19 +178,19 @@ async function postJson({
   }
 }
 
-function buildHeaders({ token, bodyText }) {
+function buildHeaders({ token, wechatUin, bodyText }) {
   const headers = {
-    ...buildAuthHeaders({ token }),
+    ...buildAuthHeaders({ token, wechatUin }),
     "Content-Type": "application/json",
     "Content-Length": String(Buffer.byteLength(bodyText, "utf8")),
   };
   return headers;
 }
 
-function buildAuthHeaders({ token }) {
+function buildAuthHeaders({ token, wechatUin }) {
   const headers = {
     AuthorizationType: "ilink_bot_token",
-    "X-WECHAT-UIN": randomWechatUin(),
+    "X-WECHAT-UIN": buildWechatUin({ token, wechatUin }),
   };
   if (String(token || "").trim()) {
     headers.Authorization = `Bearer ${String(token).trim()}`;
@@ -273,16 +292,21 @@ function maskValue(value) {
   return `${normalized.slice(0, 4)}...${normalized.slice(-4)}`;
 }
 
+function buildWechatUin({ token, wechatUin } = {}) {
+  const normalizedWechatUin = String(wechatUin || "").trim();
+  if (normalizedWechatUin) {
+    return normalizedWechatUin;
+  }
+
+  const normalizedToken = String(token || "").trim() || "codex-im";
+  return Buffer.from(normalizedToken, "utf8").toString("base64");
+}
+
 function ensureTrailingSlash(value) {
   if (!value) {
     return "";
   }
   return value.endsWith("/") ? value : `${value}/`;
-}
-
-function randomWechatUin() {
-  const uint32 = crypto.randomBytes(4).readUInt32BE(0);
-  return Buffer.from(String(uint32), "utf8").toString("base64");
 }
 
 module.exports = {

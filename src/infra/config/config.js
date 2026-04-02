@@ -47,6 +47,14 @@ function readConfig() {
     defaultWorkspaceId: process.env.CODEX_IM_DEFAULT_WORKSPACE_ID || "default",
     feishuStreamingOutput: readBooleanEnv("CODEX_IM_FEISHU_STREAMING_OUTPUT", true),
     openclawStreamingOutput: readBooleanEnv("CODEX_IM_OPENCLAW_STREAMING_OUTPUT", false),
+    openclawProgressNoticeDelayMs: readIntegerEnv(
+      "CODEX_IM_OPENCLAW_PROGRESS_NOTICE_DELAY_MS",
+      2500
+    ),
+    openclawProgressFollowupDelayMs: readIntegerEnv(
+      "CODEX_IM_OPENCLAW_PROGRESS_FOLLOWUP_DELAY_MS",
+      5 * 60 * 1000
+    ),
     sessionsFile,
     sessionFallbackFiles: explicitSessionsFile ? [] : buildSessionFallbackFiles(sessionsFile),
   };

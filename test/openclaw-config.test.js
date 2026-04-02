@@ -12,6 +12,8 @@ test("readConfig loads openclaw bot settings from env", () => {
     CODEX_IM_OPENCLAW_THREAD_SOURCE: process.env.CODEX_IM_OPENCLAW_THREAD_SOURCE,
     CODEX_IM_OPENCLAW_LONG_POLL_TIMEOUT_MS: process.env.CODEX_IM_OPENCLAW_LONG_POLL_TIMEOUT_MS,
     CODEX_IM_OPENCLAW_STREAMING_OUTPUT: process.env.CODEX_IM_OPENCLAW_STREAMING_OUTPUT,
+    CODEX_IM_OPENCLAW_PROGRESS_NOTICE_DELAY_MS: process.env.CODEX_IM_OPENCLAW_PROGRESS_NOTICE_DELAY_MS,
+    CODEX_IM_OPENCLAW_PROGRESS_FOLLOWUP_DELAY_MS: process.env.CODEX_IM_OPENCLAW_PROGRESS_FOLLOWUP_DELAY_MS,
     CODEX_IM_SESSIONS_FILE: process.env.CODEX_IM_SESSIONS_FILE,
   };
 
@@ -21,6 +23,8 @@ test("readConfig loads openclaw bot settings from env", () => {
   process.env.CODEX_IM_OPENCLAW_THREAD_SOURCE = "codex";
   process.env.CODEX_IM_OPENCLAW_LONG_POLL_TIMEOUT_MS = "42000";
   process.env.CODEX_IM_OPENCLAW_STREAMING_OUTPUT = "false";
+  process.env.CODEX_IM_OPENCLAW_PROGRESS_NOTICE_DELAY_MS = "1500";
+  process.env.CODEX_IM_OPENCLAW_PROGRESS_FOLLOWUP_DELAY_MS = "300000";
   delete process.env.CODEX_IM_SESSIONS_FILE;
 
   try {
@@ -31,6 +35,8 @@ test("readConfig loads openclaw bot settings from env", () => {
     assert.equal(config.openclaw.threadSource, "codex");
     assert.equal(config.openclaw.longPollTimeoutMs, 42000);
     assert.equal(config.openclawStreamingOutput, false);
+    assert.equal(config.openclawProgressNoticeDelayMs, 1500);
+    assert.equal(config.openclawProgressFollowupDelayMs, 300000);
     assert.equal(
       config.sessionsFile,
       path.join(require("node:os").homedir(), ".codex-im", "openclaw-sessions.json")

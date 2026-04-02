@@ -7,23 +7,13 @@ function rememberApprovalPrefixForWorkspace(runtime, workspaceRoot, commandToken
   }
 
   runtime.sessionStore.rememberApprovalCommandPrefixForWorkspace(workspaceRoot, normalizedTokens);
-  runtime.approvalAllowlistByWorkspaceRoot.set(
-    workspaceRoot,
-    runtime.sessionStore.getApprovalCommandAllowlistForWorkspace(workspaceRoot)
-  );
 }
 
 function shouldAutoApproveRequest(runtime, workspaceRoot, approval) {
   if (!workspaceRoot || !approval) {
     return false;
   }
-  const cachedAllowlist = runtime.approvalAllowlistByWorkspaceRoot.get(workspaceRoot) || [];
-  const allowlist = cachedAllowlist.length
-    ? cachedAllowlist
-    : runtime.sessionStore.getApprovalCommandAllowlistForWorkspace(workspaceRoot);
-  if (allowlist.length && !cachedAllowlist.length) {
-    runtime.approvalAllowlistByWorkspaceRoot.set(workspaceRoot, allowlist);
-  }
+  const allowlist = runtime.sessionStore.getApprovalCommandAllowlistForWorkspace(workspaceRoot);
   if (!allowlist.length) {
     return false;
   }

@@ -53,6 +53,8 @@ class CodexRpcClient {
     this.messageListeners = new Set();
     this.isClosing = false;
     this.hasReportedTransportFailure = false;
+    this.workspaceAliasByRoot = new Map();
+    this.workspaceRootByAlias = new Map();
   }
 
   async connect() {
@@ -296,10 +298,16 @@ class CodexRpcClient {
     if (this.mode !== "spawn" || !normalizedWorkspaceRoot || isAsciiOnly(normalizedWorkspaceRoot)) {
       return normalizedWorkspaceRoot;
     }
-    if (!this.spawnCwd) {
-      this.spawnCwd = resolveCodexSpawnCwd(this.workspaceCwd, this.workspaceAliasRoot);
+
+    const cachedAlias = this.workspaceAliasByRoot.get(normalizedWorkspaceRoot);
+    if (cachedAlias) {
+      return cachedAlias;
     }
-    return this.spawnCwd || normalizedWorkspaceRoot;
+
+    const aliasPath = resolveCodexSpawnCwd(normalizedWorkspaceRoot, this.workspaceAliasRoot);
+    this.workspaceAliasByRoot.set(normalizedWorkspaceRoot, aliasPath);
+    this.workspaceRootByAlias.set(aliasPath, normalizedWorkspaceRoot);
+    return aliasPath;
   }
 
   resolveCodexWorkspaceRoot(workspaceRoot = this.workspaceCwd) {
@@ -330,20 +338,27 @@ class CodexRpcClient {
     const normalizedWorkspacePath = normalizeNonEmptyString(workspacePath);
     if (
       this.mode !== "spawn"
-      || !this.workspaceCwd
-      || !this.spawnCwd
       || !normalizedWorkspacePath
-      || !normalizedWorkspacePath.startsWith(this.spawnCwd)
     ) {
       return normalizedWorkspacePath;
     }
 
-    if (normalizedWorkspacePath === this.spawnCwd) {
-      return this.workspaceCwd;
+    const exactMatch = this.workspaceRootByAlias.get(normalizedWorkspacePath);
+    if (exactMatch) {
+      return exactMatch;
     }
 
-    const suffix = normalizedWorkspacePath.slice(this.spawnCwd.length);
-    return `${this.workspaceCwd}${suffix}`;
+    for (const [aliasPath, originalRoot] of this.workspaceRootByAlias.entries()) {
+      if (normalizedWorkspacePath === aliasPath) {
+        return originalRoot;
+      }
+      if (matchesWorkspaceAliasPrefix(normalizedWorkspacePath, aliasPath)) {
+        const suffix = normalizedWorkspacePath.slice(aliasPath.length);
+        return `${originalRoot}${suffix}`;
+      }
+    }
+
+    return normalizedWorkspacePath;
   }
 
   handleIncoming(rawMessage) {
@@ -719,6 +734,18 @@ function ensureWorkspaceMirror(aliasPath, targetPath) {
 
 function isAsciiOnly(value) {
   return /^[\x00-\x7F]*$/.test(String(value || ""));
+}
+
+function matchesWorkspaceAliasPrefix(workspacePath, aliasPath) {
+  if (!workspacePath || !aliasPath) {
+    return false;
+  }
+
+  return (
+    workspacePath.startsWith(`${aliasPath}${path.sep}`)
+    || workspacePath.startsWith(`${aliasPath}/`)
+    || workspacePath.startsWith(`${aliasPath}\\`)
+  );
 }
 
 function buildStartThreadParams(cwd) {

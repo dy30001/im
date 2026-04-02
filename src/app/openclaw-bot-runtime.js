@@ -79,7 +79,6 @@ const workspaceRuntime = require("../domain/workspace/workspace-service");
 const eventsRuntime = require("./codex-event-service");
 const approvalPolicyRuntime = require("../domain/approval/approval-policy");
 const appDispatcher = require("./dispatcher");
-const { extractModelCatalogFromListResponse } = require("../shared/model-catalog");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -118,7 +117,6 @@ class OpenClawBotRuntime {
     this.pollLoopPromise = null;
     this.syncCursor = "";
     initializeCommonRuntimeState(this);
-    this.desktopSessionsByWorkspaceRoot = new Map();
     this.threadSyncStateByKey = new Map();
     this.threadSyncLoopPromise = null;
     this.codex.onMessage((message) => appDispatcher.onCodexMessage(this, message));
@@ -129,7 +127,6 @@ class OpenClawBotRuntime {
     await this.ensureOpenClawCredentials();
     await this.codex.connect();
     await this.codex.initialize();
-    await this.refreshAvailableModelCatalogAtStartup();
     await this.markHeartbeat("runtime-ready");
     this.startPolling();
     this.startThreadSyncLoop();
@@ -147,6 +144,14 @@ class OpenClawBotRuntime {
         clearTimeout(timer);
       }
       this.replyFlushTimersByRunKey.clear();
+      for (const timer of this.replyProgressTimersByRunKey.values()) {
+        clearTimeout(timer);
+      }
+      this.replyProgressTimersByRunKey.clear();
+      for (const timer of this.replyProgressFollowupTimersByRunKey.values()) {
+        clearTimeout(timer);
+      }
+      this.replyProgressFollowupTimersByRunKey.clear();
 
       if (this.pollAbortController) {
         this.pollAbortController.abort();
@@ -217,8 +222,8 @@ class OpenClawBotRuntime {
     return tryRecoverFromPollError(this, error);
   }
 
-  applyOpenClawCredentials({ token, baseUrl }) {
-    return applyOpenClawCredentials(this, { token, baseUrl });
+  applyOpenClawCredentials({ token, baseUrl, accountId, userId } = {}) {
+    return applyOpenClawCredentials(this, { token, baseUrl, accountId, userId });
   }
 
   startPolling() {
@@ -298,25 +303,6 @@ class OpenClawBotRuntime {
     state.lastError = errorKey;
   }
 
-  async refreshAvailableModelCatalogAtStartup() {
-    const response = await this.codex.listModels();
-    const models = extractModelCatalogFromListResponse(response);
-    if (!models.length) {
-      throw new Error("model/list returned no models at startup");
-    }
-    this.sessionStore.setAvailableModelCatalog(models);
-    const validatedDefaults = workspaceRuntime.validateDefaultCodexParamsConfig(this, models);
-    if (!validatedDefaults.model) {
-      throw new Error(`Invalid CODEX_IM_DEFAULT_CODEX_MODEL: ${this.config.defaultCodexModel}`);
-    }
-    if (!validatedDefaults.effort) {
-      throw new Error(
-        `Invalid CODEX_IM_DEFAULT_CODEX_EFFORT: ${this.config.defaultCodexEffort} for model ${validatedDefaults.model}`
-      );
-    }
-    console.log(`[codex-im] model catalog refreshed at startup: ${models.length} entries`);
-  }
-
   resolveReplyToMessageId(normalized, replyToMessageId = "") {
     return resolveReplyToMessageId(this, normalized, replyToMessageId);
   }
@@ -363,6 +349,7 @@ class OpenClawBotRuntime {
       text,
       replyToMessageId,
       contextToken,
+      fromUserId: this.config.openclaw?.accountId || this.config.openclaw?.userId || "",
     });
   }
 
@@ -558,11 +545,13 @@ async function sendOpenClawTextMessage(runtime, {
   text,
   replyToMessageId = "",
   contextToken = "",
+  fromUserId = "",
 } = {}) {
   const messageContext = runtime.resolveMessageContext({ replyToMessageId, chatId });
   const resolvedContextToken = String(contextToken || messageContext?.contextToken || "").trim();
   const payload = {
     toUserId: chatId,
+    fromUserId,
     text,
     contextToken: resolvedContextToken,
     signal: runtime.pollAbortController?.signal,
