@@ -154,10 +154,14 @@ async function resolveDesktopSessionState(runtime, {
   const selectedThreadId = runtime.resolveThreadIdForBinding(bindingKey, workspaceRoot);
   let selectedThread = null;
   let threadId = "";
+  let desktopVisibleExpected = true;
 
   if (selectedThreadId) {
     selectedThread = await hydrateSelectedDesktopSession(runtime, workspaceRoot, selectedThreadId);
-    if (selectedThread?.writable && selectedThread?.acpSessionId) {
+    if (!selectedThread) {
+      threadId = selectedThreadId;
+      desktopVisibleExpected = false;
+    } else if (selectedThread?.writable && selectedThread?.acpSessionId) {
       threadId = selectedThread.id;
     } else if (autoSelectThread) {
       const recoveredThread = await findWritableDesktopSession(runtime, workspaceRoot, threads, selectedThreadId);
@@ -204,7 +208,7 @@ async function resolveDesktopSessionState(runtime, {
     }
   }
 
-  if (!selectedThread && selectedThreadId) {
+  if (!selectedThread && selectedThreadId && threadId !== selectedThreadId) {
     runtime.sessionStore.clearThreadIdForWorkspace(bindingKey, workspaceRoot);
   }
 
@@ -212,7 +216,9 @@ async function resolveDesktopSessionState(runtime, {
     runtime.setThreadBindingKey(threadId, bindingKey);
     runtime.setThreadWorkspaceRoot(threadId, workspaceRoot);
     if (typeof runtime.rememberSelectedThreadForSync === "function") {
-      runtime.rememberSelectedThreadForSync(bindingKey, workspaceRoot, threadId);
+      runtime.rememberSelectedThreadForSync(bindingKey, workspaceRoot, threadId, {
+        desktopVisibleExpected,
+      });
     }
   }
 
@@ -261,6 +267,26 @@ async function ensureDesktopSessionAndSendMessage(runtime, {
 
   const originalThreadId = threadId;
   let selectedSession = await hydrateSelectedDesktopSession(runtime, workspaceRoot, threadId);
+  if (!selectedSession) {
+    try {
+      await sendMessageToThread(runtime, {
+        bindingKey,
+        workspaceRoot,
+        normalized,
+        threadId,
+        desktopVisibleExpected: false,
+        model: codexParams.model || null,
+        effort: codexParams.effort || null,
+      });
+      return threadId;
+    } catch (error) {
+      if (!forceRecoverThread || !shouldRecreateThread(error)) {
+        throw error;
+      }
+      runtime.resumedThreadIds.delete(threadId);
+    }
+  }
+
   if (!selectedSession || !selectedSession.writable || !selectedSession.acpSessionId) {
     const availableThreads = await refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, normalized);
     const recoveredSession = await findWritableDesktopSession(runtime, workspaceRoot, availableThreads, threadId);
@@ -291,26 +317,59 @@ async function ensureDesktopSessionAndSendMessage(runtime, {
     }
   }
 
-  await ensureThreadResumed(runtime, selectedSession.acpSessionId || threadId);
-  await runtime.codex.sendUserMessage({
+  await sendMessageToThread(runtime, {
+    bindingKey,
+    workspaceRoot,
+    normalized,
     threadId: selectedSession.acpSessionId || threadId,
-    text: normalized.text,
+    persistedThreadId: selectedSession.id,
+    desktopVisibleExpected: true,
     model: codexParams.model || null,
     effort: codexParams.effort || null,
+  });
+  return selectedSession.id;
+}
+
+async function sendMessageToThread(runtime, {
+  bindingKey,
+  workspaceRoot,
+  normalized,
+  threadId,
+  persistedThreadId = "",
+  desktopVisibleExpected = true,
+  model = null,
+  effort = null,
+}) {
+  const resolvedThreadId = String(threadId || "").trim();
+  if (!resolvedThreadId) {
+    throw new Error("missing thread id");
+  }
+
+  await ensureThreadResumed(runtime, resolvedThreadId);
+  await runtime.codex.sendUserMessage({
+    threadId: resolvedThreadId,
+    text: normalized.text,
+    model,
+    effort,
     accessMode: runtime.config.defaultCodexAccessMode,
     workspaceRoot,
   });
+  const storedThreadId = String(persistedThreadId || resolvedThreadId).trim() || resolvedThreadId;
   runtime.sessionStore.setThreadIdForWorkspace(
     bindingKey,
     workspaceRoot,
-    selectedSession.id,
+    storedThreadId,
     codexMessageUtils.buildBindingMetadata(normalized)
   );
-  runtime.setThreadBindingKey(selectedSession.id, bindingKey);
-  runtime.setThreadWorkspaceRoot(selectedSession.id, workspaceRoot);
-  runtime.setThreadBindingKey(selectedSession.acpSessionId, bindingKey);
-  runtime.setThreadWorkspaceRoot(selectedSession.acpSessionId, workspaceRoot);
-  return selectedSession.id;
+  runtime.setThreadBindingKey(storedThreadId, bindingKey);
+  runtime.setThreadWorkspaceRoot(storedThreadId, workspaceRoot);
+  runtime.setThreadBindingKey(resolvedThreadId, bindingKey);
+  runtime.setThreadWorkspaceRoot(resolvedThreadId, workspaceRoot);
+  if (typeof runtime.rememberSelectedThreadForSync === "function") {
+    runtime.rememberSelectedThreadForSync(bindingKey, workspaceRoot, storedThreadId, {
+      desktopVisibleExpected,
+    });
+  }
 }
 
 async function createWorkspaceThread(runtime, { bindingKey, workspaceRoot, normalized }) {
@@ -481,10 +540,6 @@ async function refreshWorkspaceThreads(
         error: "",
         updatedAt: new Date().toISOString(),
       });
-      const currentThreadId = runtime.sessionStore.getThreadIdForWorkspace(bindingKey, workspaceRoot);
-      if (!previewOnly && currentThreadId && !sessions.some((thread) => thread.id === currentThreadId)) {
-        runtime.sessionStore.clearThreadIdForWorkspace(bindingKey, workspaceRoot);
-      }
       return sessions;
     } catch (error) {
       console.warn(`[codex-im] desktop session refresh failed for workspace=${workspaceRoot}: ${error.message}`);

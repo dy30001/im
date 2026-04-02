@@ -100,6 +100,74 @@ test("resolveWorkspaceThreadState auto-switches from read-only desktop sessions 
   }
 });
 
+test("resolveWorkspaceThreadState keeps an existing recovery thread when it is not desktop-visible", async () => {
+  const bindingKey = "binding-1";
+  const workspaceRoot = "/repo";
+  const normalized = {
+    chatId: "chat-1",
+    messageId: "msg-1",
+    text: "继续聊天",
+  };
+
+  const threadAssignments = new Map([[workspaceRoot, "session-recovery"]]);
+  const syncSelections = [];
+  let clearCalls = 0;
+
+  const sessions = [
+    {
+      id: "session-read",
+      writable: false,
+      acpSessionId: "",
+      acpxRecordId: "record-read",
+      cwd: workspaceRoot,
+      updatedAt: 100,
+    },
+  ];
+
+  const runtime = {
+    config: {
+      openclaw: {
+        threadSource: "acpx",
+      },
+    },
+    sessionStore: {
+      getThreadIdForWorkspace: (_bindingKey, currentWorkspaceRoot) => threadAssignments.get(currentWorkspaceRoot) || "",
+      setThreadIdForWorkspace: (_bindingKey, currentWorkspaceRoot, threadId) => {
+        threadAssignments.set(currentWorkspaceRoot, threadId);
+      },
+      clearThreadIdForWorkspace: () => {
+        clearCalls += 1;
+      },
+    },
+    usesDesktopSessionSource: () => true,
+    resolveThreadIdForBinding: (_bindingKey, currentWorkspaceRoot) => threadAssignments.get(currentWorkspaceRoot) || "",
+    listDesktopSessionsForWorkspace: async () => sessions,
+    resolveDesktopSessionById: () => null,
+    hydrateDesktopSession: async () => null,
+    setThreadBindingKey: () => {},
+    setThreadWorkspaceRoot: () => {},
+    rememberSelectedThreadForSync: (_binding, _root, threadId, options = {}) => {
+      syncSelections.push({ threadId, options });
+    },
+  };
+
+  const result = await resolveWorkspaceThreadState(runtime, {
+    bindingKey,
+    workspaceRoot,
+    normalized,
+    autoSelectThread: true,
+  });
+
+  assert.equal(result.selectedThreadId, "session-recovery");
+  assert.equal(result.threadId, "session-recovery");
+  assert.equal(threadAssignments.get(workspaceRoot), "session-recovery");
+  assert.equal(clearCalls, 0);
+  assert.deepEqual(syncSelections, [{
+    threadId: "session-recovery",
+    options: { desktopVisibleExpected: false },
+  }]);
+});
+
 test("resolveWorkspaceThreadState skips refreshing the thread list when the current thread is already selected", async () => {
   const bindingKey = "binding-1";
   const workspaceRoot = "/repo";
@@ -449,6 +517,87 @@ test("ensureThreadAndSendMessage creates a writable recovery session when no des
   } finally {
     console.warn = originalWarn;
   }
+});
+
+test("ensureThreadAndSendMessage reuses an existing recovery thread when it is still writable", async () => {
+  const bindingKey = "binding-1";
+  const workspaceRoot = "/repo";
+  const normalized = {
+    chatId: "chat-1",
+    messageId: "msg-1",
+    text: "继续聊天",
+  };
+
+  const threadAssignments = new Map([[workspaceRoot, "session-recovery"]]);
+  const sentMessages = [];
+  const resumedThreads = [];
+  let startedThreads = 0;
+  const syncSelections = [];
+
+  const runtime = {
+    config: {
+      openclaw: {
+        threadSource: "acpx",
+      },
+    },
+    sessionStore: {
+      getThreadIdForWorkspace: (_bindingKey, currentWorkspaceRoot) => threadAssignments.get(currentWorkspaceRoot) || "",
+      setThreadIdForWorkspace: (_bindingKey, currentWorkspaceRoot, threadId) => {
+        threadAssignments.set(currentWorkspaceRoot, threadId);
+      },
+      clearThreadIdForWorkspace: () => {},
+    },
+    usesDesktopSessionSource: () => true,
+    resolveThreadIdForBinding: (_bindingKey, currentWorkspaceRoot) => threadAssignments.get(currentWorkspaceRoot) || "",
+    listDesktopSessionsForWorkspace: async () => [],
+    resolveDesktopSessionById: () => null,
+    hydrateDesktopSession: async () => null,
+    codex: {
+      resumeThread: async ({ threadId }) => {
+        resumedThreads.push(threadId);
+        return {};
+      },
+      startThread: async () => {
+        startedThreads += 1;
+        return {
+          result: {
+            thread: {
+              id: "session-new",
+            },
+          },
+        };
+      },
+      sendUserMessage: async ({ threadId, text }) => {
+        sentMessages.push({ threadId, text });
+      },
+    },
+    getCodexParamsForWorkspace: () => ({ model: "", effort: "" }),
+    setPendingThreadContext: () => {},
+    setThreadBindingKey: () => {},
+    setThreadWorkspaceRoot: () => {},
+    rememberSelectedThreadForSync: (_binding, _root, threadId, options = {}) => {
+      syncSelections.push({ threadId, options });
+    },
+    resumedThreadIds: new Set(),
+  };
+
+  const threadId = await ensureThreadAndSendMessage(runtime, {
+    bindingKey,
+    workspaceRoot,
+    normalized,
+    threadId: "session-recovery",
+    forceRecoverThread: true,
+  });
+
+  assert.equal(threadId, "session-recovery");
+  assert.equal(startedThreads, 0);
+  assert.deepEqual(resumedThreads, ["session-recovery"]);
+  assert.deepEqual(sentMessages, [{ threadId: "session-recovery", text: "继续聊天" }]);
+  assert.equal(threadAssignments.get(workspaceRoot), "session-recovery");
+  assert.deepEqual(syncSelections, [{
+    threadId: "session-recovery",
+    options: { desktopVisibleExpected: false },
+  }]);
 });
 
 test("ensureThreadAndSendMessage creates a recovery session when no desktop session is visible", async () => {
