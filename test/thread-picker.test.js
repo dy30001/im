@@ -144,6 +144,102 @@ test("showThreadPicker tags the thread list with selection context", async () =>
   ]);
 });
 
+test("showThreadPicker uses a preview refresh for the first page", async () => {
+  const refreshCalls = [];
+  const runtime = {
+    supportsInteractiveCards: () => true,
+    resolveReplyToMessageId: (_normalized, replyToMessageId = "") => replyToMessageId || "reply-1",
+    getBindingContext: () => ({ bindingKey: "binding-1", workspaceRoot: "/repo" }),
+    refreshWorkspaceThreads: async (_bindingKey, _workspaceRoot, _normalized, options) => {
+      refreshCalls.push(options);
+      return Array.from({ length: 10 }, (_, index) => ({
+        id: `thread-${index + 1}`,
+        title: `Thread ${index + 1}`,
+        updatedAt: index + 1,
+      }));
+    },
+    getWorkspaceThreadRefreshState: () => ({ ok: true, fromCache: false, error: "" }),
+    resolveThreadIdForBinding: () => "thread-1",
+    buildThreadPickerCard,
+    sendInteractiveCard: async () => {},
+    sendInfoCardMessage: async () => {
+      throw new Error("unexpected info card");
+    },
+  };
+
+  await showThreadPicker(runtime, {
+    chatId: "chat-1",
+    messageId: "msg-1",
+    text: "/codex threads",
+  }, {
+    replyToMessageId: "reply-1",
+    page: 0,
+  });
+
+  assert.equal(refreshCalls.length, 1);
+  assert.deepEqual(refreshCalls[0], {
+    previewOnly: true,
+    allowStaleCache: true,
+    previewLimit: 200,
+  });
+});
+
+test("showThreadPicker falls back to a full refresh when the preview page is too small", async () => {
+  const refreshCalls = [];
+  const cards = [];
+  const runtime = {
+    supportsInteractiveCards: () => true,
+    resolveReplyToMessageId: (_normalized, replyToMessageId = "") => replyToMessageId || "reply-1",
+    getBindingContext: () => ({ bindingKey: "binding-1", workspaceRoot: "/repo" }),
+    refreshWorkspaceThreads: async (_bindingKey, _workspaceRoot, _normalized, options) => {
+      refreshCalls.push(options);
+      if (options?.forceRefresh) {
+        return Array.from({ length: 20 }, (_, index) => ({
+          id: `thread-${index + 1}`,
+          title: `Thread ${index + 1}`,
+          updatedAt: index + 1,
+        }));
+      }
+      return Array.from({ length: 10 }, (_, index) => ({
+        id: `thread-${index + 1}`,
+        title: `Thread ${index + 1}`,
+        updatedAt: index + 1,
+      }));
+    },
+    getWorkspaceThreadRefreshState: () => ({ ok: true, fromCache: false, error: "" }),
+    resolveThreadIdForBinding: () => "thread-1",
+    buildThreadPickerCard,
+    sendInteractiveCard: async (payload) => {
+      cards.push(payload);
+    },
+    sendInfoCardMessage: async () => {
+      throw new Error("unexpected info card");
+    },
+  };
+
+  await showThreadPicker(runtime, {
+    chatId: "chat-1",
+    messageId: "msg-1",
+    text: "/codex threads",
+  }, {
+    replyToMessageId: "reply-1",
+    page: 1,
+  });
+
+  assert.equal(refreshCalls.length, 2);
+  assert.deepEqual(refreshCalls[0], {
+    previewOnly: true,
+    allowStaleCache: true,
+    previewLimit: 200,
+  });
+  assert.deepEqual(refreshCalls[1], {
+    forceRefresh: true,
+  });
+  assert.equal(cards.length, 1);
+  const cardJson = JSON.stringify(cards[0].card);
+  assert.match(cardJson, /共 20 条，第 2\/3 页/);
+});
+
 test("showThreadPicker distinguishes refresh failure from empty history", async () => {
   const infoMessages = [];
   const runtime = {

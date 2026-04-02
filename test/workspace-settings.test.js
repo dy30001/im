@@ -63,3 +63,96 @@ test("applyDefaultCodexParamsOnBind only seeds defaults when the workspace has n
     },
   ]);
 });
+
+test("loadAvailableModels reuses a fresh cached catalog without calling Codex again", async () => {
+  let listCalls = 0;
+  const runtime = {
+    codex: {
+      listModels: async () => {
+        listCalls += 1;
+        return {
+          result: {
+            data: [
+              {
+                model: "live-model",
+                supportedReasoningEfforts: ["low"],
+              },
+            ],
+          },
+        };
+      },
+    },
+    sessionStore: {
+      getAvailableModelCatalog() {
+        return {
+          models: [
+            {
+              model: "cached-model",
+              supportedReasoningEfforts: ["medium"],
+            },
+          ],
+          updatedAt: new Date().toISOString(),
+        };
+      },
+      setAvailableModelCatalog() {
+        throw new Error("should not persist fresh cache");
+      },
+    },
+  };
+
+  const result = await settingsService.loadAvailableModels(runtime);
+
+  assert.equal(listCalls, 0);
+  assert.equal(result.source, "cache");
+  assert.deepEqual(result.models.map((model) => model.model), ["cached-model"]);
+});
+
+test("loadAvailableModels refreshes a stale cached catalog and persists the new data", async () => {
+  let listCalls = 0;
+  const persisted = [];
+  const runtime = {
+    codex: {
+      listModels: async () => {
+        listCalls += 1;
+        return {
+          result: {
+            data: [
+              {
+                model: "refreshed-model",
+                supportedReasoningEfforts: ["low", "medium"],
+              },
+            ],
+          },
+        };
+      },
+    },
+    sessionStore: {
+      getAvailableModelCatalog() {
+        return {
+          models: [
+            {
+              model: "stale-model",
+              supportedReasoningEfforts: ["high"],
+            },
+          ],
+          updatedAt: "1970-01-01T00:00:00.000Z",
+        };
+      },
+      setAvailableModelCatalog(models) {
+        persisted.push(models);
+        return {
+          models,
+          updatedAt: "2026-04-02T00:00:00.000Z",
+        };
+      },
+    },
+  };
+
+  const result = await settingsService.loadAvailableModels(runtime);
+
+  assert.equal(listCalls, 1);
+  assert.equal(result.source, "live");
+  assert.deepEqual(result.models.map((model) => model.model), ["refreshed-model"]);
+  assert.equal(persisted.length, 1);
+  assert.deepEqual(persisted[0].map((model) => model.model), ["refreshed-model"]);
+});

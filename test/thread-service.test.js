@@ -2,8 +2,10 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const {
+  createWorkspaceThread,
   handleSwitchCommand,
   ensureThreadAndSendMessage,
+  refreshWorkspaceThreads,
   resolveWorkspaceThreadState,
 } = require("../src/domain/thread/thread-service");
 
@@ -137,6 +139,223 @@ test("resolveWorkspaceThreadState skips refreshing the thread list when the curr
   assert.equal(refreshCalls, 0);
   assert.equal(result.selectedThreadId, "thread-1");
   assert.equal(result.threadId, "thread-1");
+});
+
+test("refreshWorkspaceThreads reuses a fresh cache without calling Codex again", async () => {
+  const bindingKey = "binding-1";
+  const workspaceRoot = "/repo";
+  const normalized = {
+    chatId: "chat-1",
+    messageId: "msg-1",
+    text: "继续聊天",
+  };
+
+  let listCalls = 0;
+  const runtime = {
+    workspaceThreadListCacheByKey: new Map(),
+    workspaceThreadRefreshStateByKey: new Map(),
+    sessionStore: {
+      getThreadIdForWorkspace: () => "",
+      setThreadIdForWorkspace: () => {},
+      clearThreadIdForWorkspace: () => {},
+    },
+    codex: {
+      listThreads: async () => {
+        listCalls += 1;
+        return {
+          result: {
+            data: [
+              {
+                id: "thread-1",
+                cwd: workspaceRoot,
+                name: "Thread 1",
+                updatedAt: 100,
+              },
+            ],
+            nextCursor: "",
+          },
+        };
+      },
+    },
+    setThreadBindingKey: () => {},
+    setThreadWorkspaceRoot: () => {},
+    rememberSelectedThreadForSync: () => {},
+  };
+
+  const first = await refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, normalized);
+  const second = await refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, normalized);
+
+  assert.equal(listCalls, 1);
+  assert.deepEqual(first, second);
+  assert.equal(runtime.workspaceThreadRefreshStateByKey.get(`${bindingKey}::${workspaceRoot}`).fromCache, true);
+});
+
+test("refreshWorkspaceThreads forceRefresh bypasses a fresh cache", async () => {
+  const bindingKey = "binding-1";
+  const workspaceRoot = "/repo";
+  const normalized = {
+    chatId: "chat-1",
+    messageId: "msg-1",
+    text: "继续聊天",
+  };
+
+  let listCalls = 0;
+  const runtime = {
+    workspaceThreadListCacheByKey: new Map(),
+    workspaceThreadRefreshStateByKey: new Map(),
+    sessionStore: {
+      getThreadIdForWorkspace: () => "",
+      setThreadIdForWorkspace: () => {},
+      clearThreadIdForWorkspace: () => {},
+    },
+    codex: {
+      listThreads: async () => {
+        listCalls += 1;
+        return {
+          result: {
+            data: [
+              {
+                id: `thread-${listCalls}`,
+                cwd: workspaceRoot,
+                name: `Thread ${listCalls}`,
+                updatedAt: 100 + listCalls,
+              },
+            ],
+            nextCursor: "",
+          },
+        };
+      },
+    },
+    setThreadBindingKey: () => {},
+    setThreadWorkspaceRoot: () => {},
+    rememberSelectedThreadForSync: () => {},
+  };
+
+  const first = await refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, normalized);
+  const second = await refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, normalized, {
+    forceRefresh: true,
+  });
+
+  assert.equal(listCalls, 2);
+  assert.equal(first[0].id, "thread-1");
+  assert.equal(second[0].id, "thread-2");
+  assert.equal(runtime.workspaceThreadRefreshStateByKey.get(`${bindingKey}::${workspaceRoot}`).fromCache, false);
+});
+
+test("refreshWorkspaceThreads previewOnly uses a single Codex page and skips full cache persistence", async () => {
+  const bindingKey = "binding-1";
+  const workspaceRoot = "/repo";
+  const normalized = {
+    chatId: "chat-1",
+    messageId: "msg-1",
+    text: "继续聊天",
+  };
+
+  let listCalls = 0;
+  const runtime = {
+    workspaceThreadListCacheByKey: new Map(),
+    workspaceThreadRefreshStateByKey: new Map(),
+    codex: {
+      listThreads: async () => {
+        listCalls += 1;
+        return {
+          result: {
+            data: [
+              {
+                id: "thread-1",
+                cwd: workspaceRoot,
+                name: "Thread 1",
+                updatedAt: 100,
+              },
+            ],
+            nextCursor: "next-page",
+          },
+        };
+      },
+    },
+  };
+
+  const threads = await refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, normalized, {
+    previewOnly: true,
+  });
+
+  assert.equal(listCalls, 1);
+  assert.equal(threads.length, 1);
+  assert.equal(runtime.workspaceThreadListCacheByKey.has(`${bindingKey}::${workspaceRoot}`), false);
+});
+
+test("createWorkspaceThread invalidates the cached thread list", async () => {
+  const bindingKey = "binding-1";
+  const workspaceRoot = "/repo";
+  const normalized = {
+    chatId: "chat-1",
+    messageId: "msg-1",
+    text: "继续聊天",
+  };
+  const cacheKey = `${bindingKey}::${workspaceRoot}`;
+  let listCalls = 0;
+
+  const runtime = {
+    workspaceThreadListCacheByKey: new Map([
+      [cacheKey, {
+        threads: [{
+          id: "thread-old",
+          cwd: workspaceRoot,
+          name: "Thread old",
+          updatedAt: 1,
+        }],
+        updatedAt: new Date().toISOString(),
+      }],
+    ]),
+    workspaceThreadRefreshStateByKey: new Map(),
+    sessionStore: {
+      getThreadIdForWorkspace: () => "",
+      setThreadIdForWorkspace: () => {},
+      clearThreadIdForWorkspace: () => {},
+    },
+    codex: {
+      startThread: async ({ cwd }) => {
+        assert.equal(cwd, workspaceRoot);
+        return {
+          result: {
+            thread: {
+              id: "thread-new",
+            },
+          },
+        };
+      },
+      listThreads: async () => {
+        listCalls += 1;
+        return {
+          result: {
+            data: [
+              {
+                id: "thread-new",
+                cwd: workspaceRoot,
+                name: "Thread new",
+                updatedAt: 2,
+              },
+            ],
+            nextCursor: "",
+          },
+        };
+      },
+    },
+    config: {
+      defaultCodexAccessMode: "default",
+    },
+    resumedThreadIds: new Set(),
+    setPendingThreadContext: () => {},
+    setThreadBindingKey: () => {},
+    setThreadWorkspaceRoot: () => {},
+    rememberSelectedThreadForSync: () => {},
+  };
+
+  await createWorkspaceThread(runtime, { bindingKey, workspaceRoot, normalized });
+  assert.equal(runtime.workspaceThreadListCacheByKey.has(cacheKey), false);
+
+  await refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, normalized);
+  assert.equal(listCalls, 1);
 });
 
 test("ensureThreadAndSendMessage creates a writable recovery session when no desktop session can continue", async () => {

@@ -49,7 +49,7 @@ function readConfig() {
     openclawStreamingOutput: readBooleanEnv("CODEX_IM_OPENCLAW_STREAMING_OUTPUT", mode === "openclaw-bot"),
     openclawProgressNoticeDelayMs: readIntegerEnv(
       "CODEX_IM_OPENCLAW_PROGRESS_NOTICE_DELAY_MS",
-      2500
+      1500
     ),
     openclawProgressFollowupDelayMs: readIntegerEnv(
       "CODEX_IM_OPENCLAW_PROGRESS_FOLLOWUP_DELAY_MS",

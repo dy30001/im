@@ -1400,6 +1400,8 @@ function buildCacheMetaLine(availableModelsResult, { refreshed = false } = {}) {
     sourceLabel = "来源：实时拉取";
   } else if (source === "refresh") {
     sourceLabel = "来源：强制刷新";
+  } else if (source === "cache") {
+    sourceLabel = "来源：本地缓存";
   }
   const timeLabel = updatedAt ? `，更新时间：${updatedAt}` : "";
   const refreshLabel = refreshed ? "（已执行刷新）" : "";

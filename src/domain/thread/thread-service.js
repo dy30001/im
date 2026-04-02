@@ -21,6 +21,8 @@ const THREAD_SOURCE_KINDS = new Set([
   "subAgentOther",
   "unknown",
 ]);
+const DEFAULT_WORKSPACE_THREAD_LIST_CACHE_TTL_MS = 5_000;
+const DEFAULT_WORKSPACE_THREAD_PREVIEW_LIMIT = 50;
 
 async function resolveWorkspaceThreadState(runtime, {
   bindingKey,
@@ -307,6 +309,7 @@ async function createWorkspaceThread(runtime, { bindingKey, workspaceRoot, norma
   if (typeof runtime.rememberSelectedThreadForSync === "function") {
     runtime.rememberSelectedThreadForSync(bindingKey, workspaceRoot, resolvedThreadId);
   }
+  invalidateWorkspaceThreadListCache(runtime, bindingKey, workspaceRoot);
   return resolvedThreadId;
 }
 
@@ -405,7 +408,9 @@ async function switchThreadByIndex(runtime, normalized, threadIndex, { replyToMe
     return;
   }
 
-  const availableThreads = await refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, normalized);
+  const availableThreads = await refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, normalized, {
+    forceRefresh: true,
+  });
   const selectedThread = availableThreads[threadIndex - 1] || null;
   if (!selectedThread) {
     await runtime.sendInfoCardMessage({
@@ -421,11 +426,34 @@ async function switchThreadByIndex(runtime, normalized, threadIndex, { replyToMe
   await switchThreadById(runtime, normalized, selectedThread.id, { replyToMessageId: replyTarget });
 }
 
-async function refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, normalized) {
+async function refreshWorkspaceThreads(
+  runtime,
+  bindingKey,
+  workspaceRoot,
+  normalized,
+  { forceRefresh = false, previewOnly = false, allowStaleCache = false, previewLimit = DEFAULT_WORKSPACE_THREAD_PREVIEW_LIMIT } = {}
+) {
+  const cacheKey = buildWorkspaceThreadCacheKey(bindingKey, workspaceRoot);
+  const cachedResult = readWorkspaceThreadListCache(runtime, cacheKey);
+  if (!forceRefresh && cachedResult && (
+    isFreshWorkspaceThreadListCache(cachedResult)
+    || (previewOnly && allowStaleCache)
+  )) {
+    setWorkspaceThreadRefreshState(runtime, cacheKey, {
+      ok: true,
+      fromCache: true,
+      error: "",
+      updatedAt: cachedResult.updatedAt,
+    });
+    return cachedResult.threads;
+  }
+
   if (shouldUseDesktopSessions(runtime)) {
-    const cacheKey = buildWorkspaceThreadCacheKey(bindingKey, workspaceRoot);
     try {
       const sessions = await runtime.listDesktopSessionsForWorkspace(workspaceRoot);
+      if (!previewOnly) {
+        persistWorkspaceThreadListCache(runtime, cacheKey, sessions);
+      }
       setWorkspaceThreadRefreshState(runtime, cacheKey, {
         ok: true,
         fromCache: false,
@@ -433,7 +461,7 @@ async function refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, norma
         updatedAt: new Date().toISOString(),
       });
       const currentThreadId = runtime.sessionStore.getThreadIdForWorkspace(bindingKey, workspaceRoot);
-      if (currentThreadId && !sessions.some((thread) => thread.id === currentThreadId)) {
+      if (!previewOnly && currentThreadId && !sessions.some((thread) => thread.id === currentThreadId)) {
         runtime.sessionStore.clearThreadIdForWorkspace(bindingKey, workspaceRoot);
       }
       return sessions;
@@ -449,19 +477,25 @@ async function refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, norma
     }
   }
 
-  const cacheKey = buildWorkspaceThreadCacheKey(bindingKey, workspaceRoot);
   try {
-    const threads = await listCodexThreadsForWorkspace(runtime, workspaceRoot);
+    const threads = previewOnly
+      ? await listCodexThreadsPreviewForWorkspace(runtime, workspaceRoot, previewLimit)
+      : await listCodexThreadsForWorkspace(runtime, workspaceRoot);
+    if (!previewOnly) {
+      persistWorkspaceThreadListCache(runtime, cacheKey, threads);
+    }
     setWorkspaceThreadRefreshState(runtime, cacheKey, {
       ok: true,
       fromCache: false,
       error: "",
       updatedAt: new Date().toISOString(),
     });
-    const currentThreadId = runtime.sessionStore.getThreadIdForWorkspace(bindingKey, workspaceRoot);
-    const shouldKeepCurrentThread = currentThreadId && runtime.resumedThreadIds.has(currentThreadId);
-    if (currentThreadId && !shouldKeepCurrentThread && !threads.some((thread) => thread.id === currentThreadId)) {
-      runtime.sessionStore.clearThreadIdForWorkspace(bindingKey, workspaceRoot);
+    if (!previewOnly) {
+      const currentThreadId = runtime.sessionStore.getThreadIdForWorkspace(bindingKey, workspaceRoot);
+      const shouldKeepCurrentThread = currentThreadId && runtime.resumedThreadIds.has(currentThreadId);
+      if (currentThreadId && !shouldKeepCurrentThread && !threads.some((thread) => thread.id === currentThreadId)) {
+        runtime.sessionStore.clearThreadIdForWorkspace(bindingKey, workspaceRoot);
+      }
     }
     return threads;
   } catch (error) {
@@ -472,6 +506,15 @@ async function refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, norma
       error: error.message,
       updatedAt: new Date().toISOString(),
     });
+    if (cachedResult) {
+      setWorkspaceThreadRefreshState(runtime, cacheKey, {
+        ok: true,
+        fromCache: true,
+        error: "",
+        updatedAt: cachedResult.updatedAt,
+      });
+      return cachedResult.threads;
+    }
     return [];
   }
 }
@@ -479,6 +522,20 @@ async function refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, norma
 async function listCodexThreadsForWorkspace(runtime, workspaceRoot) {
   const allThreads = await listCodexThreadsPaginated(runtime);
   const sourceFiltered = allThreads.filter((thread) => isSupportedThreadSourceKind(thread?.sourceKind));
+  return filterThreadsByWorkspaceRoot(sourceFiltered, workspaceRoot);
+}
+
+async function listCodexThreadsPreviewForWorkspace(runtime, workspaceRoot, previewLimit = DEFAULT_WORKSPACE_THREAD_PREVIEW_LIMIT) {
+  const normalizedLimit = Number.isInteger(previewLimit) && previewLimit > 0
+    ? Math.min(previewLimit, 200)
+    : DEFAULT_WORKSPACE_THREAD_PREVIEW_LIMIT;
+  const response = await runtime.codex.listThreads({
+    cursor: null,
+    limit: normalizedLimit,
+    sortKey: "updated_at",
+  });
+  const pageThreads = codexMessageUtils.extractThreadsFromListResponse(response);
+  const sourceFiltered = pageThreads.filter((thread) => isSupportedThreadSourceKind(thread?.sourceKind));
   return filterThreadsByWorkspaceRoot(sourceFiltered, workspaceRoot);
 }
 
@@ -554,7 +611,9 @@ async function switchThreadById(runtime, normalized, threadId, { replyToMessageI
     return;
   }
 
-  const availableThreads = await refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, normalized);
+  const availableThreads = await refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, normalized, {
+    forceRefresh: true,
+  });
   const selectedThread = availableThreads.find((thread) => thread.id === threadId) || null;
   if (!selectedThread) {
     await runtime.sendInfoCardMessage({
@@ -666,6 +725,59 @@ function getWorkspaceThreadRefreshState(runtime, bindingKey, workspaceRoot) {
     error: typeof state.error === "string" ? state.error : "",
     updatedAt: typeof state.updatedAt === "string" ? state.updatedAt : "",
   };
+}
+
+function readWorkspaceThreadListCache(runtime, cacheKey) {
+  const cache = runtime?.workspaceThreadListCacheByKey;
+  if (!(cache instanceof Map) || !cacheKey) {
+    return null;
+  }
+
+  const cached = cache.get(cacheKey);
+  if (!cached || !Array.isArray(cached.threads)) {
+    return null;
+  }
+
+  return {
+    threads: cached.threads,
+    updatedAt: typeof cached.updatedAt === "string" ? cached.updatedAt : "",
+  };
+}
+
+function isFreshWorkspaceThreadListCache(cachedResult) {
+  const updatedAt = Date.parse(String(cachedResult?.updatedAt || "").trim());
+  if (!Number.isFinite(updatedAt)) {
+    return false;
+  }
+  return (Date.now() - updatedAt) <= DEFAULT_WORKSPACE_THREAD_LIST_CACHE_TTL_MS;
+}
+
+function persistWorkspaceThreadListCache(runtime, cacheKey, threads) {
+  if (!cacheKey) {
+    return null;
+  }
+  if (!(runtime.workspaceThreadListCacheByKey instanceof Map)) {
+    runtime.workspaceThreadListCacheByKey = new Map();
+  }
+
+  const normalizedThreads = Array.isArray(threads)
+    ? threads.map((thread) => ({ ...(thread || {}) }))
+    : [];
+
+  const cachedResult = {
+    threads: normalizedThreads,
+    updatedAt: new Date().toISOString(),
+  };
+  runtime.workspaceThreadListCacheByKey.set(cacheKey, cachedResult);
+  return cachedResult;
+}
+
+function invalidateWorkspaceThreadListCache(runtime, bindingKey, workspaceRoot) {
+  const cacheKey = buildWorkspaceThreadCacheKey(bindingKey, workspaceRoot);
+  if (!cacheKey || !(runtime.workspaceThreadListCacheByKey instanceof Map)) {
+    return;
+  }
+  runtime.workspaceThreadListCacheByKey.delete(cacheKey);
 }
 
 function setWorkspaceThreadRefreshState(runtime, cacheKey, state) {

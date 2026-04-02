@@ -102,6 +102,7 @@ test("handleBindCommand rejects direct binds outside the default browse root whe
 test("handleBindCommand keeps allowing direct binds inside the home directory when the allowlist is empty", async () => {
   let activeWorkspaceRoot = "";
   const sentCards = [];
+  const refreshCalls = [];
   const runtime = createBrowseRuntime({
     workspaceAllowlist: [],
     onSendInteractiveCard: (payload) => sentCards.push(payload),
@@ -111,19 +112,23 @@ test("handleBindCommand keeps allowing direct binds inside the home directory wh
   runtime.sessionStore.setActiveWorkspaceRoot = (_bindingKey, workspaceRoot) => {
     activeWorkspaceRoot = workspaceRoot;
   };
+  runtime.sessionStore.setThreadIdForWorkspace = () => {};
+  runtime.sessionStore.clearThreadIdForWorkspace = () => {};
   runtime.getCodexParamsForWorkspace = () => ({ model: "", effort: "" });
   runtime.getBindingContext = () => ({
     bindingKey: "binding:1",
     workspaceRoot: activeWorkspaceRoot,
   });
-  runtime.resolveWorkspaceThreadState = async () => ({
-    threads: [],
-    threadId: "",
-  });
   runtime.describeWorkspaceStatus = () => ({ code: "idle", label: "空闲" });
   runtime.buildStatusPanelCard = ({ workspaceRoot }) => ({ workspaceRoot });
-  runtime.refreshWorkspaceThreads = async () => [];
+  runtime.refreshWorkspaceThreads = async (_bindingKey, _workspaceRoot, _normalized, options) => {
+    refreshCalls.push(options);
+    return [];
+  };
   runtime.resolveThreadIdForBinding = () => "";
+  runtime.setThreadBindingKey = () => {};
+  runtime.setThreadWorkspaceRoot = () => {};
+  runtime.rememberSelectedThreadForSync = () => {};
 
   await handleBindCommand(runtime, {
     ...createNormalizedEvent(),
@@ -133,6 +138,11 @@ test("handleBindCommand keeps allowing direct binds inside the home directory wh
 
   assert.equal(activeWorkspaceRoot, os.homedir());
   assert.equal(sentCards.length, 1);
+  assert.equal(refreshCalls.length, 1);
+  assert.deepEqual(refreshCalls[0], {
+    previewOnly: true,
+    allowStaleCache: false,
+  });
 });
 
 test("handleBrowseCommand lists directories before files inside the allowed root", async () => {

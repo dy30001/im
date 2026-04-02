@@ -5,6 +5,8 @@ const {
   resolveEffectiveModelForEffort,
 } = require("../../shared/model-catalog");
 
+const DEFAULT_AVAILABLE_MODEL_CATALOG_TTL_MS = 10 * 60 * 1000;
+
 function applyDefaultCodexParamsOnBind(runtime, bindingKey, workspaceRoot) {
   const current = runtime.sessionStore.getCodexParamsForWorkspace(bindingKey, workspaceRoot);
   if (current.model || current.effort) {
@@ -72,10 +74,21 @@ async function loadAvailableModelsForSetting(runtime, normalized, { settingType 
 }
 
 async function loadAvailableModels(runtime, { forceRefresh = false } = {}) {
+  const cachedResult = !forceRefresh ? readCachedAvailableModels(runtime) : null;
+  if (cachedResult && isFreshAvailableModelsCache(cachedResult)) {
+    return cachedResult;
+  }
+
   try {
     const response = await runtime.codex.listModels();
     const models = extractModelCatalogFromListResponse(response);
     if (!models.length) {
+      if (cachedResult) {
+        return {
+          ...cachedResult,
+          warning: "实时拉取失败，已切换为本地缓存。",
+        };
+      }
       return {
         models: [],
         error: "Codex 未返回可用模型列表。",
@@ -83,6 +96,7 @@ async function loadAvailableModels(runtime, { forceRefresh = false } = {}) {
         updatedAt: "",
       };
     }
+    persistAvailableModelsCache(runtime, models);
     return {
       models,
       error: "",
@@ -90,6 +104,12 @@ async function loadAvailableModels(runtime, { forceRefresh = false } = {}) {
       updatedAt: new Date().toISOString(),
     };
   } catch (error) {
+    if (cachedResult) {
+      return {
+        ...cachedResult,
+        warning: error?.message || "获取模型列表失败，已切换为本地缓存。",
+      };
+    }
     return {
       models: [],
       error: error?.message || "获取模型列表失败。",
@@ -177,6 +197,41 @@ function listModelEfforts(modelEntry, { withDefaultFallback = false } = {}) {
 
 function normalizeEffort(value) {
   return String(value || "").trim().toLowerCase();
+}
+
+function readCachedAvailableModels(runtime) {
+  const store = runtime?.sessionStore;
+  if (!store || typeof store.getAvailableModelCatalog !== "function") {
+    return null;
+  }
+
+  const cached = store.getAvailableModelCatalog();
+  if (!cached || !Array.isArray(cached.models) || !cached.models.length) {
+    return null;
+  }
+
+  return {
+    models: cached.models,
+    error: "",
+    source: "cache",
+    updatedAt: normalizeText(cached.updatedAt),
+  };
+}
+
+function isFreshAvailableModelsCache(cachedResult) {
+  const updatedAt = Date.parse(normalizeText(cachedResult?.updatedAt));
+  if (!Number.isFinite(updatedAt)) {
+    return false;
+  }
+  return (Date.now() - updatedAt) <= DEFAULT_AVAILABLE_MODEL_CATALOG_TTL_MS;
+}
+
+function persistAvailableModelsCache(runtime, models) {
+  const store = runtime?.sessionStore;
+  if (!store || typeof store.setAvailableModelCatalog !== "function") {
+    return null;
+  }
+  return store.setAvailableModelCatalog(models);
 }
 
 module.exports = {

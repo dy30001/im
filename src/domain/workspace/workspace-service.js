@@ -25,6 +25,8 @@ const browserRuntime = require("./browser-service");
 const settingsRuntime = require("./settings-service");
 
 const MAX_FEISHU_UPLOAD_FILE_BYTES = 30 * 1024 * 1024;
+const THREAD_PICKER_PAGE_SIZE = 8;
+const THREAD_PICKER_PREVIEW_LIMIT = 200;
 
 async function resolveWorkspaceContext(
   runtime,
@@ -233,7 +235,6 @@ async function bindWorkspaceByPath(runtime, normalized, rawWorkspaceRoot, { repl
 
   settingsRuntime.applyDefaultCodexParamsOnBind(runtime, bindingKey, workspaceRoot);
   runtime.sessionStore.setActiveWorkspaceRoot(bindingKey, workspaceRoot);
-  await runtime.refreshWorkspaceThreads(bindingKey, workspaceRoot, normalized);
   const existingThreadId = runtime.resolveThreadIdForBinding(bindingKey, workspaceRoot);
   await showStatusPanel(runtime, normalized, {
     replyToMessageId: replyTarget,
@@ -253,20 +254,42 @@ async function showStatusPanel(runtime, normalized, { replyToMessageId, noticeTe
     return;
   }
   const { bindingKey, workspaceRoot, replyTarget } = workspaceContext;
+  const selectedThreadId = typeof runtime.resolveThreadIdForBinding === "function"
+    ? runtime.resolveThreadIdForBinding(bindingKey, workspaceRoot)
+    : "";
 
-  const { threads, threadId } = await runtime.resolveWorkspaceThreadState({
-    bindingKey,
-    workspaceRoot,
-    normalized,
-    autoSelectThread: true,
+  const workspaceThreadsPromise = runtime.refreshWorkspaceThreads(bindingKey, workspaceRoot, normalized, {
+    previewOnly: true,
+    allowStaleCache: Boolean(selectedThreadId),
   });
-  const currentThread = threads.find((thread) => thread.id === threadId) || null;
+  const availableModelsPromise = settingsRuntime.loadAvailableModels(runtime, { forceRefresh: false });
+  const [threads, availableModelsResult] = await Promise.all([
+    workspaceThreadsPromise,
+    availableModelsPromise,
+  ]);
+  const threadId = selectedThreadId || threads[0]?.id || "";
+  if (!selectedThreadId && threadId) {
+    runtime.sessionStore.setThreadIdForWorkspace(
+      bindingKey,
+      workspaceRoot,
+      threadId,
+      codexMessageUtils.buildBindingMetadata(normalized)
+    );
+  }
+  if (threadId) {
+    runtime.setThreadBindingKey(threadId, bindingKey);
+    runtime.setThreadWorkspaceRoot(threadId, workspaceRoot);
+    if (typeof runtime.rememberSelectedThreadForSync === "function") {
+      runtime.rememberSelectedThreadForSync(bindingKey, workspaceRoot, threadId);
+    }
+  }
+
+  const currentThread = threads.find((thread) => thread.id === threadId) || (threadId ? { id: threadId } : null);
   const recentThreads = currentThread
     ? threads.filter((thread) => thread.id !== threadId).slice(0, 2)
     : threads.slice(0, 3);
   const status = runtime.describeWorkspaceStatus(threadId);
   const codexParams = runtime.getCodexParamsForWorkspace(bindingKey, workspaceRoot);
-  const availableModelsResult = await settingsRuntime.loadAvailableModels(runtime, { forceRefresh: false });
   const availableModels = Array.isArray(availableModelsResult?.models) ? availableModelsResult.models : [];
   const modelOptions = settingsRuntime.buildModelSelectOptions(availableModels);
   const effortOptions = settingsRuntime.buildEffortSelectOptions(availableModels, codexParams?.model || "");
@@ -673,11 +696,26 @@ async function showThreadPicker(runtime, normalized, { replyToMessageId, page = 
     return;
   }
 
-  const threads = await runtime.refreshWorkspaceThreads(bindingKey, workspaceRoot, normalized);
-  const safePage = clampThreadPickerPage(page, threads.length);
-  const refreshState = typeof runtime.getWorkspaceThreadRefreshState === "function"
+  const requestedPage = normalizeThreadPickerPageNumber(page);
+  const previewThreads = await runtime.refreshWorkspaceThreads(bindingKey, workspaceRoot, normalized, {
+    previewOnly: true,
+    allowStaleCache: true,
+    previewLimit: THREAD_PICKER_PREVIEW_LIMIT,
+  });
+  const previewRefreshState = typeof runtime.getWorkspaceThreadRefreshState === "function"
     ? runtime.getWorkspaceThreadRefreshState(bindingKey, workspaceRoot)
     : { ok: true, fromCache: false, error: "" };
+  const needsFullRefresh = !previewRefreshState.fromCache
+    && previewThreads.length < ((requestedPage + 1) * THREAD_PICKER_PAGE_SIZE);
+  const threads = needsFullRefresh
+    ? await runtime.refreshWorkspaceThreads(bindingKey, workspaceRoot, normalized, {
+      forceRefresh: true,
+    })
+    : previewThreads;
+  const refreshState = needsFullRefresh && typeof runtime.getWorkspaceThreadRefreshState === "function"
+    ? runtime.getWorkspaceThreadRefreshState(bindingKey, workspaceRoot)
+    : previewRefreshState;
+  const safePage = clampThreadPickerPage(requestedPage, threads.length, THREAD_PICKER_PAGE_SIZE);
   const currentThreadId = runtime.resolveThreadIdForBinding(bindingKey, workspaceRoot) || threads[0]?.id || "";
   if (!threads.length) {
     await runtime.sendInfoCardMessage({
@@ -692,6 +730,11 @@ async function showThreadPicker(runtime, normalized, { replyToMessageId, page = 
     return;
   }
 
+  const previewNoticeText = !needsFullRefresh && !previewRefreshState.fromCache
+    && previewThreads.length >= THREAD_PICKER_PREVIEW_LIMIT
+    ? "线程列表已先返回最近预览，完整列表可稍后刷新。"
+    : "";
+
   if (typeof runtime.supportsInteractiveCards === "function" && !runtime.supportsInteractiveCards()) {
     await runtime.sendInfoCardMessage({
       chatId: normalized.chatId,
@@ -701,7 +744,7 @@ async function showThreadPicker(runtime, normalized, { replyToMessageId, page = 
         threads,
         currentThreadId,
         page: safePage,
-        noticeText: "",
+        noticeText: previewNoticeText,
       }),
       selectionContext: {
         bindingKey,
@@ -720,7 +763,7 @@ async function showThreadPicker(runtime, normalized, { replyToMessageId, page = 
       threads,
       currentThreadId,
       page: safePage,
-      noticeText: "",
+      noticeText: previewNoticeText,
     }),
     selectionContext: {
       bindingKey,

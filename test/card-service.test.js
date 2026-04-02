@@ -112,6 +112,60 @@ test("upsertAssistantReplyCard cancels the delayed follow-up progress notice whe
   assert.equal(calls[1].text, "最终回复");
 });
 
+test("upsertAssistantReplyCard sends a delayed progress notice for OpenClaw turns even when streaming output is enabled", async () => {
+  const calls = [];
+  const runtime = createOpenClawReplyRuntime({
+    openclawStreamingOutput: true,
+    openclawProgressNoticeDelayMs: 1,
+    openclawProgressFollowupDelayMs: 50,
+  }, calls);
+
+  await upsertAssistantReplyCard(runtime, {
+    threadId: "thread-1",
+    turnId: "turn-1",
+    chatId: "chat-1",
+    state: "streaming",
+  });
+
+  await delay(20);
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].chatId, "chat-1");
+  assert.match(calls[0].text, /处理中/);
+  assert.match(calls[0].text, /正在处理/);
+});
+
+test("upsertAssistantReplyCard clears the delayed progress notice when the first streamed chunk arrives", async () => {
+  const calls = [];
+  const runtime = createOpenClawReplyRuntime({
+    openclawStreamingOutput: true,
+    openclawProgressNoticeDelayMs: 50,
+    openclawProgressFollowupDelayMs: 100,
+  }, calls);
+
+  await upsertAssistantReplyCard(runtime, {
+    threadId: "thread-1",
+    turnId: "turn-1",
+    chatId: "chat-1",
+    state: "streaming",
+  });
+
+  await delay(10);
+
+  await upsertAssistantReplyCard(runtime, {
+    threadId: "thread-1",
+    turnId: "turn-1",
+    chatId: "chat-1",
+    text: "第一段正文",
+    state: "streaming",
+  });
+
+  await delay(80);
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].text, "第一段正文");
+});
+
 function createOpenClawReplyRuntime(configOverrides, calls) {
   const runtime = {
     supportsInteractiveCards() {
@@ -119,7 +173,7 @@ function createOpenClawReplyRuntime(configOverrides, calls) {
     },
     config: {
       openclawStreamingOutput: false,
-      openclawProgressNoticeDelayMs: 2500,
+      openclawProgressNoticeDelayMs: 1500,
       openclawProgressFollowupDelayMs: 5 * 60 * 1000,
       ...configOverrides,
     },

@@ -18,6 +18,7 @@ function initializeCommonRuntimeState(runtime) {
   runtime.latestMessageContextByChatId = new Map();
   runtime.latestSelectionContextByBindingKey = new Map();
   runtime.workspaceThreadRefreshStateByKey = new Map();
+  runtime.workspaceThreadListCacheByKey = new Map();
   runtime.firstUseWorkspaceGuideSentByBindingKey = new Set();
   runtime.isStopping = false;
   runtime.stopPromise = null;

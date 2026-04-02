@@ -12,7 +12,7 @@ const {
   summarizeCardToText,
 } = require("./builders");
 
-const DEFAULT_OPENCLAW_PROGRESS_NOTICE_DELAY_MS = 2500;
+const DEFAULT_OPENCLAW_PROGRESS_NOTICE_DELAY_MS = 1500;
 const DEFAULT_OPENCLAW_PROGRESS_FOLLOWUP_DELAY_MS = 5 * 60 * 1000;
 const DEFAULT_OPENCLAW_PROGRESS_NOTICE_TEXT = "已收到，正在处理，请稍等。";
 const DEFAULT_OPENCLAW_PROGRESS_FOLLOWUP_TEXT = "已经处理 5 分钟了，还在继续，请稍等。";
@@ -324,6 +324,7 @@ async function upsertAssistantReplyCard(
         });
         existing.sentTextLength = existing.text.length;
         runtime.setReplyCardEntry(runKey, existing);
+        clearProgressNoticeTimers(runtime, runKey);
       }
     }
     if (existing.state === "completed" || existing.state === "failed") {
@@ -393,10 +394,10 @@ function shouldScheduleOpenClawProgressNotice(runtime, entry) {
   if (!runtime || (typeof runtime.supportsInteractiveCards === "function" && runtime.supportsInteractiveCards())) {
     return false;
   }
-  if (runtime.config?.openclawStreamingOutput) {
+  if (!entry || entry.state !== "streaming") {
     return false;
   }
-  if (!entry || entry.state !== "streaming") {
+  if (Number(entry.sentTextLength || 0) > 0) {
     return false;
   }
   return Boolean(entry.threadId && entry.chatId);
