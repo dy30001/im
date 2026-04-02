@@ -4,6 +4,7 @@ const test = require("node:test");
 const {
   createWorkspaceThread,
   handleSwitchCommand,
+  handleNewCommand,
   ensureThreadAndSendMessage,
   refreshWorkspaceThreads,
   resolveWorkspaceThreadState,
@@ -448,6 +449,131 @@ test("ensureThreadAndSendMessage creates a writable recovery session when no des
   } finally {
     console.warn = originalWarn;
   }
+});
+
+test("ensureThreadAndSendMessage creates a recovery session when no desktop session is visible", async () => {
+  const bindingKey = "binding-1";
+  const workspaceRoot = "/repo";
+  const normalized = {
+    chatId: "chat-1",
+    messageId: "msg-1",
+    text: "继续聊天",
+  };
+
+  const threadAssignments = new Map();
+  const sentMessages = [];
+  const warnings = [];
+  const originalWarn = console.warn;
+
+  const runtime = {
+    config: {
+      openclaw: {
+        threadSource: "acpx",
+      },
+    },
+    sessionStore: {
+      getThreadIdForWorkspace: (_bindingKey, currentWorkspaceRoot) => threadAssignments.get(currentWorkspaceRoot) || "",
+      setThreadIdForWorkspace: (_bindingKey, currentWorkspaceRoot, threadId) => {
+        threadAssignments.set(currentWorkspaceRoot, threadId);
+      },
+      clearThreadIdForWorkspace: () => {},
+    },
+    usesDesktopSessionSource: () => true,
+    resolveThreadIdForBinding: (_bindingKey, currentWorkspaceRoot) => threadAssignments.get(currentWorkspaceRoot) || "",
+    listDesktopSessionsForWorkspace: async () => [],
+    resolveDesktopSessionById: () => null,
+    hydrateDesktopSession: async () => null,
+    codex: {
+      startThread: async ({ cwd }) => {
+        assert.equal(cwd, workspaceRoot);
+        return {
+          result: {
+            thread: {
+              id: "session-new",
+            },
+          },
+        };
+      },
+      sendUserMessage: async ({ threadId, text }) => {
+        sentMessages.push({ threadId, text });
+      },
+    },
+    getCodexParamsForWorkspace: () => ({ model: "", effort: "" }),
+    setPendingThreadContext: () => {},
+    setThreadBindingKey: () => {},
+    setThreadWorkspaceRoot: () => {},
+    rememberSelectedThreadForSync: () => {},
+    resumedThreadIds: new Set(),
+  };
+
+  console.warn = (...args) => {
+    warnings.push(args.join(" "));
+  };
+
+  try {
+    const threadId = await ensureThreadAndSendMessage(runtime, {
+      bindingKey,
+      workspaceRoot,
+      normalized,
+      threadId: "",
+      forceRecoverThread: true,
+    });
+
+    assert.equal(threadId, "session-new");
+    assert.equal(threadAssignments.get(workspaceRoot), "session-new");
+    assert.deepEqual(sentMessages, [{ threadId: "session-new", text: "继续聊天" }]);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /no desktop session visible; created writable recovery session session-new/);
+  } finally {
+    console.warn = originalWarn;
+  }
+});
+
+test("handleNewCommand creates a new thread in desktop session mode", async () => {
+  const infoMessages = [];
+  const statusCalls = [];
+
+  const runtime = {
+    sessionStore: {
+      buildBindingKey: () => "binding-1",
+      setThreadIdForWorkspace: () => {},
+    },
+    resolveWorkspaceRootForBinding: () => "/repo",
+    usesDesktopSessionSource: () => true,
+    codex: {
+      startThread: async ({ cwd }) => {
+        assert.equal(cwd, "/repo");
+        return {
+          result: {
+            thread: {
+              id: "thread-new",
+            },
+          },
+        };
+      },
+    },
+    resumedThreadIds: new Set(),
+    setPendingThreadContext: () => {},
+    setThreadBindingKey: () => {},
+    setThreadWorkspaceRoot: () => {},
+    rememberSelectedThreadForSync: () => {},
+    sendInfoCardMessage: async (message) => {
+      infoMessages.push(message);
+    },
+    showStatusPanel: async (_normalized, options) => {
+      statusCalls.push(options);
+    },
+  };
+
+  await handleNewCommand(runtime, {
+    chatId: "chat-1",
+    messageId: "msg-1",
+  });
+
+  assert.equal(infoMessages.length, 1);
+  assert.match(infoMessages[0].text, /已创建新线程并切换到它/);
+  assert.match(infoMessages[0].text, /thread: thread-new/);
+  assert.deepEqual(statusCalls, [{ replyToMessageId: "msg-1" }]);
 });
 
 test("handleSwitchCommand accepts ordinal thread selection", async () => {

@@ -46,14 +46,20 @@ test("daemon launcher daemonizes the OpenClaw supervisor", () => {
   assert.match(launcher, /exec "\$NODE_BIN" "\$APP_ROOT\/scripts\/start-openclaw-bot\.js"/);
   assert.match(supervisor, /CODEX_IM_OPENCLAW_SUPERVISOR_DAEMONIZED/);
   assert.match(supervisor, /CODEX_IM_OPENCLAW_HEARTBEAT_TIMEOUT_MS/);
+  assert.match(supervisor, /CODEX_IM_OPENCLAW_MAX_RESTART_DELAY_MS/);
+  assert.match(supervisor, /CODEX_IM_OPENCLAW_STABLE_RUN_RESET_MS/);
   assert.match(supervisor, /heartbeat stale age=/);
   assert.match(supervisor, /heartbeat\.json/);
   assert.match(supervisor, /dotenv\.config/);
   assert.doesNotMatch(supervisor, /heartbeatTimer\.unref\(\)/);
   assert.match(supervisor, /openclaw supervisor daemonized pid=/);
+  assert.match(supervisor, /supervisor-state\.json/);
   assert.match(supervisor, /child-pid/);
   assert.match(supervisor, /child\.once\("exit"/);
-  assert.match(supervisor, /scheduleRestart\(\)/);
+  assert.match(supervisor, /restartAttempt/);
+  assert.match(supervisor, /writeSupervisorState/);
+  assert.match(supervisor, /computeRestartDelayMs/);
+  assert.match(supervisor, /scheduleRestart\(/);
   assert.match(supervisor, /openclaw-bot supervisor ready pid=/);
 });
 
@@ -87,6 +93,10 @@ test("status script reports supervisor and child pids", () => {
   assert.match(statusScript, /heartbeat_file=/);
   assert.match(statusScript, /heartbeat_age_ms=/);
   assert.match(statusScript, /heartbeat_timeout_ms=/);
+  assert.match(statusScript, /supervisor_state_file=/);
+  assert.match(statusScript, /supervisor_status=/);
+  assert.match(statusScript, /supervisor_restart_attempt=/);
+  assert.match(statusScript, /service_state=/);
   assert.match(statusScript, /start-openclaw-bot/);
   assert.match(statusScript, /codex-im\.js openclaw-bot/);
   assert.match(statusScript, /launchd_status=/);

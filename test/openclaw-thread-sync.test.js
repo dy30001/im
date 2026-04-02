@@ -154,6 +154,39 @@ test("OpenClaw selected thread sync skips the next update after local activity",
   assert.match(sentMessages[0].text, /桌面回答 3/);
 });
 
+test("OpenClaw desktop session sync ignores recovery threads that are not desktop-visible", async () => {
+  const runtime = createRuntime();
+  const sentMessages = [];
+
+  runtime.config.openclaw.threadSource = "acpx";
+  runtime.sessionStore = {
+    listBindings: () => [{
+      bindingKey: "binding-1",
+      binding: {
+        provider: "openclaw",
+        workspaceId: "default",
+        chatId: "chat-1@im.wechat",
+        activeWorkspaceRoot: "/repo",
+        threadIdByWorkspaceRoot: {
+          "/repo": "thread-recovery",
+        },
+      },
+    }],
+  };
+  runtime.listDesktopSessionsForWorkspace = async () => [];
+  runtime.sendTextMessage = async (payload) => {
+    sentMessages.push(payload);
+  };
+
+  runtime.rememberSelectedThreadForSync("binding-1", "/repo", "thread-recovery", {
+    desktopVisibleExpected: false,
+  });
+
+  await runtime.syncSelectedThreads({ aborted: false });
+
+  assert.equal(sentMessages.length, 0);
+});
+
 test("OpenClaw selected thread sync ignores bindings that belong to other providers", async () => {
   const runtime = createRuntime();
   const syncedBindingKeys = [];

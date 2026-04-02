@@ -228,7 +228,35 @@ async function ensureDesktopSessionAndSendMessage(runtime, {
 }) {
   const codexParams = runtime.getCodexParamsForWorkspace(bindingKey, workspaceRoot);
   if (!threadId) {
-    throw new Error("当前项目在桌面 App 里还没有可见会话。请先在电脑端打开该项目并创建/恢复会话。");
+    if (!forceRecoverThread) {
+      throw new Error("当前项目在桌面 App 里还没有可见会话。请先在电脑端打开该项目并创建/恢复会话。");
+    }
+
+    const createdThreadId = await createWorkspaceThread(runtime, {
+      bindingKey,
+      workspaceRoot,
+      normalized,
+    });
+    console.warn(
+      `[codex-im] no desktop session visible; created writable recovery session ${createdThreadId} for workspace=${workspaceRoot}`
+    );
+    await runtime.codex.sendUserMessage({
+      threadId: createdThreadId,
+      text: normalized.text,
+      model: codexParams.model || null,
+      effort: codexParams.effort || null,
+      accessMode: runtime.config.defaultCodexAccessMode,
+      workspaceRoot,
+    });
+    runtime.sessionStore.setThreadIdForWorkspace(
+      bindingKey,
+      workspaceRoot,
+      createdThreadId,
+      codexMessageUtils.buildBindingMetadata(normalized)
+    );
+    runtime.setThreadBindingKey(createdThreadId, bindingKey);
+    runtime.setThreadWorkspaceRoot(createdThreadId, workspaceRoot);
+    return createdThreadId;
   }
 
   const originalThreadId = threadId;
@@ -307,7 +335,9 @@ async function createWorkspaceThread(runtime, { bindingKey, workspaceRoot, norma
   runtime.setThreadBindingKey(resolvedThreadId, bindingKey);
   runtime.setThreadWorkspaceRoot(resolvedThreadId, workspaceRoot);
   if (typeof runtime.rememberSelectedThreadForSync === "function") {
-    runtime.rememberSelectedThreadForSync(bindingKey, workspaceRoot, resolvedThreadId);
+    runtime.rememberSelectedThreadForSync(bindingKey, workspaceRoot, resolvedThreadId, {
+      desktopVisibleExpected: !shouldUseDesktopSessions(runtime),
+    });
   }
   invalidateWorkspaceThreadListCache(runtime, bindingKey, workspaceRoot);
   return resolvedThreadId;
@@ -333,15 +363,6 @@ async function handleNewCommand(runtime, normalized) {
       chatId: normalized.chatId,
       replyToMessageId: normalized.messageId,
       text: buildMissingWorkspaceGuideText(),
-    });
-    return;
-  }
-
-  if (shouldUseDesktopSessions(runtime)) {
-    await runtime.sendInfoCardMessage({
-      chatId: normalized.chatId,
-      replyToMessageId: normalized.messageId,
-      text: "桌面会话模式下，请先在电脑端打开当前项目并新建会话，然后再在微信里刷新。",
     });
     return;
   }

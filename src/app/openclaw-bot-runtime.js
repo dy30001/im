@@ -271,8 +271,8 @@ class OpenClawBotRuntime {
     }
   }
 
-  rememberSelectedThreadForSync(bindingKey, workspaceRoot, threadId) {
-    return rememberSelectedThreadForSync(this, bindingKey, workspaceRoot, threadId);
+  rememberSelectedThreadForSync(bindingKey, workspaceRoot, threadId, options) {
+    return rememberSelectedThreadForSync(this, bindingKey, workspaceRoot, threadId, options);
   }
 
   markThreadSyncLocalActivity(threadId) {

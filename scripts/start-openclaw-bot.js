@@ -11,12 +11,21 @@ loadSupervisorEnv();
 const LOCK_DIR = path.join(os.homedir(), ".codex-im", "openclaw-bot.lock");
 const SUPERVISOR_PID_FILE = path.join(LOCK_DIR, "pid");
 const CHILD_PID_FILE = path.join(LOCK_DIR, "child-pid");
+const SUPERVISOR_STATE_FILE = path.join(LOCK_DIR, "supervisor-state.json");
 const HEARTBEAT_FILE = process.env.CODEX_IM_OPENCLAW_HEARTBEAT_FILE || path.join(LOCK_DIR, "heartbeat.json");
 const LOG_FILE = process.env.CODEX_IM_OPENCLAW_LOG_FILE || "/tmp/codex-im-openclaw.log";
 const ENTRYPOINT = process.env.CODEX_IM_OPENCLAW_ENTRYPOINT || path.join(APP_ROOT, "bin", "codex-im.js");
 const ENTRY_MODE = process.env.CODEX_IM_OPENCLAW_ENTRY_MODE || "openclaw-bot";
 const SUPERVISOR_DAEMONIZED = process.env.CODEX_IM_OPENCLAW_SUPERVISOR_DAEMONIZED === "1";
 const RESTART_DELAY_MS = parseRestartDelay(process.env.CODEX_IM_OPENCLAW_RESTART_DELAY_MS, 2_000);
+const MAX_RESTART_DELAY_MS = Math.max(
+  RESTART_DELAY_MS,
+  parseRestartDelay(process.env.CODEX_IM_OPENCLAW_MAX_RESTART_DELAY_MS, 60_000)
+);
+const STABLE_RUN_RESET_MS = parseRestartDelay(
+  process.env.CODEX_IM_OPENCLAW_STABLE_RUN_RESET_MS,
+  5 * 60 * 1_000
+);
 const HEARTBEAT_TIMEOUT_MS = parseRestartDelay(
   process.env.CODEX_IM_OPENCLAW_HEARTBEAT_TIMEOUT_MS,
   3 * 60 * 60 * 1_000
@@ -30,7 +39,14 @@ let currentChild = null;
 let currentChildStartedAt = 0;
 let restartTimer = null;
 let heartbeatTimer = null;
+let startupStateTimer = null;
 let shuttingDown = false;
+let restartAttempt = 0;
+let lastExitAt = 0;
+let lastExitReason = "";
+let nextRestartAt = 0;
+let lastRestartDelayMs = 0;
+let currentSupervisorStatus = "";
 
 main().catch((error) => {
   console.error(`[codex-im] openclaw supervisor failed: ${error.message}`);
@@ -59,6 +75,7 @@ async function main() {
 
   installShutdownHooks();
   startHeartbeatWatchdog();
+  writeSupervisorState("supervising");
   console.log(`[codex-im] openclaw-bot supervisor ready pid=${process.pid}`);
   console.log(`[codex-im] log file: ${LOG_FILE}`);
   startChild();
@@ -147,6 +164,8 @@ function startChild() {
 
   clearRestartTimer();
   clearHeartbeatFile();
+  nextRestartAt = 0;
+  lastRestartDelayMs = 0;
   console.log(`[codex-im] openclaw child starting entrypoint=${ENTRYPOINT}`);
   const child = spawn(process.execPath, [ENTRYPOINT, ENTRY_MODE], {
     cwd: APP_ROOT,
@@ -157,49 +176,86 @@ function startChild() {
   currentChild = child;
   currentChildStartedAt = Date.now();
   writePidFile(CHILD_PID_FILE, child.pid);
+  writeSupervisorState("starting");
+  startStartupStateSync();
   console.log(`[codex-im] openclaw child started pid=${child.pid}`);
 
   child.once("exit", (code, signal) => {
-    if (currentChild && currentChild.pid === child.pid) {
-      currentChild = null;
-      currentChildStartedAt = 0;
-    }
-    if (shuttingDown) {
-      return;
-    }
-
-    console.warn(
-      `[codex-im] openclaw child exited code=${code} signal=${signal || "-"}; restarting in ${RESTART_DELAY_MS}ms`
-    );
-    scheduleRestart();
+    handleChildExit(child, {
+      reason: `exit code=${code} signal=${signal || "-"}`,
+      code,
+      signal,
+    });
   });
 
   child.once("error", (error) => {
-    if (currentChild && currentChild.pid === child.pid) {
-      currentChild = null;
-      currentChildStartedAt = 0;
-    }
-    if (shuttingDown) {
-      return;
-    }
-
-    console.error(`[codex-im] openclaw child failed to start: ${error.message}`);
-    scheduleRestart();
+    handleChildExit(child, {
+      reason: `spawn-error ${error.message}`,
+      error,
+    });
   });
 }
 
-function scheduleRestart() {
+function handleChildExit(child, { reason = "", code = null, signal = "", error = null } = {}) {
+  if (currentChild && currentChild.pid === child.pid) {
+    currentChild = null;
+  }
+  const runtimeMs = currentChildStartedAt > 0 ? Math.max(0, Date.now() - currentChildStartedAt) : 0;
+  currentChildStartedAt = 0;
+  fs.rmSync(CHILD_PID_FILE, { force: true });
+  clearStartupStateSync();
+
+  const normalizedReason = String(reason || "").trim() || "unknown";
+  lastExitAt = Date.now();
+  lastExitReason = normalizedReason;
+  if (runtimeMs >= STABLE_RUN_RESET_MS) {
+    restartAttempt = 0;
+  } else {
+    restartAttempt += 1;
+  }
+
+  if (shuttingDown) {
+    writeSupervisorState("stopping", {
+      code,
+      signal,
+      errorMessage: error?.message || "",
+      runtimeMs,
+    });
+    return;
+  }
+
+  const restartDelayMs = computeRestartDelayMs(restartAttempt);
+  if (error) {
+    console.error(`[codex-im] openclaw child failed to start: ${error.message}`);
+  } else {
+    console.warn(
+      `[codex-im] openclaw child exited code=${code} signal=${signal || "-"}; restarting in ${restartDelayMs}ms`
+    );
+  }
+  scheduleRestart(restartDelayMs, {
+    code,
+    signal,
+    errorMessage: error?.message || "",
+    runtimeMs,
+  });
+}
+
+function scheduleRestart(delayMs = RESTART_DELAY_MS, extraState = {}) {
   if (restartTimer || shuttingDown) {
     return;
   }
 
+  const normalizedDelayMs = normalizeRestartDelay(delayMs);
+  lastRestartDelayMs = normalizedDelayMs;
+  nextRestartAt = Date.now() + normalizedDelayMs;
+  writeSupervisorState("restarting", extraState);
   restartTimer = setTimeout(() => {
     restartTimer = null;
     if (shuttingDown) {
       return;
     }
     startChild();
-  }, RESTART_DELAY_MS);
+  }, normalizedDelayMs);
 }
 
 function clearRestartTimer() {
@@ -210,11 +266,45 @@ function clearRestartTimer() {
   restartTimer = null;
 }
 
+function startStartupStateSync() {
+  clearStartupStateSync();
+  startupStateTimer = setInterval(() => {
+    if (shuttingDown || !currentChild || !currentChild.pid || !isPidAlive(currentChild.pid)) {
+      clearStartupStateSync();
+      return;
+    }
+
+    if (currentSupervisorStatus === "running") {
+      clearStartupStateSync();
+      return;
+    }
+
+    const heartbeat = readHeartbeatFile();
+    if (heartbeat.updatedAt > 0) {
+      writeSupervisorState("running");
+      clearStartupStateSync();
+    }
+  }, 1_000);
+}
+
+function clearStartupStateSync() {
+  if (!startupStateTimer) {
+    return;
+  }
+  clearInterval(startupStateTimer);
+  startupStateTimer = null;
+}
+
 function startHeartbeatWatchdog() {
   clearHeartbeatWatchdog();
   heartbeatTimer = setInterval(() => {
     if (shuttingDown || !currentChild || !currentChild.pid || !isPidAlive(currentChild.pid)) {
       return;
+    }
+
+    const heartbeat = readHeartbeatFile();
+    if (heartbeat.updatedAt > 0 && currentSupervisorStatus !== "running") {
+      writeSupervisorState("running");
     }
 
     const staleState = getStaleHeartbeatState();
@@ -254,6 +344,10 @@ async function shutdown(signal) {
   shuttingDown = true;
   clearRestartTimer();
   clearHeartbeatWatchdog();
+  clearStartupStateSync();
+  writeSupervisorState("stopping", {
+    signal,
+  });
 
   const child = currentChild;
   if (child && !child.killed) {
@@ -389,6 +483,29 @@ function writePidFile(filePath, pid) {
   fs.writeFileSync(filePath, `${String(pid).trim()}\n`, { encoding: "utf8" });
 }
 
+function writeSupervisorState(status, extra = {}) {
+  currentSupervisorStatus = String(status || "").trim() || "unknown";
+  const payload = {
+    updatedAt: Date.now(),
+    status: currentSupervisorStatus,
+    supervisorPid: process.pid,
+    childPid: currentChild?.pid || 0,
+    childStartedAt: currentChildStartedAt || 0,
+    restartAttempt,
+    restartBaseDelayMs: RESTART_DELAY_MS,
+    restartMaxDelayMs: MAX_RESTART_DELAY_MS,
+    restartDelayMs: lastRestartDelayMs,
+    stableRunResetMs: STABLE_RUN_RESET_MS,
+    nextRestartAt,
+    lastExitAt,
+    lastExitReason,
+    ...extra,
+  };
+
+  fs.mkdirSync(path.dirname(SUPERVISOR_STATE_FILE), { recursive: true });
+  fs.writeFileSync(SUPERVISOR_STATE_FILE, `${JSON.stringify(payload)}\n`, "utf8");
+}
+
 function isPidAlive(pid) {
   if (!pid) {
     return false;
@@ -421,6 +538,23 @@ function killPid(pid) {
     ],
     { stdio: "ignore" }
   );
+}
+
+function computeRestartDelayMs(attempt) {
+  const normalizedAttempt = Number.isFinite(attempt) && attempt > 0 ? Math.floor(attempt) : 0;
+  if (normalizedAttempt <= 1) {
+    return RESTART_DELAY_MS;
+  }
+
+  const multiplier = 2 ** Math.min(normalizedAttempt - 1, 10);
+  return normalizeRestartDelay(RESTART_DELAY_MS * multiplier);
+}
+
+function normalizeRestartDelay(delayMs) {
+  if (!Number.isFinite(delayMs) || delayMs <= 0) {
+    return RESTART_DELAY_MS;
+  }
+  return Math.max(RESTART_DELAY_MS, Math.min(delayMs, MAX_RESTART_DELAY_MS));
 }
 
 function parseRestartDelay(rawValue, defaultValue) {

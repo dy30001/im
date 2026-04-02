@@ -1,4 +1,4 @@
-function rememberSelectedThreadForSync(runtime, bindingKey, workspaceRoot, threadId) {
+function rememberSelectedThreadForSync(runtime, bindingKey, workspaceRoot, threadId, { desktopVisibleExpected = true } = {}) {
   const syncKey = buildThreadSyncKey(bindingKey, workspaceRoot);
   const normalizedThreadId = String(threadId || "").trim();
   if (!syncKey || !normalizedThreadId) {
@@ -6,12 +6,21 @@ function rememberSelectedThreadForSync(runtime, bindingKey, workspaceRoot, threa
   }
 
   const current = runtime.threadSyncStateByKey.get(syncKey) || null;
-  if (current?.threadId === normalizedThreadId) {
+  const nextDesktopVisibleExpected = (
+    current?.threadId === normalizedThreadId && current?.desktopVisibleExpected === false
+  )
+    ? false
+    : desktopVisibleExpected !== false;
+  if (
+    current?.threadId === normalizedThreadId
+    && current?.desktopVisibleExpected === nextDesktopVisibleExpected
+  ) {
     return;
   }
 
   runtime.threadSyncStateByKey.set(syncKey, {
     threadId: normalizedThreadId,
+    desktopVisibleExpected: nextDesktopVisibleExpected,
     needsBaseline: true,
     skipNextSync: false,
     lastUpdatedAt: 0,
@@ -180,6 +189,10 @@ async function syncSelectedDesktopSessionBinding(runtime, { bindingKey, binding 
     || session?.acpxRecordId === threadId
   )) || null;
   if (!selectedSession) {
+    if (state.desktopVisibleExpected === false) {
+      state.lastError = "";
+      return;
+    }
     await maybeSendThreadSyncWarning(runtime, state, {
       chatId,
       text: [

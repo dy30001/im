@@ -1,9 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" && pwd)
+APP_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
+
+load_env_file() {
+  local env_path="$1"
+  if [ ! -f "$env_path" ]; then
+    return
+  fi
+
+  set -a
+  # shellcheck disable=SC1090
+  . "$env_path"
+  set +a
+}
+
+load_env_file "${APP_ROOT}/.env"
+load_env_file "${HOME}/.codex-im/.env"
+
 LOCK_DIR="${HOME}/.codex-im/openclaw-bot.lock"
 SUPERVISOR_PID_FILE="${LOCK_DIR}/pid"
 CHILD_PID_FILE="${LOCK_DIR}/child-pid"
+SUPERVISOR_STATE_FILE="${LOCK_DIR}/supervisor-state.json"
 HEARTBEAT_FILE="${CODEX_IM_OPENCLAW_HEARTBEAT_FILE:-${LOCK_DIR}/heartbeat.json}"
 LABEL="com.dy3000.codex-im.openclaw"
 LAUNCH_AGENT_PLIST="${HOME}/Library/LaunchAgents/${LABEL}.plist"
@@ -14,6 +33,7 @@ HEARTBEAT_TIMEOUT_MS="${CODEX_IM_OPENCLAW_HEARTBEAT_TIMEOUT_MS:-10800000}"
 echo "[codex-im] openclaw status"
 echo "lock_dir=${LOCK_DIR}"
 echo "log_file=${LOG_FILE}"
+echo "supervisor_state_file=${SUPERVISOR_STATE_FILE}"
 echo "heartbeat_file=${HEARTBEAT_FILE}"
 echo "heartbeat_timeout_ms=${HEARTBEAT_TIMEOUT_MS}"
 if [ -f "$LAUNCH_AGENT_PLIST" ]; then
@@ -40,6 +60,42 @@ else
   echo "heartbeat_updated_at=<missing>"
   echo "heartbeat_age_ms=<missing>"
   echo "heartbeat_reason=<missing>"
+fi
+
+if [ -f "$SUPERVISOR_STATE_FILE" ]; then
+  supervisor_summary="$(node -e 'const fs=require("fs"); try { const p=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); const updatedAt=Number(p.updatedAt||0); const status=String(p.status||"").trim()||"unknown"; const restartAttempt=Number(p.restartAttempt||0); const restartDelayMs=Number(p.restartDelayMs||0); const nextRestartAt=Number(p.nextRestartAt||0); const nextRestartInMs=nextRestartAt > 0 ? Math.max(0, nextRestartAt - Date.now()) : 0; const lastExitAt=Number(p.lastExitAt||0); const lastExitReason=String(p.lastExitReason||"").trim()||"unknown"; process.stdout.write(`${updatedAt}|${status}|${restartAttempt}|${restartDelayMs}|${nextRestartAt}|${nextRestartInMs}|${lastExitAt}|${lastExitReason}`); } catch { process.stdout.write("||0|0|0|0|0|"); }' "$SUPERVISOR_STATE_FILE")"
+  supervisor_updated_at="${supervisor_summary%%|*}"
+  supervisor_rest="${supervisor_summary#*|}"
+  supervisor_status="${supervisor_rest%%|*}"
+  supervisor_rest="${supervisor_rest#*|}"
+  supervisor_restart_attempt="${supervisor_rest%%|*}"
+  supervisor_rest="${supervisor_rest#*|}"
+  supervisor_restart_delay_ms="${supervisor_rest%%|*}"
+  supervisor_rest="${supervisor_rest#*|}"
+  supervisor_next_restart_at="${supervisor_rest%%|*}"
+  supervisor_rest="${supervisor_rest#*|}"
+  supervisor_next_restart_in_ms="${supervisor_rest%%|*}"
+  supervisor_rest="${supervisor_rest#*|}"
+  supervisor_last_exit_at="${supervisor_rest%%|*}"
+  supervisor_last_exit_reason="${supervisor_rest#*|}"
+  echo "supervisor_updated_at=${supervisor_updated_at:-<unknown>}"
+  echo "supervisor_status=${supervisor_status:-<unknown>}"
+  echo "supervisor_restart_attempt=${supervisor_restart_attempt:-0}"
+  echo "supervisor_restart_delay_ms=${supervisor_restart_delay_ms:-0}"
+  echo "supervisor_next_restart_at=${supervisor_next_restart_at:-0}"
+  echo "supervisor_next_restart_in_ms=${supervisor_next_restart_in_ms:-0}"
+  echo "supervisor_last_exit_at=${supervisor_last_exit_at:-0}"
+  echo "supervisor_last_exit_reason=${supervisor_last_exit_reason:-<unknown>}"
+else
+  supervisor_status=""
+  echo "supervisor_updated_at=<missing>"
+  echo "supervisor_status=<missing>"
+  echo "supervisor_restart_attempt=<missing>"
+  echo "supervisor_restart_delay_ms=<missing>"
+  echo "supervisor_next_restart_at=<missing>"
+  echo "supervisor_next_restart_in_ms=<missing>"
+  echo "supervisor_last_exit_at=<missing>"
+  echo "supervisor_last_exit_reason=<missing>"
 fi
 
 supervisor_pid=""
@@ -81,6 +137,20 @@ if [ -n "$process_lines" ]; then
   printf "%s\n" "$process_lines"
 else
   echo "process_count=0"
+fi
+
+if [ "$supervisor_status" = "restarting" ]; then
+  echo "service_state=restarting"
+elif [ -n "$child_pid" ] && kill -0 "$child_pid" >/dev/null 2>&1; then
+  if [ "${heartbeat_updated_at:-}" = "<missing>" ]; then
+    echo "service_state=starting"
+  else
+    echo "service_state=running"
+  fi
+elif [ -n "$supervisor_pid" ] && kill -0 "$supervisor_pid" >/dev/null 2>&1; then
+  echo "service_state=supervising"
+else
+  echo "service_state=stopped"
 fi
 
 if [ -f "$LOG_FILE" ]; then
