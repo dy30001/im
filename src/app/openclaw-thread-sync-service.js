@@ -34,7 +34,6 @@ function markThreadSyncLocalActivity(runtime, threadId) {
 }
 
 async function threadSyncLoop(runtime, signal, pollIntervalMs) {
-  await delay(pollIntervalMs, signal);
   while (!signal.aborted && !runtime.isStopping) {
     try {
       await syncSelectedThreads(runtime, signal);
@@ -43,6 +42,9 @@ async function threadSyncLoop(runtime, signal, pollIntervalMs) {
         break;
       }
       console.error(`[codex-im] openclaw thread sync failed: ${error.message}`);
+    }
+    if (signal.aborted || runtime.isStopping) {
+      break;
     }
     await delay(pollIntervalMs, signal);
   }
@@ -60,9 +62,9 @@ async function syncSelectedThreads(runtime, signal) {
     if (!runtime.isRuntimeBindingEntry(entry?.binding)) {
       continue;
     }
-      await runtime.syncSelectedThreadBinding(entry).catch((error) => {
-        console.error(`[codex-im] failed to sync selected thread: ${error.message}`);
-      });
+    await runtime.syncSelectedThreadBinding(entry).catch((error) => {
+      console.error(`[codex-im] failed to sync selected thread: ${error.message}`);
+    });
   }
 }
 

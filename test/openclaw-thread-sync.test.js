@@ -5,6 +5,7 @@ const path = require("node:path");
 const test = require("node:test");
 
 const { OpenClawBotRuntime } = require("../src/app/openclaw-bot-runtime");
+const { threadSyncLoop } = require("../src/app/openclaw-thread-sync-service");
 
 function createRuntime() {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-im-openclaw-sync-"));
@@ -235,4 +236,37 @@ test("OpenClaw selected thread sync keeps legacy bindings without provider and s
   await runtime.syncSelectedThreads({ aborted: false });
 
   assert.deepEqual(syncedBindingKeys, ["legacy-openclaw-binding"]);
+});
+
+test("OpenClaw thread sync loop runs immediately before the first interval delay", async () => {
+  const runtime = {
+    isStopping: false,
+    sessionStore: {
+      listBindings: () => [{
+        bindingKey: "binding-1",
+        binding: {
+          provider: "openclaw",
+          chatId: "chat-1@im.wechat",
+          senderId: "chat-1@im.wechat",
+          activeWorkspaceRoot: "/repo",
+          threadIdByWorkspaceRoot: {
+            "/repo": "thread-1",
+          },
+        },
+      }],
+    },
+    isRuntimeBindingEntry: () => true,
+    syncSelectedThreadBinding: async ({ bindingKey }) => {
+      calls.push(bindingKey);
+      controller.abort();
+    },
+  };
+  const calls = [];
+  const controller = new AbortController();
+  const startedAt = Date.now();
+
+  await threadSyncLoop(runtime, controller.signal, 1_000);
+
+  assert.deepEqual(calls, ["binding-1"]);
+  assert.ok(Date.now() - startedAt < 200);
 });

@@ -46,7 +46,7 @@ function readConfig() {
     },
     defaultWorkspaceId: process.env.CODEX_IM_DEFAULT_WORKSPACE_ID || "default",
     feishuStreamingOutput: readBooleanEnv("CODEX_IM_FEISHU_STREAMING_OUTPUT", true),
-    openclawStreamingOutput: readBooleanEnv("CODEX_IM_OPENCLAW_STREAMING_OUTPUT", false),
+    openclawStreamingOutput: readBooleanEnv("CODEX_IM_OPENCLAW_STREAMING_OUTPUT", mode === "openclaw-bot"),
     openclawProgressNoticeDelayMs: readIntegerEnv(
       "CODEX_IM_OPENCLAW_PROGRESS_NOTICE_DELAY_MS",
       2500

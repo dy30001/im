@@ -3,6 +3,20 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
+const DEFAULT_REQUEST_RETRY_ATTEMPTS = 2;
+const DEFAULT_REQUEST_RETRY_DELAY_MS = 250;
+const RETRYABLE_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
+const RETRYABLE_ERROR_CODES = new Set([
+  "ECONNABORTED",
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "EHOSTUNREACH",
+  "EPIPE",
+  "ETIMEDOUT",
+  "EAI_AGAIN",
+  "ENETDOWN",
+  "ENETUNREACH",
+]);
 const CHANNEL_VERSION = readChannelVersion();
 
 class OpenClawClientAdapter {
@@ -36,6 +50,8 @@ class OpenClawClientAdapter {
       fetchImpl: this.fetchImpl,
       signal,
       verboseLogs: this.verboseLogs,
+      retryAttempts: DEFAULT_REQUEST_RETRY_ATTEMPTS,
+      retryDelayMs: DEFAULT_REQUEST_RETRY_DELAY_MS,
       body: {
         get_updates_buf: cursor,
         base_info: buildBaseInfo(),
@@ -75,6 +91,8 @@ class OpenClawClientAdapter {
       fetchImpl: this.fetchImpl,
       signal,
       verboseLogs: this.verboseLogs,
+      retryAttempts: DEFAULT_REQUEST_RETRY_ATTEMPTS,
+      retryDelayMs: DEFAULT_REQUEST_RETRY_DELAY_MS,
       body: {
         msg: {
           from_user_id: normalizedFromUserId,
@@ -119,6 +137,8 @@ async function postJson({
   verboseLogs = false,
   swallowAbort = false,
   fallbackValue = null,
+  retryAttempts = 1,
+  retryDelayMs = 0,
 }) {
   if (typeof fetchImpl !== "function") {
     throw new Error("OpenClaw fetch implementation is unavailable");
@@ -129,53 +149,73 @@ async function postJson({
 
   const url = new URL(endpoint, baseUrl);
   const bodyText = JSON.stringify(body);
-  const controller = new AbortController();
-  const abortHandler = () => controller.abort();
-  if (signal) {
-    if (signal.aborted) {
-      controller.abort();
-    } else {
-      signal.addEventListener("abort", abortHandler, { once: true });
+  const maxAttempts = Math.max(1, Number(retryAttempts) || 1);
+  const normalizedRetryDelayMs = Math.max(0, Number(retryDelayMs) || 0);
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const controller = new AbortController();
+    const abortHandler = () => controller.abort();
+    if (signal) {
+      if (signal.aborted) {
+        controller.abort();
+      } else {
+        signal.addEventListener("abort", abortHandler, { once: true });
+      }
+    }
+
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      if (verboseLogs) {
+        console.log(
+          `[codex-im] openclaw=> ${label} ${url.pathname} ${summarizeRequestBody(body)}`
+        );
+      }
+      const response = await fetchImpl(url.toString(), {
+        method: "POST",
+        headers: buildHeaders({ token, wechatUin, bodyText }),
+        body: bodyText,
+        signal: controller.signal,
+      });
+      const rawText = await response.text();
+      if (!response.ok) {
+        const error = new Error(`${label} ${response.status}: ${rawText}`);
+        error.retryable = isRetryableHttpStatus(response.status);
+        throw error;
+      }
+      const parsed = rawText && rawText.trim() ? JSON.parse(rawText) : null;
+      const apiError = buildApiError(parsed, label);
+      if (apiError) {
+        throw apiError;
+      }
+      if (verboseLogs) {
+        console.log(`[codex-im] openclaw<= ${label} ${summarizeResponseBody(parsed)}`);
+      }
+      return parsed;
+    } catch (error) {
+      if (swallowAbort && error?.name === "AbortError") {
+        return fallbackValue;
+      }
+      if (attempt < maxAttempts && isRetryablePostJsonError(error)) {
+        try {
+          await waitForRetryDelay(normalizedRetryDelayMs * attempt, signal);
+        } catch (delayError) {
+          if (swallowAbort && delayError?.name === "AbortError") {
+            return fallbackValue;
+          }
+          throw delayError;
+        }
+        continue;
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      if (signal) {
+        signal.removeEventListener("abort", abortHandler);
+      }
     }
   }
 
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    if (verboseLogs) {
-      console.log(
-        `[codex-im] openclaw=> ${label} ${url.pathname} ${summarizeRequestBody(body)}`
-      );
-    }
-    const response = await fetchImpl(url.toString(), {
-      method: "POST",
-      headers: buildHeaders({ token, wechatUin, bodyText }),
-      body: bodyText,
-      signal: controller.signal,
-    });
-    const rawText = await response.text();
-    if (!response.ok) {
-      throw new Error(`${label} ${response.status}: ${rawText}`);
-    }
-    const parsed = rawText && rawText.trim() ? JSON.parse(rawText) : null;
-    const apiError = buildApiError(parsed, label);
-    if (apiError) {
-      throw apiError;
-    }
-    if (verboseLogs) {
-      console.log(`[codex-im] openclaw<= ${label} ${summarizeResponseBody(parsed)}`);
-    }
-    return parsed;
-  } catch (error) {
-    if (swallowAbort && error?.name === "AbortError") {
-      return fallbackValue;
-    }
-    throw error;
-  } finally {
-    clearTimeout(timer);
-    if (signal) {
-      signal.removeEventListener("abort", abortHandler);
-    }
-  }
+  return fallbackValue;
 }
 
 function buildHeaders({ token, wechatUin, bodyText }) {
@@ -230,7 +270,86 @@ function buildApiError(payload, label) {
   const errmsg = typeof payload.errmsg === "string" && payload.errmsg.trim()
     ? payload.errmsg.trim()
     : "unknown error";
-  return new Error(`${label} errcode=${resolvedCode}: ${errmsg}`);
+  const error = new Error(`${label} errcode=${resolvedCode}: ${errmsg}`);
+  error.retryable = false;
+  return error;
+}
+
+function isRetryablePostJsonError(error) {
+  if (!error || error?.name === "AbortError") {
+    return false;
+  }
+  if (error.retryable === false) {
+    return false;
+  }
+  if (error.retryable === true) {
+    return true;
+  }
+
+  const code = String(error?.code || error?.cause?.code || "").trim().toUpperCase();
+  if (code && RETRYABLE_ERROR_CODES.has(code)) {
+    return true;
+  }
+
+  const message = String(error?.message || "").trim().toLowerCase();
+  if (!message) {
+    return false;
+  }
+
+  return (
+    message.includes("fetch failed")
+    || message.includes("network error")
+    || message.includes("socket hang up")
+    || message.includes("connection refused")
+    || message.includes("connection reset")
+    || message.includes("timed out")
+    || message.includes("temporary failure in name resolution")
+  );
+}
+
+function isRetryableHttpStatus(status) {
+  return RETRYABLE_HTTP_STATUSES.has(Number(status));
+}
+
+async function waitForRetryDelay(delayMs, signal) {
+  const normalizedDelayMs = Math.max(0, Number(delayMs) || 0);
+  if (normalizedDelayMs <= 0) {
+    return;
+  }
+
+  await new Promise((resolve, reject) => {
+    const cleanup = () => {
+      if (signal) {
+        signal.removeEventListener("abort", onAbort);
+      }
+    };
+
+    const onAbort = () => {
+      clearTimeout(timer);
+      cleanup();
+      reject(new AbortError("The operation was aborted"));
+    };
+
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, normalizedDelayMs);
+
+    if (signal) {
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+  });
+}
+
+class AbortError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "AbortError";
+  }
 }
 
 function isOpenClawCredentialError(error) {

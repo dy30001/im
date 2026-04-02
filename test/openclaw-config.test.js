@@ -68,6 +68,24 @@ test("readConfig defaults openclaw to ACP desktop session mode", () => {
   }
 });
 
+test("readConfig enables openclaw streaming output by default in openclaw bot mode", () => {
+  const previousArgv = process.argv.slice();
+  const previousEnv = {
+    CODEX_IM_OPENCLAW_STREAMING_OUTPUT: process.env.CODEX_IM_OPENCLAW_STREAMING_OUTPUT,
+  };
+
+  process.argv = [previousArgv[0], previousArgv[1], "openclaw-bot"];
+  delete process.env.CODEX_IM_OPENCLAW_STREAMING_OUTPUT;
+
+  try {
+    const config = readConfig();
+    assert.equal(config.openclawStreamingOutput, true);
+  } finally {
+    process.argv = previousArgv;
+    restoreEnv(previousEnv);
+  }
+});
+
 test("readConfig uses a dedicated default session file for Feishu mode", () => {
   const previousArgv = process.argv.slice();
   const previousEnv = {
