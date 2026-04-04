@@ -11,6 +11,7 @@ const {
   handleBindCommand,
   handleBrowseCommand,
   handleWorkspacesCommand,
+  resolveWorkspaceContext,
 } = require("../src/domain/workspace/workspace-service");
 
 test("normalizeFeishuTextEvent recognizes /codex browse", () => {
@@ -143,6 +144,76 @@ test("handleBindCommand keeps allowing direct binds inside the home directory wh
     previewOnly: true,
     allowStaleCache: false,
   });
+});
+
+test("resolveWorkspaceContext auto-binds the configured default workspace root", async () => {
+  const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-im-default-bind-"));
+  let activeWorkspaceRoot = "";
+  const savedCodexParams = [];
+  const runtime = createBrowseRuntime({
+    workspaceAllowlist: [workspaceRoot],
+    defaultWorkspaceRoot: workspaceRoot,
+  });
+  runtime.sessionStore.getCodexParamsForWorkspace = () => ({ model: "", effort: "" });
+  runtime.sessionStore.setCodexParamsForWorkspace = (bindingKey, targetWorkspaceRoot, params) => {
+    savedCodexParams.push({ bindingKey, workspaceRoot: targetWorkspaceRoot, params });
+  };
+  runtime.sessionStore.setActiveWorkspaceRoot = (_bindingKey, workspaceRootValue) => {
+    activeWorkspaceRoot = workspaceRootValue;
+  };
+  runtime.getBindingContext = () => ({
+    bindingKey: "binding:1",
+    workspaceRoot: activeWorkspaceRoot,
+  });
+  runtime.config.defaultCodexModel = "gpt-5.4";
+  runtime.config.defaultCodexEffort = "xhigh";
+
+  const context = await resolveWorkspaceContext(runtime, createNormalizedEvent(), {
+    replyToMessageId: "reply-1",
+    missingWorkspaceText: "missing",
+  });
+
+  assert.deepEqual(context, {
+    bindingKey: "binding:1",
+    workspaceRoot,
+    replyTarget: "reply-1",
+    autoBound: true,
+  });
+  assert.equal(activeWorkspaceRoot, workspaceRoot);
+  assert.deepEqual(savedCodexParams, [
+    {
+      bindingKey: "binding:1",
+      workspaceRoot,
+      params: {
+        model: "gpt-5.4",
+        effort: "xhigh",
+      },
+    },
+  ]);
+});
+
+test("resolveWorkspaceContext falls back to the missing-workspace guide when the default workspace root is outside the allowlist", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-im-default-bind-deny-"));
+  const allowedRoot = path.join(tempDir, "allowed");
+  const deniedRoot = path.join(tempDir, "denied");
+  fs.mkdirSync(allowedRoot);
+  fs.mkdirSync(deniedRoot);
+
+  const sentInfo = [];
+  const runtime = createBrowseRuntime({
+    workspaceAllowlist: [allowedRoot],
+    defaultWorkspaceRoot: deniedRoot,
+    onSendInfoCardMessage: (payload) => sentInfo.push(payload),
+  });
+
+  const context = await resolveWorkspaceContext(runtime, createNormalizedEvent(), {
+    replyToMessageId: "reply-1",
+    missingWorkspaceText: "missing",
+  });
+
+  assert.equal(context, null);
+  assert.equal(sentInfo.length, 1);
+  assert.equal(sentInfo[0].text, "missing");
 });
 
 test("handleBrowseCommand lists directories before files inside the allowed root", async () => {
@@ -314,12 +385,16 @@ test("handleWorkspacesCommand tags the workspace list with selection context", a
 
 function createBrowseRuntime({
   workspaceAllowlist,
+  defaultWorkspaceRoot = "",
   onSendInteractiveCard = () => {},
   onSendInfoCardMessage = () => {},
 }) {
   return {
     config: {
       workspaceAllowlist,
+      defaultWorkspaceRoot,
+      defaultCodexModel: "",
+      defaultCodexEffort: "",
     },
     sessionStore: {
       buildBindingKey: () => "binding:1",

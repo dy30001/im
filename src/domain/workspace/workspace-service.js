@@ -38,7 +38,12 @@ async function resolveWorkspaceContext(
 ) {
   const replyTarget = runtime.resolveReplyToMessageId(normalized, replyToMessageId);
   const { bindingKey, workspaceRoot } = runtime.getBindingContext(normalized);
-  if (!workspaceRoot) {
+  if (workspaceRoot) {
+    return { bindingKey, workspaceRoot, replyTarget };
+  }
+
+  const defaultWorkspaceRoot = await resolveDefaultWorkspaceRoot(runtime, normalized, bindingKey);
+  if (!defaultWorkspaceRoot) {
     await runtime.sendInfoCardMessage({
       chatId: normalized.chatId,
       replyToMessageId: replyTarget,
@@ -47,7 +52,37 @@ async function resolveWorkspaceContext(
     return null;
   }
 
-  return { bindingKey, workspaceRoot, replyTarget };
+  return {
+    bindingKey,
+    workspaceRoot: defaultWorkspaceRoot,
+    replyTarget,
+    autoBound: true,
+  };
+}
+
+async function resolveDefaultWorkspaceRoot(runtime, normalized, bindingKey) {
+  const configuredWorkspaceRoot = normalizeWorkspacePath(runtime?.config?.defaultWorkspaceRoot);
+  if (!configuredWorkspaceRoot || !bindingKey) {
+    return "";
+  }
+
+  if (!isAbsoluteWorkspacePath(configuredWorkspaceRoot)) {
+    return "";
+  }
+
+  const bindRoots = browserRuntime.resolveBrowseRoots(runtime);
+  if (!bindRoots.length || !isWorkspaceAllowed(configuredWorkspaceRoot, bindRoots)) {
+    return "";
+  }
+
+  const workspaceStats = await runtime.resolveWorkspaceStats(configuredWorkspaceRoot);
+  if (!workspaceStats.exists || !workspaceStats.isDirectory) {
+    return "";
+  }
+
+  settingsRuntime.applyDefaultCodexParamsOnBind(runtime, bindingKey, configuredWorkspaceRoot);
+  runtime.sessionStore.setActiveWorkspaceRoot(bindingKey, configuredWorkspaceRoot);
+  return configuredWorkspaceRoot;
 }
 
 async function handleBindCommand(runtime, normalized) {

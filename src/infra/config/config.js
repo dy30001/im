@@ -21,6 +21,7 @@ function readConfig() {
   return {
     mode,
     workspaceAllowlist: readListEnv("CODEX_IM_WORKSPACE_ALLOWLIST"),
+    defaultWorkspaceRoot: readTextEnv("CODEX_IM_DEFAULT_WORKSPACE_ROOT"),
     codexEndpoint: process.env.CODEX_IM_CODEX_ENDPOINT || "",
     codexCommand: process.env.CODEX_IM_CODEX_COMMAND || "",
     defaultCodexModel: readTextEnv("CODEX_IM_DEFAULT_CODEX_MODEL"),
