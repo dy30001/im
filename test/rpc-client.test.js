@@ -8,6 +8,8 @@ const test = require("node:test");
 const {
   CodexRpcClient,
   buildCodexCommandCandidatesWithPlatform,
+  buildCodexNetworkProxyArgs,
+  buildSpawnSpec,
   buildSpawnSpecWithPlatform,
   resolveCodexHome,
   resolveCodexSpawnCwd,
@@ -42,6 +44,66 @@ test("buildSpawnSpecWithPlatform forwards an explicit workspace cwd", () => {
     {
       command: "codex",
       args: ["--cd", "/tmp/codex-im-workspaces/workspace-abc123", "app-server"],
+    }
+  );
+});
+
+test("buildCodexNetworkProxyArgs prefers explicit proxy env values", () => {
+  assert.deepEqual(
+    buildCodexNetworkProxyArgs({
+      HTTPS_PROXY: "http://127.0.0.1:7897",
+    }),
+    ["-c", "network.proxy_url=http://127.0.0.1:7897"]
+  );
+  assert.deepEqual(
+    buildCodexNetworkProxyArgs({
+      ALL_PROXY: "socks5://127.0.0.1:7897",
+    }),
+    ["-c", "network.socks_url=socks5://127.0.0.1:7897"]
+  );
+});
+
+test("buildCodexNetworkProxyArgs falls back to macOS system proxy settings", () => {
+  const scutilProxyOutput = `
+<dictionary> {
+  HTTPEnable : 1
+  HTTPProxy : 127.0.0.1
+  HTTPPort : 7897
+  HTTPSEnable : 1
+  HTTPSProxy : 127.0.0.1
+  HTTPSPort : 7897
+  SOCKSEnable : 1
+  SOCKSProxy : 127.0.0.1
+  SOCKSPort : 7897
+}
+`;
+
+  assert.deepEqual(
+    buildCodexNetworkProxyArgs(
+      {},
+      {
+        isMacos: true,
+        execFileSyncImpl: () => scutilProxyOutput,
+      }
+    ),
+    ["-c", "network.proxy_url=http://127.0.0.1:7897"]
+  );
+});
+
+test("buildSpawnSpec injects Codex proxy config before the app-server subcommand", () => {
+  assert.deepEqual(
+    buildSpawnSpec("codex", "/tmp/codex-im-workspaces/workspace-abc123", {
+      HTTP_PROXY: "http://127.0.0.1:7897",
+    }),
+    {
+      command: "codex",
+      args: [
+        "-c",
+        "network.proxy_url=http://127.0.0.1:7897",
+        "--cd",
+        "/tmp/codex-im-workspaces/workspace-abc123",
+        "app-server",
+      ],
     }
   );
 });

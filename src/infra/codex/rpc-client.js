@@ -75,7 +75,7 @@ class CodexRpcClient {
     for (const command of commandCandidates) {
       try {
         const spawnCwd = this.resolveCodexSpawnWorkspaceRoot();
-        const spawnSpec = buildSpawnSpec(command, spawnCwd);
+        const spawnSpec = buildSpawnSpec(command, spawnCwd, this.env);
         child = await spawnCodexProcess(this.spawnImpl, spawnSpec, this.env, { cwd: spawnCwd });
         selectedCommand = command;
         this.hasReportedTransportFailure = false;
@@ -521,18 +521,25 @@ function buildCodexCommandCandidatesWithPlatform(
   return [DEFAULT_CODEX_COMMAND];
 }
 
-function buildSpawnSpec(command, cwd = "") {
-  return buildSpawnSpecWithPlatform(command, { isWindows: IS_WINDOWS, cwd });
+function buildSpawnSpec(command, cwd = "", env = process.env) {
+  return buildSpawnSpecWithPlatform(command, {
+    isWindows: IS_WINDOWS,
+    cwd,
+    extraArgs: buildCodexNetworkProxyArgs(env),
+  });
 }
 
-function buildSpawnSpecWithPlatform(command, { isWindows = IS_WINDOWS, cwd = "" } = {}) {
+function buildSpawnSpecWithPlatform(command, { isWindows = IS_WINDOWS, cwd = "", extraArgs = [] } = {}) {
   const normalizedCwd = normalizeNonEmptyString(cwd);
+  const normalizedExtraArgs = Array.isArray(extraArgs)
+    ? extraArgs.map((arg) => normalizeNonEmptyString(arg)).filter(Boolean)
+    : [];
   if (isWindows) {
     return {
       command: "cmd.exe",
       args: normalizedCwd
-        ? ["/c", command, "--cd", normalizedCwd, "app-server"]
-        : ["/c", command, "app-server"],
+        ? ["/c", command, ...normalizedExtraArgs, "--cd", normalizedCwd, "app-server"]
+        : ["/c", command, ...normalizedExtraArgs, "app-server"],
     };
   }
 
@@ -541,8 +548,146 @@ function buildSpawnSpecWithPlatform(command, { isWindows = IS_WINDOWS, cwd = "" 
     : ["app-server"];
   return {
     command,
-    args,
+    args: [...normalizedExtraArgs, ...args],
   };
+}
+
+function buildCodexNetworkProxyArgs(
+  env = process.env,
+  {
+    isMacos = IS_MACOS,
+    execFileSyncImpl = execFileSync,
+  } = {}
+) {
+  const proxyArgFromEnv = resolveCodexNetworkProxyArgFromEnv(env);
+  if (proxyArgFromEnv) {
+    return ["-c", proxyArgFromEnv];
+  }
+
+  if (!isMacos) {
+    return [];
+  }
+
+  const proxyArgFromSystem = resolveCodexNetworkProxyArgFromSystem(execFileSyncImpl);
+  return proxyArgFromSystem ? ["-c", proxyArgFromSystem] : [];
+}
+
+function resolveCodexNetworkProxyArgFromEnv(env = process.env) {
+  const proxyValue = readFirstNonEmptyEnvValue(env, ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]);
+  if (proxyValue) {
+    return buildCodexProxyConfigArg(proxyValue, "network.proxy_url");
+  }
+
+  const socksValue = readFirstNonEmptyEnvValue(env, ["ALL_PROXY", "all_proxy"]);
+  if (socksValue) {
+    return buildCodexProxyConfigArg(socksValue, "network.socks_url");
+  }
+
+  return "";
+}
+
+function resolveCodexNetworkProxyArgFromSystem(execFileSyncImpl = execFileSync) {
+  let output = "";
+  try {
+    output = execFileSyncImpl("scutil", ["--proxy"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+  } catch {
+    return "";
+  }
+
+  const settings = parseScutilProxySettings(output);
+  if (isScutilProxyEnabled(settings.HTTPEnable)) {
+    const proxyUrl = buildProxyEndpoint(settings.HTTPProxy, settings.HTTPPort, "http");
+    if (proxyUrl) {
+      return `network.proxy_url=${proxyUrl}`;
+    }
+  }
+
+  if (isScutilProxyEnabled(settings.HTTPSEnable)) {
+    const proxyUrl = buildProxyEndpoint(settings.HTTPSProxy, settings.HTTPSPort, "http");
+    if (proxyUrl) {
+      return `network.proxy_url=${proxyUrl}`;
+    }
+  }
+
+  if (isScutilProxyEnabled(settings.SOCKSEnable)) {
+    const proxyUrl = buildProxyEndpoint(settings.SOCKSProxy, settings.SOCKSPort, "socks5h");
+    if (proxyUrl) {
+      return `network.socks_url=${proxyUrl}`;
+    }
+  }
+
+  return "";
+}
+
+function resolveCodexNetworkProxyArgFromEnvValue(rawValue, defaultConfigKey) {
+  const value = normalizeNonEmptyString(rawValue);
+  if (!value) {
+    return "";
+  }
+
+  const normalized = value.toLowerCase();
+  if (
+    normalized.startsWith("http://")
+    || normalized.startsWith("https://")
+  ) {
+    return `network.proxy_url=${value}`;
+  }
+
+  if (
+    normalized.startsWith("socks://")
+    || normalized.startsWith("socks5://")
+    || normalized.startsWith("socks5h://")
+  ) {
+    return `network.socks_url=${value}`;
+  }
+
+  if (defaultConfigKey === "network.socks_url") {
+    return `network.socks_url=socks5h://${value}`;
+  }
+
+  return `network.proxy_url=http://${value}`;
+}
+
+function buildCodexProxyConfigArg(rawValue, defaultConfigKey) {
+  return resolveCodexNetworkProxyArgFromEnvValue(rawValue, defaultConfigKey);
+}
+
+function readFirstNonEmptyEnvValue(env, names) {
+  for (const name of names) {
+    const value = normalizeNonEmptyString(env?.[name]);
+    if (value) {
+      return value;
+    }
+  }
+  return "";
+}
+
+function parseScutilProxySettings(output) {
+  const settings = {};
+  for (const line of String(output || "").split(/\r?\n/)) {
+    const match = line.match(/^\s*([A-Za-z0-9]+)\s*:\s*(.+?)\s*$/);
+    if (match) {
+      settings[match[1]] = match[2];
+    }
+  }
+  return settings;
+}
+
+function isScutilProxyEnabled(value) {
+  const normalized = normalizeNonEmptyString(value).toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
+function buildProxyEndpoint(host, port, scheme = "http") {
+  const normalizedHost = normalizeNonEmptyString(host);
+  const normalizedPort = normalizeNonEmptyString(port);
+  if (!normalizedHost || !normalizedPort) {
+    return "";
+  }
+  return `${scheme}://${normalizedHost}:${normalizedPort}`;
 }
 
 function isSpawnCandidateError(error) {
@@ -836,6 +981,7 @@ module.exports = {
   CodexRpcClient,
   buildCodexCommandCandidates,
   buildCodexCommandCandidatesWithPlatform,
+  buildCodexNetworkProxyArgs,
   buildSpawnSpec,
   buildSpawnSpecWithPlatform,
   isSpawnCandidateError,
