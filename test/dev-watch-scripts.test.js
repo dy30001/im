@@ -39,22 +39,31 @@ test("package.json exposes dev watch scripts for both runtimes", () => {
 test("daemon launcher daemonizes the OpenClaw supervisor", () => {
   const launcherPath = path.join(__dirname, "..", "scripts", "start-openclaw-bot.sh");
   const supervisorPath = path.join(__dirname, "..", "scripts", "start-openclaw-bot.js");
+  const helperPath = path.join(__dirname, "..", "scripts", "lib", "openclaw-instance.sh");
   const launcher = fs.readFileSync(launcherPath, "utf8");
   const supervisor = fs.readFileSync(supervisorPath, "utf8");
+  const helper = fs.readFileSync(helperPath, "utf8");
 
   assert.match(launcher, /start-openclaw-bot\.js/);
   assert.match(launcher, /exec "\$NODE_BIN" "\$APP_ROOT\/scripts\/start-openclaw-bot\.js"/);
+  assert.match(launcher, /OPENCLAW_INSTANCE_ARG/);
+  assert.match(helper, /CODEX_IM_OPENCLAW_INSTANCE_ID/);
+  assert.match(helper, /openclaw-sessions\.\$\{OPENCLAW_INSTANCE_ID\}\.json/);
   assert.match(supervisor, /CODEX_IM_OPENCLAW_SUPERVISOR_DAEMONIZED/);
   assert.match(supervisor, /CODEX_IM_OPENCLAW_HEARTBEAT_TIMEOUT_MS/);
+  assert.match(supervisor, /CODEX_IM_OPENCLAW_STARTUP_HEARTBEAT_TIMEOUT_MS/);
   assert.match(supervisor, /CODEX_IM_OPENCLAW_MAX_RESTART_DELAY_MS/);
   assert.match(supervisor, /CODEX_IM_OPENCLAW_STABLE_RUN_RESET_MS/);
   assert.match(supervisor, /heartbeat stale age=/);
-  assert.match(supervisor, /heartbeat\.json/);
+  assert.match(supervisor, /HEARTBEAT_FILE/);
+  assert.match(supervisor, /heartbeat\.updatedAt > 0 \? HEARTBEAT_TIMEOUT_MS : STARTUP_HEARTBEAT_TIMEOUT_MS/);
+  assert.match(supervisor, /resolveOpenClawDefaultHeartbeatFile/);
   assert.match(supervisor, /dotenv\.config/);
   assert.doesNotMatch(supervisor, /heartbeatTimer\.unref\(\)/);
   assert.match(supervisor, /openclaw supervisor daemonized pid=/);
   assert.match(supervisor, /supervisor-state\.json/);
   assert.match(supervisor, /child-pid/);
+  assert.match(supervisor, /--instance=/);
   assert.match(supervisor, /child\.once\("exit"/);
   assert.match(supervisor, /restartAttempt/);
   assert.match(supervisor, /writeSupervisorState/);
@@ -80,7 +89,11 @@ test("launchd installer renders a persistent macOS LaunchAgent", () => {
   assert.match(installer, /launchctl kickstart -k/);
   assert.match(installer, /command -v node/);
   assert.match(installer, /start-openclaw-bot\.js/);
+  assert.match(installer, /INSTANCE_ID=/);
+  assert.match(installer, /__INSTANCE_ARG_XML__/);
+  assert.match(plist, /__LABEL__/);
   assert.match(plist, /CODEX_IM_OPENCLAW_SUPERVISOR_DAEMONIZED/);
+  assert.match(plist, /CODEX_IM_OPENCLAW_INSTANCE_ID/);
   assert.match(plist, /__NODE_BIN__/);
   assert.match(plist, /<key>KeepAlive<\/key>\s*<true\/>/);
 });
@@ -89,7 +102,7 @@ test("status script reports supervisor and child pids", () => {
   const statusScriptPath = path.join(__dirname, "..", "scripts", "check-openclaw-status.sh");
   const statusScript = fs.readFileSync(statusScriptPath, "utf8");
 
-  assert.match(statusScript, /child-pid/);
+  assert.match(statusScript, /CHILD_PID_FILE/);
   assert.match(statusScript, /heartbeat_file=/);
   assert.match(statusScript, /heartbeat_age_ms=/);
   assert.match(statusScript, /heartbeat_timeout_ms=/);
@@ -97,8 +110,8 @@ test("status script reports supervisor and child pids", () => {
   assert.match(statusScript, /supervisor_status=/);
   assert.match(statusScript, /supervisor_restart_attempt=/);
   assert.match(statusScript, /service_state=/);
-  assert.match(statusScript, /start-openclaw-bot/);
-  assert.match(statusScript, /codex-im\.js openclaw-bot/);
+  assert.match(statusScript, /instance_id=/);
+  assert.match(statusScript, /list_openclaw_process_lines/);
   assert.match(statusScript, /launchd_status=/);
 });
 
@@ -114,6 +127,7 @@ test("package.json check script covers newly added runtime and workspace modules
     "src/domain/workspace/settings-service.js",
     "src/infra/acpx/session-bridge.js",
     "src/infra/openclaw/client-adapter.js",
+    "src/shared/abortable-delay.js",
     "src/shared/error-text.js",
     "src/shared/model-catalog.js",
   ];

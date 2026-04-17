@@ -117,3 +117,42 @@ test("hydrateDesktopSession degrades to read-only when acp_session_id cannot res
   assert.equal(hydrated.writable, false);
   assert.match(hydrated.bridgeError, /no rollout found/);
 });
+
+test("hydrateDesktopSession skips the bridge probe in lightweight sync mode", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-im-acpx-light-hydrate-"));
+  const sessionsDir = writeSessionFixtures(tempDir);
+  let resumeCalls = 0;
+  const runtime = {
+    config: {
+      openclaw: {
+        acpxSessionsDir: sessionsDir,
+      },
+    },
+    codex: {
+      resumeThread: async () => {
+        resumeCalls += 1;
+        return { result: { thread: { id: "session-1", turns: [] } } };
+      },
+    },
+  };
+
+  const hydrated = await hydrateDesktopSession(runtime, {
+    id: "session-1",
+    file: "session-1.json",
+    acpSessionId: "session-1",
+    acpxRecordId: "record-1",
+    cwd: "/repo",
+    title: "Desktop Session",
+    updatedAt: 0,
+  }, {
+    includeBridgeStatus: false,
+  });
+
+  assert.equal(resumeCalls, 0);
+  assert.equal(hydrated.writable, false);
+  assert.equal(hydrated.bridgeError, "");
+  assert.deepEqual(hydrated.recentMessages, [
+    { role: "user", text: "desktop says hi" },
+    { role: "assistant", text: "codex replies" },
+  ]);
+});

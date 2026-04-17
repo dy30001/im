@@ -29,11 +29,12 @@ function normalizeFeishuTextEvent(event, config) {
 function normalizeOpenClawTextEvent(message, config) {
   const text = extractOpenClawText(message?.item_list);
   const voiceText = extractOpenClawVoiceText(message?.item_list);
+  const attachments = extractOpenClawAttachments(message?.item_list);
   const messageType = Number(message?.message_type) || 0;
   if (messageType !== 1 && messageType !== 3) {
     return null;
   }
-  if (!text && !voiceText) {
+  if (!text && !voiceText && !attachments.length) {
     return null;
   }
 
@@ -48,8 +49,7 @@ function normalizeOpenClawTextEvent(message, config) {
     : new Date().toISOString();
 
   const normalizedText = text || voiceText;
-
-  return {
+  const normalizedEvent = {
     provider: "openclaw",
     workspaceId: config.defaultWorkspaceId,
     chatId: fromUserId,
@@ -60,8 +60,14 @@ function normalizeOpenClawTextEvent(message, config) {
     command: normalizedText ? parseCommand(normalizedText) : "message",
     receivedAt: createdAt,
     contextToken: normalizeIdentifier(message?.context_token),
-    inputKind: "text",
+    inputKind: resolveOpenClawInputKind(normalizedText, attachments),
   };
+
+  if (attachments.length) {
+    normalizedEvent.attachments = attachments;
+  }
+
+  return normalizedEvent;
 }
 
 function extractCardAction(data) {
@@ -178,6 +184,70 @@ function extractOpenClawVoiceText(itemList) {
   return "";
 }
 
+function extractOpenClawAttachments(itemList) {
+  if (!Array.isArray(itemList)) {
+    return [];
+  }
+
+  const attachments = [];
+  for (const item of itemList) {
+    const imageAttachment = extractOpenClawImageAttachment(item);
+    if (imageAttachment) {
+      attachments.push(imageAttachment);
+      continue;
+    }
+
+    const fileAttachment = extractOpenClawFileAttachment(item);
+    if (fileAttachment) {
+      attachments.push(fileAttachment);
+    }
+  }
+
+  return attachments;
+}
+
+function extractOpenClawImageAttachment(item) {
+  const imageItem = pickFirstObject(item?.image_item, item?.imageItem);
+  if (!imageItem) {
+    return null;
+  }
+
+  const media = pickFirstObject(imageItem.media, imageItem.thumb_media, imageItem.thumbMedia);
+  const downloadUrl = normalizeText(media?.full_url || media?.fullUrl || imageItem.url);
+  if (!downloadUrl) {
+    return null;
+  }
+
+  return {
+    kind: "image",
+    downloadUrl,
+    aesKey: normalizeText(imageItem.aeskey || media?.aes_key || media?.aesKey),
+    mimeType: resolveOpenClawImageMimeType(downloadUrl),
+    originalFilename: "",
+  };
+}
+
+function extractOpenClawFileAttachment(item) {
+  const fileItem = pickFirstObject(item?.file_item, item?.fileItem);
+  if (!fileItem) {
+    return null;
+  }
+
+  const media = pickFirstObject(fileItem.media);
+  const downloadUrl = normalizeText(media?.full_url || media?.fullUrl);
+  if (!downloadUrl) {
+    return null;
+  }
+
+  return {
+    kind: "file",
+    downloadUrl,
+    aesKey: normalizeText(media?.aes_key || media?.aesKey),
+    mimeType: resolveOpenClawFileMimeType(fileItem.file_name || fileItem.fileName),
+    originalFilename: normalizeText(fileItem.file_name || fileItem.fileName),
+  };
+}
+
 function extractOpenClawVoiceTextFromItem(item) {
   if (!item || typeof item !== "object") {
     return "";
@@ -215,6 +285,65 @@ function normalizeText(value) {
     return String(value);
   }
   return "";
+}
+
+function resolveOpenClawInputKind(text, attachments) {
+  if (normalizeText(text)) {
+    return "text";
+  }
+  return attachments?.[0]?.kind || "text";
+}
+
+function resolveOpenClawImageMimeType(url) {
+  const lower = String(url || "").toLowerCase();
+  if (lower.endsWith(".png")) {
+    return "image/png";
+  }
+  if (lower.endsWith(".gif")) {
+    return "image/gif";
+  }
+  if (lower.endsWith(".webp")) {
+    return "image/webp";
+  }
+  if (lower.endsWith(".bmp")) {
+    return "image/bmp";
+  }
+  return "image/jpeg";
+}
+
+function resolveOpenClawFileMimeType(fileName) {
+  const normalized = String(fileName || "").toLowerCase();
+  if (normalized.endsWith(".pdf")) {
+    return "application/pdf";
+  }
+  if (normalized.endsWith(".txt")) {
+    return "text/plain";
+  }
+  if (normalized.endsWith(".csv")) {
+    return "text/csv";
+  }
+  if (normalized.endsWith(".doc")) {
+    return "application/msword";
+  }
+  if (normalized.endsWith(".docx")) {
+    return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  }
+  if (normalized.endsWith(".xls")) {
+    return "application/vnd.ms-excel";
+  }
+  if (normalized.endsWith(".xlsx")) {
+    return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  }
+  if (normalized.endsWith(".ppt")) {
+    return "application/vnd.ms-powerpoint";
+  }
+  if (normalized.endsWith(".pptx")) {
+    return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+  }
+  if (normalized.endsWith(".zip")) {
+    return "application/zip";
+  }
+  return "application/octet-stream";
 }
 
 function parseCommand(text) {

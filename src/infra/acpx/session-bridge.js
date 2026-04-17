@@ -9,7 +9,7 @@ async function listDesktopSessionsForWorkspace(runtime, workspaceRoot) {
   return listNormalizedDesktopSessions(runtime, workspaceRoot);
 }
 
-async function hydrateDesktopSession(runtime, session) {
+async function hydrateDesktopSession(runtime, session, { includeBridgeStatus = true } = {}) {
   if (!session) {
     return null;
   }
@@ -22,10 +22,12 @@ async function hydrateDesktopSession(runtime, session) {
   }
 
   const recentMessages = extractRecentConversationFromAcpxSession(record, 6);
-  let writable = false;
-  let bridgeError = "";
+  let writable = session?.writable === true;
+  let bridgeError = typeof session?.bridgeError === "string" ? session.bridgeError : "";
 
-  if (record.acpSessionId) {
+  if (!includeBridgeStatus) {
+    bridgeError = "";
+  } else if (record.acpSessionId) {
     try {
       await runtime.codex.resumeThread({ threadId: record.acpSessionId });
       writable = true;

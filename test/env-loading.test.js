@@ -5,6 +5,7 @@ const path = require("node:path");
 const test = require("node:test");
 
 const { loadEnvFromPaths } = require("../src/index");
+const { buildOpenClawEnvLoadPaths } = require("../src/infra/config/config");
 
 test("loadEnvFromPaths loads both local and home env files in order", () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-im-env-"));
@@ -37,6 +38,59 @@ test("loadEnvFromPaths loads both local and home env files in order", () => {
     assert.equal(process.env.LOCAL_ONLY, "local");
     assert.equal(process.env.HOME_ONLY, "home");
     assert.equal(process.env.SHARED_VALUE, "local");
+  } finally {
+    restoreEnv(previousEnv);
+  }
+});
+
+test("loadEnvFromPaths lets later env files override earlier values when override=true", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-im-env-override-"));
+  const commonEnvPath = path.join(tempDir, ".env.common");
+  const instanceEnvPath = path.join(tempDir, ".env.instance");
+
+  fs.writeFileSync(commonEnvPath, [
+    "SHARED_VALUE=common",
+    "",
+  ].join("\n"), "utf8");
+  fs.writeFileSync(instanceEnvPath, [
+    "SHARED_VALUE=instance",
+    "",
+  ].join("\n"), "utf8");
+
+  const previousEnv = {
+    SHARED_VALUE: process.env.SHARED_VALUE,
+  };
+  delete process.env.SHARED_VALUE;
+
+  try {
+    loadEnvFromPaths([commonEnvPath]);
+    loadEnvFromPaths([instanceEnvPath], { override: true });
+    assert.equal(process.env.SHARED_VALUE, "instance");
+  } finally {
+    restoreEnv(previousEnv);
+  }
+});
+
+test("buildOpenClawEnvLoadPaths appends the instance env file after common env files", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-im-env-instance-"));
+  const previousEnv = {
+    CODEX_IM_OPENCLAW_INSTANCE_ID: process.env.CODEX_IM_OPENCLAW_INSTANCE_ID,
+    CODEX_IM_OPENCLAW_ENV_FILE: process.env.CODEX_IM_OPENCLAW_ENV_FILE,
+  };
+
+  process.env.CODEX_IM_OPENCLAW_INSTANCE_ID = "wx2";
+  delete process.env.CODEX_IM_OPENCLAW_ENV_FILE;
+
+  try {
+    const envPaths = buildOpenClawEnvLoadPaths({
+      cwd: tempDir,
+      homeDir: tempDir,
+    });
+    assert.deepEqual(envPaths, [
+      path.join(tempDir, ".env"),
+      path.join(tempDir, ".codex-im", ".env"),
+      path.join(tempDir, ".codex-im", "openclaw-wx2.env"),
+    ]);
   } finally {
     restoreEnv(previousEnv);
   }

@@ -45,6 +45,7 @@ function handleCodexMessage(runtime, message) {
     }
   }
   codexMessageUtils.trackRunningTurn(runtime.activeTurnIdByThreadId, message);
+  trackTurnActivity(runtime, message);
   codexMessageUtils.trackPendingApproval(runtime.pendingApprovalByThreadId, message);
   codexMessageUtils.trackRunKeyState(runtime.currentRunKeyByThreadId, runtime.activeTurnIdByThreadId, message);
   runtime.pruneRuntimeMapSizes();
@@ -56,6 +57,20 @@ function handleCodexMessage(runtime, message) {
   const threadId = outbound.payload?.threadId || "";
   if (!outbound.payload.turnId) {
     outbound.payload.turnId = runtime.activeTurnIdByThreadId.get(threadId) || "";
+  }
+  if (
+    threadId
+    && typeof runtime.shouldDeliverThreadEventForActiveWorkspace === "function"
+    && !runtime.shouldDeliverThreadEventForActiveWorkspace(threadId)
+  ) {
+    const shouldCleanupThreadState = isTerminalTurnMessage(message);
+    if (shouldCleanupThreadState) {
+      const context = runtime.pendingChatContextByThreadId.get(threadId) || null;
+      finalizeTerminalTurn(runtime, threadId, context).catch((error) => {
+        console.error(`[codex-im] failed to finalize terminal turn: ${error.message}`);
+      });
+    }
+    return;
   }
   if (
     threadId
@@ -85,11 +100,33 @@ function handleCodexMessage(runtime, message) {
       if (!shouldCleanupThreadState || !threadId) {
         return;
       }
-      runtime.clearPendingReactionForThread(threadId).catch((error) => {
-        console.error(`[codex-im] failed to clear pending reaction: ${error.message}`);
+      finalizeTerminalTurn(runtime, threadId, context).catch((error) => {
+        console.error(`[codex-im] failed to finalize terminal turn: ${error.message}`);
       });
-      runtime.cleanupThreadRuntimeState(threadId);
+    });
+}
+
+async function finalizeTerminalTurn(runtime, threadId, context) {
+  const bindingKey = resolveBindingKeyForTerminalTurn(runtime, threadId, context);
+  await runtime.clearPendingReactionForThread(threadId).catch((error) => {
+    console.error(`[codex-im] failed to clear pending reaction: ${error.message}`);
   });
+  runtime.cleanupThreadRuntimeState(threadId);
+  if (!bindingKey || typeof runtime.drainQueuedMessagesForBinding !== "function") {
+    return;
+  }
+  await runtime.drainQueuedMessagesForBinding(bindingKey);
+}
+
+function resolveBindingKeyForTerminalTurn(runtime, threadId, context) {
+  const fromThreadMap = String(runtime.bindingKeyByThreadId?.get(threadId) || "").trim();
+  if (fromThreadMap) {
+    return fromThreadMap;
+  }
+  if (!context || typeof runtime.sessionStore?.buildBindingKey !== "function") {
+    return "";
+  }
+  return String(runtime.sessionStore.buildBindingKey(context) || "").trim();
 }
 
 function logProviderDeliveryFailureOnce(runtime, outbound, error) {
@@ -199,6 +236,34 @@ async function deliverToProvider(runtime, event) {
 function isTerminalTurnMessage(message) {
   const method = typeof message?.method === "string" ? message.method : "";
   return method === "turn/completed" || method === "turn/failed" || method === "turn/cancelled";
+}
+
+function trackTurnActivity(runtime, message, now = Date.now()) {
+  const method = typeof message?.method === "string" ? message.method : "";
+  const params = message?.params || {};
+  const threadId = String(params?.threadId || "").trim();
+  if (!threadId) {
+    return;
+  }
+
+  const turnId = String(params?.turnId || params?.turn?.id || runtime.activeTurnIdByThreadId.get(threadId) || "").trim();
+  if (isTerminalTurnMessage(message)) {
+    runtime.activeTurnStartedAtByThreadId?.delete(threadId);
+    runtime.lastTurnActivityAtByThreadId?.delete(threadId);
+    return;
+  }
+
+  if (method === "turn/started" || method === "turn/start") {
+    if (turnId && !runtime.activeTurnStartedAtByThreadId?.has(threadId)) {
+      runtime.activeTurnStartedAtByThreadId?.set(threadId, now);
+    }
+    runtime.lastTurnActivityAtByThreadId?.set(threadId, now);
+    return;
+  }
+
+  if (turnId || runtime.activeTurnIdByThreadId?.has(threadId) || runtime.lastTurnActivityAtByThreadId?.has(threadId)) {
+    runtime.lastTurnActivityAtByThreadId?.set(threadId, now);
+  }
 }
 
 module.exports = {

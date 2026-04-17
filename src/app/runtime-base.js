@@ -1,7 +1,10 @@
 function initializeCommonRuntimeState(runtime) {
   runtime.pendingChatContextByThreadId = new Map();
   runtime.pendingChatContextByBindingKey = new Map();
+  runtime.pendingMessageQueueByBindingKey = new Map();
   runtime.activeTurnIdByThreadId = new Map();
+  runtime.activeTurnStartedAtByThreadId = new Map();
+  runtime.lastTurnActivityAtByThreadId = new Map();
   runtime.pendingApprovalByThreadId = new Map();
   runtime.replyCardByRunKey = new Map();
   runtime.currentRunKeyByThreadId = new Map();
@@ -19,7 +22,10 @@ function initializeCommonRuntimeState(runtime) {
   runtime.latestSelectionContextByBindingKey = new Map();
   runtime.workspaceThreadRefreshStateByKey = new Map();
   runtime.workspaceThreadListCacheByKey = new Map();
+  runtime.workspaceThreadSharedCacheByKey = new Map();
+  runtime.workspaceThreadRefreshPromiseByKey = new Map();
   runtime.firstUseWorkspaceGuideSentByBindingKey = new Set();
+  runtime.inFlightBindingDispatchKeys = new Set();
   runtime.isStopping = false;
   runtime.stopPromise = null;
   return runtime;

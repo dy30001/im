@@ -16,4 +16,5 @@ dist/
 Thumbs.db
 /.idea/
 /sessions.json
+.codex-im/
 .hf_cache/

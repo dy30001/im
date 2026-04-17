@@ -270,6 +270,9 @@ async function bindWorkspaceByPath(runtime, normalized, rawWorkspaceRoot, { repl
 
   settingsRuntime.applyDefaultCodexParamsOnBind(runtime, bindingKey, workspaceRoot);
   runtime.sessionStore.setActiveWorkspaceRoot(bindingKey, workspaceRoot);
+  if (typeof runtime.disposeInactiveReplyRunsForBinding === "function") {
+    runtime.disposeInactiveReplyRunsForBinding(bindingKey, workspaceRoot);
+  }
   const existingThreadId = runtime.resolveThreadIdForBinding(bindingKey, workspaceRoot);
   await showStatusPanel(runtime, normalized, {
     replyToMessageId: replyTarget,
@@ -882,6 +885,9 @@ async function switchWorkspaceByPath(runtime, normalized, workspaceRoot, { reply
   }
 
   runtime.sessionStore.setActiveWorkspaceRoot(bindingKey, targetWorkspaceRoot);
+  if (typeof runtime.disposeInactiveReplyRunsForBinding === "function") {
+    runtime.disposeInactiveReplyRunsForBinding(bindingKey, targetWorkspaceRoot);
+  }
   await runtime.resolveWorkspaceThreadState({
     bindingKey,
     workspaceRoot: targetWorkspaceRoot,

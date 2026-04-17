@@ -177,7 +177,7 @@ function detectNaturalCommand(text) {
     return "status";
   }
 
-  if (NATURAL_WHERE_PHRASES.has(normalized)) {
+  if (matchesNaturalWherePhrase(normalized)) {
     return "where";
   }
 
@@ -452,6 +452,20 @@ function matchesNaturalPhrase(text, phrases) {
   return Array.from(phrases || []).some((phrase) => text === phrase);
 }
 
+function matchesNaturalWherePhrase(text) {
+  const normalized = String(text || "").trim();
+  if (!normalized) {
+    return false;
+  }
+
+  if (NATURAL_WHERE_PHRASES.has(normalized)) {
+    return true;
+  }
+
+  const compacted = normalized.replace(/\s+/g, "");
+  return NATURAL_WHERE_PATTERNS.some((pattern) => pattern.test(compacted));
+}
+
 const NATURAL_BIND_HINTS = [
   "绑定",
   "绑定到",
@@ -641,6 +655,11 @@ const NATURAL_WORKSPACE_PHRASES = new Set([
   "绑定列表",
   "查看绑定列表",
   "看绑定列表",
+  "工程列表",
+  "查看工程列表",
+  "看工程列表",
+  "列一下工程列表",
+  "列举一下工程列表",
   "工程目录列表",
   "查看工程目录列表",
   "看工程目录列表",
@@ -829,6 +848,13 @@ const NATURAL_WHERE_PHRASES = new Set([
   "查看当前工程",
   "看当前工程",
 ]);
+
+const NATURAL_WHERE_PATTERNS = [
+  /^(?:我|我们)?(?:现在)?(?:绑定到|绑到)哪个(?:项目|工程|目录|工作区)了$/u,
+  /^(?:当前|现在)(?:绑定到|绑到)哪个(?:项目|工程|目录|工作区)了$/u,
+  /^(?:我|我们)?(?:现在)?(?:绑的是|绑定的是)哪个(?:项目|工程|目录|工作区)$/u,
+  /^(?:当前|现在)(?:绑的是|绑定的是)哪个(?:项目|工程|目录|工作区)$/u,
+];
 
 const NATURAL_NEW_PHRASES = new Set([
   "开个新线程",

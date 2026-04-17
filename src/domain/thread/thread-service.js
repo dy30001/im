@@ -30,6 +30,7 @@ async function resolveWorkspaceThreadState(runtime, {
   normalized,
   autoSelectThread = true,
   refreshThreadList = true,
+  allowClaimedThreadReuse = true,
 }) {
   if (shouldUseDesktopSessions(runtime)) {
     return resolveDesktopSessionState(runtime, {
@@ -37,15 +38,27 @@ async function resolveWorkspaceThreadState(runtime, {
       workspaceRoot,
       normalized,
       autoSelectThread,
+      allowClaimedThreadReuse,
     });
   }
 
   const selectedThreadId = runtime.resolveThreadIdForBinding(bindingKey, workspaceRoot);
-  const threads = refreshThreadList || !selectedThreadId
+  const selectedThreadClaimedByDifferentBinding = (
+    !allowClaimedThreadReuse
+    && isThreadAssignedToDifferentBinding(runtime, bindingKey, workspaceRoot, selectedThreadId)
+  );
+  const threads = refreshThreadList || !selectedThreadId || selectedThreadClaimedByDifferentBinding
     ? await refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, normalized)
     : [];
-  const threadId = selectedThreadId || (autoSelectThread ? (threads[0]?.id || "") : "");
-  if (!selectedThreadId && threadId) {
+  const reusableSelectedThreadId = selectedThreadClaimedByDifferentBinding ? "" : selectedThreadId;
+  const threadId = reusableSelectedThreadId || (
+    autoSelectThread
+      ? selectAutoThreadForBinding(runtime, bindingKey, workspaceRoot, threads, {
+        allowClaimedThreadReuse,
+      })
+      : ""
+  );
+  if (threadId && threadId !== selectedThreadId) {
     runtime.sessionStore.setThreadIdForWorkspace(
       bindingKey,
       workspaceRoot,
@@ -61,6 +74,47 @@ async function resolveWorkspaceThreadState(runtime, {
     }
   }
   return { threads, threadId, selectedThreadId };
+}
+
+function selectAutoThreadForBinding(runtime, bindingKey, workspaceRoot, threads, {
+  allowClaimedThreadReuse = true,
+} = {}) {
+  const candidates = Array.isArray(threads) ? threads : [];
+  if (allowClaimedThreadReuse) {
+    return String(candidates[0]?.id || "").trim();
+  }
+
+  for (const thread of candidates) {
+    const threadId = String(thread?.id || "").trim();
+    if (!threadId) {
+      continue;
+    }
+    if (!isThreadAssignedToDifferentBinding(runtime, bindingKey, workspaceRoot, threadId)) {
+      return threadId;
+    }
+  }
+  return "";
+}
+
+function isThreadAssignedToDifferentBinding(runtime, bindingKey, workspaceRoot, threadId) {
+  const normalizedThreadId = String(threadId || "").trim();
+  const normalizedBindingKey = String(bindingKey || "").trim();
+  const normalizedWorkspaceRoot = String(workspaceRoot || "").trim();
+  if (
+    !normalizedThreadId
+    || !normalizedBindingKey
+    || !normalizedWorkspaceRoot
+    || typeof runtime?.sessionStore?.listBindings !== "function"
+  ) {
+    return false;
+  }
+
+  return runtime.sessionStore.listBindings({ clone: false }).some((entry) => {
+    if (String(entry?.bindingKey || "").trim() === normalizedBindingKey) {
+      return false;
+    }
+    return String(entry?.binding?.threadIdByWorkspaceRoot?.[normalizedWorkspaceRoot] || "").trim() === normalizedThreadId;
+  });
 }
 
 async function ensureThreadAndSendMessage(runtime, {
@@ -149,14 +203,19 @@ async function resolveDesktopSessionState(runtime, {
   workspaceRoot,
   normalized,
   autoSelectThread = true,
+  allowClaimedThreadReuse = true,
 }) {
   const threads = await refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, normalized);
   const selectedThreadId = runtime.resolveThreadIdForBinding(bindingKey, workspaceRoot);
+  const selectedThreadClaimedByDifferentBinding = (
+    !allowClaimedThreadReuse
+    && isThreadAssignedToDifferentBinding(runtime, bindingKey, workspaceRoot, selectedThreadId)
+  );
   let selectedThread = null;
   let threadId = "";
   let desktopVisibleExpected = true;
 
-  if (selectedThreadId) {
+  if (selectedThreadId && !selectedThreadClaimedByDifferentBinding) {
     selectedThread = await hydrateSelectedDesktopSession(runtime, workspaceRoot, selectedThreadId);
     if (!selectedThread) {
       threadId = selectedThreadId;
@@ -164,7 +223,11 @@ async function resolveDesktopSessionState(runtime, {
     } else if (selectedThread?.writable && selectedThread?.acpSessionId) {
       threadId = selectedThread.id;
     } else if (autoSelectThread) {
-      const recoveredThread = await findWritableDesktopSession(runtime, workspaceRoot, threads, selectedThreadId);
+      const recoveredThread = await findWritableDesktopSession(runtime, workspaceRoot, threads, {
+        excludedSessionId: selectedThreadId,
+        bindingKey,
+        allowClaimedThreadReuse,
+      });
       if (recoveredThread) {
         selectedThread = recoveredThread;
         threadId = recoveredThread.id;
@@ -186,7 +249,11 @@ async function resolveDesktopSessionState(runtime, {
   }
 
   if (!threadId && autoSelectThread) {
-    const recoveredThread = await findWritableDesktopSession(runtime, workspaceRoot, threads);
+    const recoveredThread = await findWritableDesktopSession(runtime, workspaceRoot, threads, {
+      excludedSessionId: selectedThreadId,
+      bindingKey,
+      allowClaimedThreadReuse,
+    });
     if (recoveredThread) {
       selectedThread = recoveredThread;
       threadId = recoveredThread.id;
@@ -196,15 +263,24 @@ async function resolveDesktopSessionState(runtime, {
         threadId,
         codexMessageUtils.buildBindingMetadata(normalized)
       );
-    } else if (threads[0]) {
-      selectedThread = await hydrateSelectedDesktopSession(runtime, workspaceRoot, threads[0].id) || threads[0];
-      threadId = selectedThread.id;
-      runtime.sessionStore.setThreadIdForWorkspace(
-        bindingKey,
-        workspaceRoot,
-        threadId,
-        codexMessageUtils.buildBindingMetadata(normalized)
-      );
+    } else {
+      const autoSelectedThreadId = selectAutoThreadForBinding(runtime, bindingKey, workspaceRoot, threads, {
+        allowClaimedThreadReuse,
+      });
+      if (autoSelectedThreadId) {
+        selectedThread = (
+          await hydrateSelectedDesktopSession(runtime, workspaceRoot, autoSelectedThreadId)
+        ) || threads.find((thread) => thread?.id === autoSelectedThreadId) || null;
+      }
+      threadId = String(selectedThread?.id || "").trim();
+      if (threadId) {
+        runtime.sessionStore.setThreadIdForWorkspace(
+          bindingKey,
+          workspaceRoot,
+          threadId,
+          codexMessageUtils.buildBindingMetadata(normalized)
+        );
+      }
     }
   }
 
@@ -289,7 +365,11 @@ async function ensureDesktopSessionAndSendMessage(runtime, {
 
   if (!selectedSession || !selectedSession.writable || !selectedSession.acpSessionId) {
     const availableThreads = await refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, normalized);
-    const recoveredSession = await findWritableDesktopSession(runtime, workspaceRoot, availableThreads, threadId);
+    const recoveredSession = await findWritableDesktopSession(runtime, workspaceRoot, availableThreads, {
+      excludedSessionId: threadId,
+      bindingKey,
+      allowClaimedThreadReuse: false,
+    });
     if (recoveredSession) {
       selectedSession = recoveredSession;
       threadId = recoveredSession.id;
@@ -528,45 +608,64 @@ async function refreshWorkspaceThreads(
     return cachedResult.threads;
   }
 
-  if (shouldUseDesktopSessions(runtime)) {
-    try {
-      const sessions = await runtime.listDesktopSessionsForWorkspace(workspaceRoot);
-      if (!previewOnly) {
-        persistWorkspaceThreadListCache(runtime, cacheKey, sessions);
-      }
-      setWorkspaceThreadRefreshState(runtime, cacheKey, {
-        ok: true,
-        fromCache: false,
-        error: "",
-        updatedAt: new Date().toISOString(),
+  const sharedCacheKey = buildWorkspaceThreadSharedCacheKey(runtime, workspaceRoot, {
+    previewOnly,
+    previewLimit,
+  });
+  const sharedFallbackCacheKey = previewOnly
+    ? buildWorkspaceThreadSharedCacheKey(runtime, workspaceRoot, { previewOnly: false })
+    : "";
+  const sharedCachedResult = !forceRefresh
+    ? (
+      readWorkspaceThreadSharedCache(runtime, sharedCacheKey)
+      || (sharedFallbackCacheKey
+        ? readWorkspaceThreadSharedCache(runtime, sharedFallbackCacheKey)
+        : null)
+    )
+    : null;
+  if (!forceRefresh && sharedCachedResult && (
+    isFreshWorkspaceThreadListCache(sharedCachedResult)
+    || (previewOnly && allowStaleCache)
+  )) {
+    if (!previewOnly) {
+      persistWorkspaceThreadListCache(runtime, cacheKey, sharedCachedResult.threads, {
+        updatedAt: sharedCachedResult.updatedAt,
       });
-      return sessions;
-    } catch (error) {
-      console.warn(`[codex-im] desktop session refresh failed for workspace=${workspaceRoot}: ${error.message}`);
-      setWorkspaceThreadRefreshState(runtime, cacheKey, {
-        ok: false,
-        fromCache: false,
-        error: error.message,
-        updatedAt: new Date().toISOString(),
-      });
-      return [];
     }
+    setWorkspaceThreadRefreshState(runtime, cacheKey, {
+      ok: true,
+      fromCache: true,
+      error: "",
+      updatedAt: sharedCachedResult.updatedAt,
+    });
+    return sharedCachedResult.threads;
   }
 
   try {
-    const threads = previewOnly
-      ? await listCodexThreadsPreviewForWorkspace(runtime, workspaceRoot, previewLimit)
-      : await listCodexThreadsForWorkspace(runtime, workspaceRoot);
+    const { threads, updatedAt } = await runWorkspaceThreadRefresh(runtime, sharedCacheKey, async () => {
+      const fetchedThreads = shouldUseDesktopSessions(runtime)
+        ? await runtime.listDesktopSessionsForWorkspace(workspaceRoot)
+        : (
+          previewOnly
+            ? await listCodexThreadsPreviewForWorkspace(runtime, workspaceRoot, previewLimit)
+            : await listCodexThreadsForWorkspace(runtime, workspaceRoot)
+        );
+      return {
+        threads: fetchedThreads,
+        updatedAt: new Date().toISOString(),
+      };
+    });
+    persistWorkspaceThreadSharedCache(runtime, sharedCacheKey, threads, { updatedAt });
     if (!previewOnly) {
-      persistWorkspaceThreadListCache(runtime, cacheKey, threads);
+      persistWorkspaceThreadListCache(runtime, cacheKey, threads, { updatedAt });
     }
     setWorkspaceThreadRefreshState(runtime, cacheKey, {
       ok: true,
       fromCache: false,
       error: "",
-      updatedAt: new Date().toISOString(),
+      updatedAt,
     });
-    if (!previewOnly) {
+    if (!previewOnly && !shouldUseDesktopSessions(runtime)) {
       const currentThreadId = runtime.sessionStore.getThreadIdForWorkspace(bindingKey, workspaceRoot);
       const shouldKeepCurrentThread = currentThreadId && runtime.resumedThreadIds.has(currentThreadId);
       if (currentThreadId && !shouldKeepCurrentThread && !threads.some((thread) => thread.id === currentThreadId)) {
@@ -575,21 +674,23 @@ async function refreshWorkspaceThreads(
     }
     return threads;
   } catch (error) {
-    console.warn(`[codex-im] thread/list failed for workspace=${workspaceRoot}: ${error.message}`);
+    const errorLabel = shouldUseDesktopSessions(runtime) ? "desktop session refresh" : "thread/list";
+    console.warn(`[codex-im] ${errorLabel} failed for workspace=${workspaceRoot}: ${error.message}`);
     setWorkspaceThreadRefreshState(runtime, cacheKey, {
       ok: false,
       fromCache: false,
       error: error.message,
       updatedAt: new Date().toISOString(),
     });
-    if (cachedResult) {
+    const fallbackCachedResult = cachedResult || sharedCachedResult;
+    if (fallbackCachedResult) {
       setWorkspaceThreadRefreshState(runtime, cacheKey, {
         ok: true,
         fromCache: true,
         error: "",
-        updatedAt: cachedResult.updatedAt,
+        updatedAt: fallbackCachedResult.updatedAt,
       });
-      return cachedResult.threads;
+      return fallbackCachedResult.threads;
     }
     return [];
   }
@@ -702,6 +803,9 @@ async function switchThreadById(runtime, normalized, threadId, { replyToMessageI
 
   const resolvedWorkspaceRoot = selectedThread.cwd || workspaceRoot;
   runtime.sessionStore.setActiveWorkspaceRoot(bindingKey, resolvedWorkspaceRoot);
+  if (typeof runtime.disposeInactiveReplyRunsForBinding === "function") {
+    runtime.disposeInactiveReplyRunsForBinding(bindingKey, resolvedWorkspaceRoot);
+  }
   runtime.sessionStore.setThreadIdForWorkspace(
     bindingKey,
     resolvedWorkspaceRoot,
@@ -763,6 +867,9 @@ async function switchDesktopSessionById(runtime, normalized, threadId, { replyTo
   }
 
   runtime.sessionStore.setActiveWorkspaceRoot(bindingKey, workspaceRoot);
+  if (typeof runtime.disposeInactiveReplyRunsForBinding === "function") {
+    runtime.disposeInactiveReplyRunsForBinding(bindingKey, workspaceRoot);
+  }
   runtime.sessionStore.setThreadIdForWorkspace(
     bindingKey,
     workspaceRoot,
@@ -804,7 +911,14 @@ function getWorkspaceThreadRefreshState(runtime, bindingKey, workspaceRoot) {
 }
 
 function readWorkspaceThreadListCache(runtime, cacheKey) {
-  const cache = runtime?.workspaceThreadListCacheByKey;
+  return readThreadListCache(runtime?.workspaceThreadListCacheByKey, cacheKey);
+}
+
+function readWorkspaceThreadSharedCache(runtime, cacheKey) {
+  return readThreadListCache(runtime?.workspaceThreadSharedCacheByKey, cacheKey);
+}
+
+function readThreadListCache(cache, cacheKey) {
   if (!(cache instanceof Map) || !cacheKey) {
     return null;
   }
@@ -828,23 +942,33 @@ function isFreshWorkspaceThreadListCache(cachedResult) {
   return (Date.now() - updatedAt) <= DEFAULT_WORKSPACE_THREAD_LIST_CACHE_TTL_MS;
 }
 
-function persistWorkspaceThreadListCache(runtime, cacheKey, threads) {
-  if (!cacheKey) {
-    return null;
-  }
+function persistWorkspaceThreadListCache(runtime, cacheKey, threads, { updatedAt = new Date().toISOString() } = {}) {
   if (!(runtime.workspaceThreadListCacheByKey instanceof Map)) {
     runtime.workspaceThreadListCacheByKey = new Map();
   }
+  return persistThreadListCache(runtime.workspaceThreadListCacheByKey, cacheKey, threads, { updatedAt });
+}
 
+function persistWorkspaceThreadSharedCache(runtime, cacheKey, threads, { updatedAt = new Date().toISOString() } = {}) {
+  if (!(runtime.workspaceThreadSharedCacheByKey instanceof Map)) {
+    runtime.workspaceThreadSharedCacheByKey = new Map();
+  }
+  return persistThreadListCache(runtime.workspaceThreadSharedCacheByKey, cacheKey, threads, { updatedAt });
+}
+
+function persistThreadListCache(cache, cacheKey, threads, { updatedAt = new Date().toISOString() } = {}) {
+  if (!(cache instanceof Map) || !cacheKey) {
+    return null;
+  }
   const normalizedThreads = Array.isArray(threads)
     ? threads.map((thread) => ({ ...(thread || {}) }))
     : [];
 
   const cachedResult = {
     threads: normalizedThreads,
-    updatedAt: new Date().toISOString(),
+    updatedAt,
   };
-  runtime.workspaceThreadListCacheByKey.set(cacheKey, cachedResult);
+  cache.set(cacheKey, cachedResult);
   return cachedResult;
 }
 
@@ -854,6 +978,23 @@ function invalidateWorkspaceThreadListCache(runtime, bindingKey, workspaceRoot) 
     return;
   }
   runtime.workspaceThreadListCacheByKey.delete(cacheKey);
+  invalidateWorkspaceThreadSharedCaches(runtime, workspaceRoot);
+}
+
+function invalidateWorkspaceThreadSharedCaches(runtime, workspaceRoot) {
+  const cache = runtime?.workspaceThreadSharedCacheByKey;
+  if (!(cache instanceof Map)) {
+    return;
+  }
+  const prefix = buildWorkspaceThreadSharedCachePrefix(runtime, workspaceRoot);
+  if (!prefix) {
+    return;
+  }
+  for (const key of cache.keys()) {
+    if (typeof key === "string" && key.startsWith(prefix)) {
+      cache.delete(key);
+    }
+  }
 }
 
 function setWorkspaceThreadRefreshState(runtime, cacheKey, state) {
@@ -870,6 +1011,55 @@ function setWorkspaceThreadRefreshState(runtime, cacheKey, state) {
 
 function buildWorkspaceThreadCacheKey(bindingKey, workspaceRoot) {
   return `${String(bindingKey || "")}::${String(workspaceRoot || "")}`;
+}
+
+function buildWorkspaceThreadSharedCacheKey(runtime, workspaceRoot, {
+  previewOnly = false,
+  previewLimit = DEFAULT_WORKSPACE_THREAD_PREVIEW_LIMIT,
+} = {}) {
+  const prefix = buildWorkspaceThreadSharedCachePrefix(runtime, workspaceRoot);
+  if (!prefix) {
+    return "";
+  }
+  if (!previewOnly || shouldUseDesktopSessions(runtime)) {
+    return `${prefix}::full`;
+  }
+  const normalizedPreviewLimit = Number.isInteger(previewLimit) && previewLimit > 0
+    ? Math.min(previewLimit, 200)
+    : DEFAULT_WORKSPACE_THREAD_PREVIEW_LIMIT;
+  return `${prefix}::preview:${normalizedPreviewLimit}`;
+}
+
+function buildWorkspaceThreadSharedCachePrefix(runtime, workspaceRoot) {
+  const normalizedWorkspaceRoot = String(workspaceRoot || "").trim();
+  if (!normalizedWorkspaceRoot) {
+    return "";
+  }
+  return `${shouldUseDesktopSessions(runtime) ? "desktop" : "codex"}::${normalizedWorkspaceRoot}`;
+}
+
+function runWorkspaceThreadRefresh(runtime, requestKey, task) {
+  if (!requestKey) {
+    return Promise.resolve().then(task);
+  }
+  if (!(runtime.workspaceThreadRefreshPromiseByKey instanceof Map)) {
+    runtime.workspaceThreadRefreshPromiseByKey = new Map();
+  }
+
+  const inFlight = runtime.workspaceThreadRefreshPromiseByKey.get(requestKey);
+  if (inFlight) {
+    return inFlight;
+  }
+
+  const promise = Promise.resolve()
+    .then(task)
+    .finally(() => {
+      if (runtime.workspaceThreadRefreshPromiseByKey.get(requestKey) === promise) {
+        runtime.workspaceThreadRefreshPromiseByKey.delete(requestKey);
+      }
+    });
+  runtime.workspaceThreadRefreshPromiseByKey.set(requestKey, promise);
+  return promise;
 }
 
 function isSupportedThreadSourceKind(sourceKind) {
@@ -904,13 +1094,23 @@ async function hydrateSelectedDesktopSession(runtime, workspaceRoot, sessionId) 
   return runtime.hydrateDesktopSession(selectedSession);
 }
 
-async function findWritableDesktopSession(runtime, workspaceRoot, sessions, excludedSessionId = "") {
+async function findWritableDesktopSession(runtime, workspaceRoot, sessions, {
+  excludedSessionId = "",
+  bindingKey = "",
+  allowClaimedThreadReuse = true,
+} = {}) {
   if (!Array.isArray(sessions) || !sessions.length) {
     return null;
   }
 
   for (const session of sessions) {
     if (!session?.id || session.id === excludedSessionId) {
+      continue;
+    }
+    if (
+      !allowClaimedThreadReuse
+      && isThreadAssignedToDifferentBinding(runtime, bindingKey, workspaceRoot, session.id)
+    ) {
       continue;
     }
     const hydrated = await hydrateSelectedDesktopSession(runtime, workspaceRoot, session.id);

@@ -24,10 +24,13 @@ function forgetInboundContext(runtime, normalized) {
   }
 }
 
-function resolveMessageContext(runtime, { replyToMessageId = "", chatId = "" } = {}) {
+function resolveMessageContext(runtime, { replyToMessageId = "", chatId = "", allowChatFallback = true } = {}) {
   const byMessageId = replyToMessageId ? runtime.messageContextByMessageId.get(replyToMessageId) || null : null;
   if (byMessageId) {
     return byMessageId;
+  }
+  if (!allowChatFallback) {
+    return null;
   }
   return chatId ? runtime.latestMessageContextByChatId.get(chatId) || null : null;
 }

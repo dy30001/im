@@ -13,7 +13,10 @@ test("initializeCommonRuntimeState seeds shared runtime containers", () => {
 
   assert.ok(runtime.pendingChatContextByThreadId instanceof Map);
   assert.ok(runtime.pendingChatContextByBindingKey instanceof Map);
+  assert.ok(runtime.pendingMessageQueueByBindingKey instanceof Map);
   assert.ok(runtime.activeTurnIdByThreadId instanceof Map);
+  assert.ok(runtime.activeTurnStartedAtByThreadId instanceof Map);
+  assert.ok(runtime.lastTurnActivityAtByThreadId instanceof Map);
   assert.ok(runtime.pendingApprovalByThreadId instanceof Map);
   assert.ok(runtime.replyCardByRunKey instanceof Map);
   assert.ok(runtime.currentRunKeyByThreadId instanceof Map);
@@ -29,6 +32,9 @@ test("initializeCommonRuntimeState seeds shared runtime containers", () => {
   assert.ok(runtime.messageContextByMessageId instanceof Map);
   assert.ok(runtime.latestMessageContextByChatId instanceof Map);
   assert.ok(runtime.workspaceThreadRefreshStateByKey instanceof Map);
+  assert.ok(runtime.workspaceThreadSharedCacheByKey instanceof Map);
+  assert.ok(runtime.workspaceThreadRefreshPromiseByKey instanceof Map);
+  assert.ok(runtime.inFlightBindingDispatchKeys instanceof Set);
   assert.equal(runtime.isStopping, false);
   assert.equal(runtime.stopPromise, null);
 });

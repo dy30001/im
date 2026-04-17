@@ -20,6 +20,10 @@ test("detectNaturalCommand recognizes conservative natural-language control comm
   assert.equal(detectNaturalCommand("查看当前项目"), "where");
   assert.equal(detectNaturalCommand("查看当前目录"), "where");
   assert.equal(detectNaturalCommand("查看当前工作区"), "where");
+  assert.equal(detectNaturalCommand("我们绑定到哪个工程了"), "where");
+  assert.equal(detectNaturalCommand("我们现在绑定到哪个项目了"), "where");
+  assert.equal(detectNaturalCommand("当前绑定到哪个工程了"), "where");
+  assert.equal(detectNaturalCommand("现在绑的是哪个项目"), "where");
   assert.equal(detectNaturalCommand("帮我开个新线程"), "new");
   assert.equal(detectNaturalCommand("我想新开一个会话"), "new");
   assert.equal(detectNaturalCommand("先停一下"), "stop");
@@ -38,6 +42,9 @@ test("detectNaturalCommand recognizes conservative natural-language control comm
   assert.equal(detectNaturalCommand("查看会话项目"), "workspace");
   assert.equal(detectNaturalCommand("现在有哪几个绑定"), "workspace");
   assert.equal(detectNaturalCommand("切换工程目录"), "workspace");
+  assert.equal(detectNaturalCommand("工程列表"), "workspace");
+  assert.equal(detectNaturalCommand("列一下工程列表"), "workspace");
+  assert.equal(detectNaturalCommand("帮我列举一下工程列表"), "workspace");
   assert.equal(detectNaturalCommand("选择第二绑定"), "workspace");
   assert.equal(detectNaturalCommand("上一页线程"), "prev_page");
   assert.equal(detectNaturalCommand("下一页会话"), "next_page");
@@ -116,5 +123,6 @@ test("extractModelValue and extractEffortValue support natural-language settings
 test("detectNaturalCommand avoids treating ordinary questions as control commands", () => {
   assert.equal(detectNaturalCommand("帮我看一下这个项目结构"), "");
   assert.equal(detectNaturalCommand("解释一下 openclaw-bot 的启动入口"), "");
+  assert.equal(detectNaturalCommand("为什么我们绑定到这个工程了"), "");
   assert.equal(detectNaturalCommand("同意吗"), "");
 });

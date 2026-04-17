@@ -1,8 +1,11 @@
-#!/bin/zsh
+#!/usr/bin/env bash
 set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" && pwd)
 APP_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
+source "$APP_ROOT/scripts/lib/openclaw-instance.sh"
+
+setup_openclaw_instance_env "$APP_ROOT" "${1:-}"
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
 
@@ -27,6 +30,8 @@ NODE_BIN=$(resolve_node_bin) || {
   exit 1
 }
 
-LOCK_DIR="$HOME/.codex-im/openclaw-bot.lock"
+if [ -n "$OPENCLAW_INSTANCE_ID" ]; then
+  exec "$NODE_BIN" "$APP_ROOT/scripts/start-openclaw-bot.js" "$OPENCLAW_INSTANCE_ARG"
+fi
 
 exec "$NODE_BIN" "$APP_ROOT/scripts/start-openclaw-bot.js"

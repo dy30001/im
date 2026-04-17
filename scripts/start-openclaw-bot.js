@@ -5,15 +5,32 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const dotenv = require("dotenv");
+const {
+  buildOpenClawEnvLoadPaths,
+  resolveOpenClawDefaultHeartbeatFile,
+  resolveOpenClawDefaultLockDir,
+  resolveOpenClawDefaultLogFile,
+  resolveOpenClawInstanceId,
+} = require("../src/infra/config/config");
 
 const APP_ROOT = path.resolve(__dirname, "..");
+const REQUESTED_INSTANCE_ID = readRequestedInstanceId(process.argv.slice(2));
+if (REQUESTED_INSTANCE_ID) {
+  process.env.CODEX_IM_OPENCLAW_INSTANCE_ID = REQUESTED_INSTANCE_ID;
+}
 loadSupervisorEnv();
-const LOCK_DIR = path.join(os.homedir(), ".codex-im", "openclaw-bot.lock");
+const OPENCLAW_INSTANCE_ID = resolveOpenClawInstanceId(process.env.CODEX_IM_OPENCLAW_INSTANCE_ID);
+if (OPENCLAW_INSTANCE_ID) {
+  process.env.CODEX_IM_OPENCLAW_INSTANCE_ID = OPENCLAW_INSTANCE_ID;
+}
+const INSTANCE_ARG = OPENCLAW_INSTANCE_ID ? `--instance=${OPENCLAW_INSTANCE_ID}` : "";
+const LOCK_DIR = process.env.CODEX_IM_OPENCLAW_LOCK_DIR || resolveOpenClawDefaultLockDir(OPENCLAW_INSTANCE_ID);
 const SUPERVISOR_PID_FILE = path.join(LOCK_DIR, "pid");
 const CHILD_PID_FILE = path.join(LOCK_DIR, "child-pid");
 const SUPERVISOR_STATE_FILE = path.join(LOCK_DIR, "supervisor-state.json");
-const HEARTBEAT_FILE = process.env.CODEX_IM_OPENCLAW_HEARTBEAT_FILE || path.join(LOCK_DIR, "heartbeat.json");
-const LOG_FILE = process.env.CODEX_IM_OPENCLAW_LOG_FILE || "/tmp/codex-im-openclaw.log";
+const HEARTBEAT_FILE = process.env.CODEX_IM_OPENCLAW_HEARTBEAT_FILE
+  || resolveOpenClawDefaultHeartbeatFile(OPENCLAW_INSTANCE_ID);
+const LOG_FILE = process.env.CODEX_IM_OPENCLAW_LOG_FILE || resolveOpenClawDefaultLogFile(OPENCLAW_INSTANCE_ID);
 const ENTRYPOINT = process.env.CODEX_IM_OPENCLAW_ENTRYPOINT || path.join(APP_ROOT, "bin", "codex-im.js");
 const ENTRY_MODE = process.env.CODEX_IM_OPENCLAW_ENTRY_MODE || "openclaw-bot";
 const SUPERVISOR_DAEMONIZED = process.env.CODEX_IM_OPENCLAW_SUPERVISOR_DAEMONIZED === "1";
@@ -28,12 +45,19 @@ const STABLE_RUN_RESET_MS = parseRestartDelay(
 );
 const HEARTBEAT_TIMEOUT_MS = parseRestartDelay(
   process.env.CODEX_IM_OPENCLAW_HEARTBEAT_TIMEOUT_MS,
-  3 * 60 * 60 * 1_000
+  10 * 60 * 1_000
+);
+const STARTUP_HEARTBEAT_TIMEOUT_MS = parseRestartDelay(
+  process.env.CODEX_IM_OPENCLAW_STARTUP_HEARTBEAT_TIMEOUT_MS,
+  3 * 60 * 1_000
 );
 const HEARTBEAT_CHECK_INTERVAL_MS = parseRestartDelay(
   process.env.CODEX_IM_OPENCLAW_HEARTBEAT_CHECK_INTERVAL_MS,
-  5 * 60 * 1_000
+  60 * 1_000
 );
+process.env.CODEX_IM_OPENCLAW_LOCK_DIR = LOCK_DIR;
+process.env.CODEX_IM_OPENCLAW_HEARTBEAT_FILE = HEARTBEAT_FILE;
+process.env.CODEX_IM_OPENCLAW_LOG_FILE = LOG_FILE;
 
 let currentChild = null;
 let currentChildStartedAt = 0;
@@ -85,7 +109,11 @@ function daemonizeSupervisor() {
   fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
   const logFd = fs.openSync(LOG_FILE, "a");
   try {
-    const child = spawn(process.execPath, [__filename], {
+    const args = [__filename];
+    if (INSTANCE_ARG) {
+      args.push(INSTANCE_ARG);
+    }
+    const child = spawn(process.execPath, args, {
       cwd: APP_ROOT,
       env: {
         ...process.env,
@@ -167,7 +195,11 @@ function startChild() {
   nextRestartAt = 0;
   lastRestartDelayMs = 0;
   console.log(`[codex-im] openclaw child starting entrypoint=${ENTRYPOINT}`);
-  const child = spawn(process.execPath, [ENTRYPOINT, ENTRY_MODE], {
+  const childArgs = [ENTRYPOINT, ENTRY_MODE];
+  if (INSTANCE_ARG) {
+    childArgs.push(INSTANCE_ARG);
+  }
+  const child = spawn(process.execPath, childArgs, {
     cwd: APP_ROOT,
     env: process.env,
     stdio: ["ignore", "inherit", "inherit"],
@@ -313,7 +345,7 @@ function startHeartbeatWatchdog() {
     }
 
     console.warn(
-      `[codex-im] openclaw heartbeat stale age=${staleState.ageMs}ms timeout=${HEARTBEAT_TIMEOUT_MS}ms reason=${staleState.reason}; restarting child pid=${currentChild.pid}`
+      `[codex-im] openclaw heartbeat stale age=${staleState.ageMs}ms timeout=${staleState.timeoutMs}ms reason=${staleState.reason}; restarting child pid=${currentChild.pid}`
     );
     killPid(currentChild.pid);
   }, HEARTBEAT_CHECK_INTERVAL_MS);
@@ -395,12 +427,14 @@ function clearHeartbeatFile() {
 
 function getStaleHeartbeatState() {
   const heartbeat = readHeartbeatFile();
+  const timeoutMs = heartbeat.updatedAt > 0 ? HEARTBEAT_TIMEOUT_MS : STARTUP_HEARTBEAT_TIMEOUT_MS;
   const referenceTime = heartbeat.updatedAt || currentChildStartedAt || 0;
   const ageMs = referenceTime > 0 ? Math.max(0, Date.now() - referenceTime) : Number.POSITIVE_INFINITY;
   return {
-    isStale: ageMs >= HEARTBEAT_TIMEOUT_MS,
-    ageMs: Number.isFinite(ageMs) ? ageMs : HEARTBEAT_TIMEOUT_MS,
-    reason: heartbeat.reason || (heartbeat.updatedAt ? "unknown" : "missing"),
+    isStale: ageMs >= timeoutMs,
+    ageMs: Number.isFinite(ageMs) ? ageMs : timeoutMs,
+    timeoutMs,
+    reason: heartbeat.reason || (heartbeat.updatedAt ? "unknown" : "startup"),
   };
 }
 
@@ -430,7 +464,7 @@ function findRunningSupervisorPid() {
 
   const lines = result.stdout.split("\n");
   for (const line of lines) {
-    if (!/start-openclaw-bot\.js/.test(line)) {
+    if (!matchesOpenClawProcessLine(line, { kind: "supervisor" })) {
       continue;
     }
 
@@ -453,7 +487,7 @@ function findRunningChildPid() {
 
   const lines = result.stdout.split("\n");
   for (const line of lines) {
-    if (!/codex-im\.js openclaw-bot/.test(line)) {
+    if (!matchesOpenClawProcessLine(line, { kind: "child" })) {
       continue;
     }
 
@@ -496,6 +530,8 @@ function writeSupervisorState(status, extra = {}) {
     restartMaxDelayMs: MAX_RESTART_DELAY_MS,
     restartDelayMs: lastRestartDelayMs,
     stableRunResetMs: STABLE_RUN_RESET_MS,
+    heartbeatTimeoutMs: HEARTBEAT_TIMEOUT_MS,
+    startupHeartbeatTimeoutMs: STARTUP_HEARTBEAT_TIMEOUT_MS,
     nextRestartAt,
     lastExitAt,
     lastExitReason,
@@ -563,15 +599,60 @@ function parseRestartDelay(rawValue, defaultValue) {
 }
 
 function loadSupervisorEnv() {
-  const envPaths = [
+  const commonEnvPaths = [
     path.join(APP_ROOT, ".env"),
     path.join(os.homedir(), ".codex-im", ".env"),
   ];
 
-  for (const envPath of envPaths) {
+  for (const envPath of commonEnvPaths) {
     if (!fs.existsSync(envPath)) {
       continue;
     }
     dotenv.config({ path: envPath, override: false });
   }
+
+  const instanceEnvPaths = buildOpenClawEnvLoadPaths({
+    cwd: APP_ROOT,
+    homeDir: os.homedir(),
+    instanceId: resolveOpenClawInstanceId(process.env.CODEX_IM_OPENCLAW_INSTANCE_ID),
+    explicitEnvFile: String(process.env.CODEX_IM_OPENCLAW_ENV_FILE || "").trim(),
+  }).filter((envPath) => !commonEnvPaths.includes(envPath));
+
+  for (const envPath of instanceEnvPaths) {
+    if (!fs.existsSync(envPath)) {
+      continue;
+    }
+    dotenv.config({ path: envPath, override: true });
+  }
+}
+
+function matchesOpenClawProcessLine(line, { kind = "all" } = {}) {
+  const pattern = kind === "supervisor" ? /start-openclaw-bot\.js/ : /codex-im\.js openclaw-bot/;
+  if (!pattern.test(line)) {
+    return false;
+  }
+  if (!OPENCLAW_INSTANCE_ID) {
+    return !/--instance=/.test(line);
+  }
+  return new RegExp(`--instance=${escapeRegExp(OPENCLAW_INSTANCE_ID)}(?:\\s|$)`).test(line);
+}
+
+function escapeRegExp(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function readRequestedInstanceId(argv = []) {
+  for (const value of argv) {
+    const normalizedValue = String(value || "").trim();
+    if (!normalizedValue) {
+      continue;
+    }
+    if (normalizedValue.startsWith("--instance=")) {
+      return resolveOpenClawInstanceId(normalizedValue.slice("--instance=".length));
+    }
+    if (!normalizedValue.startsWith("--")) {
+      return resolveOpenClawInstanceId(normalizedValue);
+    }
+  }
+  return "";
 }

@@ -3,39 +3,31 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" && pwd)
 APP_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
+source "$APP_ROOT/scripts/lib/openclaw-instance.sh"
 
-load_env_file() {
-  local env_path="$1"
-  if [ ! -f "$env_path" ]; then
-    return
-  fi
+setup_openclaw_instance_env "$APP_ROOT" "${1:-}"
 
-  set -a
-  # shellcheck disable=SC1090
-  . "$env_path"
-  set +a
-}
-
-load_env_file "${APP_ROOT}/.env"
-load_env_file "${HOME}/.codex-im/.env"
-
-LOCK_DIR="${HOME}/.codex-im/openclaw-bot.lock"
-SUPERVISOR_PID_FILE="${LOCK_DIR}/pid"
-CHILD_PID_FILE="${LOCK_DIR}/child-pid"
-SUPERVISOR_STATE_FILE="${LOCK_DIR}/supervisor-state.json"
-HEARTBEAT_FILE="${CODEX_IM_OPENCLAW_HEARTBEAT_FILE:-${LOCK_DIR}/heartbeat.json}"
-LABEL="com.dy3000.codex-im.openclaw"
-LAUNCH_AGENT_PLIST="${HOME}/Library/LaunchAgents/${LABEL}.plist"
-LAUNCHD_TARGET="gui/$(id -u)/${LABEL}"
-LOG_FILE="${CODEX_IM_OPENCLAW_LOG_FILE:-/tmp/codex-im-openclaw.log}"
-HEARTBEAT_TIMEOUT_MS="${CODEX_IM_OPENCLAW_HEARTBEAT_TIMEOUT_MS:-10800000}"
+LOCK_DIR="$OPENCLAW_LOCK_DIR"
+SUPERVISOR_PID_FILE="$OPENCLAW_SUPERVISOR_PID_FILE"
+CHILD_PID_FILE="$OPENCLAW_CHILD_PID_FILE"
+SUPERVISOR_STATE_FILE="$OPENCLAW_SUPERVISOR_STATE_FILE"
+HEARTBEAT_FILE="$OPENCLAW_HEARTBEAT_FILE"
+LABEL="$OPENCLAW_LABEL"
+LAUNCH_AGENT_PLIST="$OPENCLAW_LAUNCH_AGENT_PLIST"
+LAUNCHD_TARGET="$OPENCLAW_LAUNCHD_TARGET"
+LOG_FILE="$OPENCLAW_LOG_FILE"
+HEARTBEAT_TIMEOUT_MS="${CODEX_IM_OPENCLAW_HEARTBEAT_TIMEOUT_MS:-600000}"
+STARTUP_HEARTBEAT_TIMEOUT_MS="${CODEX_IM_OPENCLAW_STARTUP_HEARTBEAT_TIMEOUT_MS:-180000}"
 
 echo "[codex-im] openclaw status"
+echo "instance_id=${OPENCLAW_INSTANCE_ID:-default}"
+echo "label=${LABEL}"
 echo "lock_dir=${LOCK_DIR}"
 echo "log_file=${LOG_FILE}"
 echo "supervisor_state_file=${SUPERVISOR_STATE_FILE}"
 echo "heartbeat_file=${HEARTBEAT_FILE}"
 echo "heartbeat_timeout_ms=${HEARTBEAT_TIMEOUT_MS}"
+echo "startup_heartbeat_timeout_ms=${STARTUP_HEARTBEAT_TIMEOUT_MS}"
 if [ -f "$LAUNCH_AGENT_PLIST" ]; then
   echo "launchd_plist=${LAUNCH_AGENT_PLIST} (present)"
 else
@@ -57,13 +49,16 @@ if [ -f "$HEARTBEAT_FILE" ]; then
   echo "heartbeat_age_ms=${heartbeat_age_ms:-<unknown>}"
   echo "heartbeat_reason=${heartbeat_reason:-<unknown>}"
 else
+  heartbeat_updated_at="<missing>"
+  heartbeat_age_ms="<missing>"
+  heartbeat_reason="<missing>"
   echo "heartbeat_updated_at=<missing>"
   echo "heartbeat_age_ms=<missing>"
   echo "heartbeat_reason=<missing>"
 fi
 
 if [ -f "$SUPERVISOR_STATE_FILE" ]; then
-  supervisor_summary="$(node -e 'const fs=require("fs"); try { const p=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); const updatedAt=Number(p.updatedAt||0); const status=String(p.status||"").trim()||"unknown"; const restartAttempt=Number(p.restartAttempt||0); const restartDelayMs=Number(p.restartDelayMs||0); const nextRestartAt=Number(p.nextRestartAt||0); const nextRestartInMs=nextRestartAt > 0 ? Math.max(0, nextRestartAt - Date.now()) : 0; const lastExitAt=Number(p.lastExitAt||0); const lastExitReason=String(p.lastExitReason||"").trim()||"unknown"; process.stdout.write(`${updatedAt}|${status}|${restartAttempt}|${restartDelayMs}|${nextRestartAt}|${nextRestartInMs}|${lastExitAt}|${lastExitReason}`); } catch { process.stdout.write("||0|0|0|0|0|"); }' "$SUPERVISOR_STATE_FILE")"
+  supervisor_summary="$(node -e 'const fs=require("fs"); try { const p=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); const updatedAt=Number(p.updatedAt||0); const status=String(p.status||"").trim()||"unknown"; const restartAttempt=Number(p.restartAttempt||0); const restartDelayMs=Number(p.restartDelayMs||0); const nextRestartAt=Number(p.nextRestartAt||0); const nextRestartInMs=nextRestartAt > 0 ? Math.max(0, nextRestartAt - Date.now()) : 0; const lastExitAt=Number(p.lastExitAt||0); const lastExitReason=String(p.lastExitReason||"").trim()||"unknown"; const heartbeatTimeoutMs=Number(p.heartbeatTimeoutMs||0); const startupHeartbeatTimeoutMs=Number(p.startupHeartbeatTimeoutMs||0); process.stdout.write(`${updatedAt}|${status}|${restartAttempt}|${restartDelayMs}|${nextRestartAt}|${nextRestartInMs}|${lastExitAt}|${lastExitReason}|${heartbeatTimeoutMs}|${startupHeartbeatTimeoutMs}`); } catch { process.stdout.write("||0|0|0|0|0||0|0"); }' "$SUPERVISOR_STATE_FILE")"
   supervisor_updated_at="${supervisor_summary%%|*}"
   supervisor_rest="${supervisor_summary#*|}"
   supervisor_status="${supervisor_rest%%|*}"
@@ -77,7 +72,11 @@ if [ -f "$SUPERVISOR_STATE_FILE" ]; then
   supervisor_next_restart_in_ms="${supervisor_rest%%|*}"
   supervisor_rest="${supervisor_rest#*|}"
   supervisor_last_exit_at="${supervisor_rest%%|*}"
-  supervisor_last_exit_reason="${supervisor_rest#*|}"
+  supervisor_rest="${supervisor_rest#*|}"
+  supervisor_last_exit_reason="${supervisor_rest%%|*}"
+  supervisor_rest="${supervisor_rest#*|}"
+  supervisor_heartbeat_timeout_ms="${supervisor_rest%%|*}"
+  supervisor_startup_heartbeat_timeout_ms="${supervisor_rest#*|}"
   echo "supervisor_updated_at=${supervisor_updated_at:-<unknown>}"
   echo "supervisor_status=${supervisor_status:-<unknown>}"
   echo "supervisor_restart_attempt=${supervisor_restart_attempt:-0}"
@@ -86,6 +85,8 @@ if [ -f "$SUPERVISOR_STATE_FILE" ]; then
   echo "supervisor_next_restart_in_ms=${supervisor_next_restart_in_ms:-0}"
   echo "supervisor_last_exit_at=${supervisor_last_exit_at:-0}"
   echo "supervisor_last_exit_reason=${supervisor_last_exit_reason:-<unknown>}"
+  echo "supervisor_heartbeat_timeout_ms=${supervisor_heartbeat_timeout_ms:-0}"
+  echo "supervisor_startup_heartbeat_timeout_ms=${supervisor_startup_heartbeat_timeout_ms:-0}"
 else
   supervisor_status=""
   echo "supervisor_updated_at=<missing>"
@@ -96,6 +97,8 @@ else
   echo "supervisor_next_restart_in_ms=<missing>"
   echo "supervisor_last_exit_at=<missing>"
   echo "supervisor_last_exit_reason=<missing>"
+  echo "supervisor_heartbeat_timeout_ms=<missing>"
+  echo "supervisor_startup_heartbeat_timeout_ms=<missing>"
 fi
 
 supervisor_pid=""
@@ -128,9 +131,7 @@ else
   fi
 fi
 
-process_lines="$(
-  ps aux 2>/dev/null | grep -E "start-openclaw-bot\.js|codex-im.js openclaw-bot" | grep -v grep || true
-)"
+process_lines="$(list_openclaw_process_lines all || true)"
 if [ -n "$process_lines" ]; then
   process_count="$(printf "%s\n" "$process_lines" | wc -l | tr -d ' ')"
   echo "process_count=${process_count}"

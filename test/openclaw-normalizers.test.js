@@ -61,12 +61,82 @@ test("normalizeOpenClawTextEvent ignores bot messages and non-text payloads", ()
         from_user_id: "wx-user-1",
         message_id: 1,
         message_type: 1,
-        item_list: [{ type: 2 }],
+        item_list: [{ type: 99 }],
       },
       { defaultWorkspaceId: "default" }
     ),
     null
   );
+});
+
+test("normalizeOpenClawTextEvent keeps image attachments instead of dropping them", () => {
+  const normalized = normalizeOpenClawTextEvent(
+    {
+      from_user_id: "wx-user-1",
+      message_id: 101,
+      message_type: 1,
+      item_list: [
+        {
+          type: 2,
+          image_item: {
+            aeskey: "00112233445566778899aabbccddeeff",
+            media: {
+              full_url: "https://cdn.example.com/path/image.jpg",
+            },
+          },
+        },
+      ],
+    },
+    { defaultWorkspaceId: "default" }
+  );
+
+  assert.equal(normalized?.command, "message");
+  assert.equal(normalized?.inputKind, "image");
+  assert.equal(normalized?.text, "");
+  assert.deepEqual(normalized?.attachments, [
+    {
+      kind: "image",
+      downloadUrl: "https://cdn.example.com/path/image.jpg",
+      aesKey: "00112233445566778899aabbccddeeff",
+      mimeType: "image/jpeg",
+      originalFilename: "",
+    },
+  ]);
+});
+
+test("normalizeOpenClawTextEvent keeps file attachments instead of dropping them", () => {
+  const normalized = normalizeOpenClawTextEvent(
+    {
+      from_user_id: "wx-user-1",
+      message_id: 102,
+      message_type: 1,
+      item_list: [
+        {
+          type: 4,
+          file_item: {
+            file_name: "report.pdf",
+            media: {
+              aes_key: "MDAxMTIyMzM0NDU1NjY3Nzg4OTlhYWJiY2NkZGVlZmY=",
+              full_url: "https://cdn.example.com/path/report",
+            },
+          },
+        },
+      ],
+    },
+    { defaultWorkspaceId: "default" }
+  );
+
+  assert.equal(normalized?.command, "message");
+  assert.equal(normalized?.inputKind, "file");
+  assert.deepEqual(normalized?.attachments, [
+    {
+      kind: "file",
+      downloadUrl: "https://cdn.example.com/path/report",
+      aesKey: "MDAxMTIyMzM0NDU1NjY3Nzg4OTlhYWJiY2NkZGVlZmY=",
+      mimeType: "application/pdf",
+      originalFilename: "report.pdf",
+    },
+  ]);
 });
 
 test("normalizeOpenClawTextEvent recognizes supported natural-language commands", () => {

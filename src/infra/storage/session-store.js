@@ -180,14 +180,16 @@ class SessionStore {
     return this.state.bindings[bindingKey] || null;
   }
 
-  listBindings() {
+  listBindings({ clone = true } = {}) {
     return Object.entries(this.state.bindings || {}).map(([bindingKey, binding]) => ({
       bindingKey,
-      binding: {
-        ...(binding || {}),
-        threadIdByWorkspaceRoot: getThreadMap(binding),
-        codexParamsByWorkspaceRoot: getCodexParamsMap(binding),
-      },
+      binding: clone
+        ? {
+          ...(binding || {}),
+          threadIdByWorkspaceRoot: getThreadMap(binding),
+          codexParamsByWorkspaceRoot: getCodexParamsMap(binding),
+        }
+        : (binding || {}),
     }));
   }
 

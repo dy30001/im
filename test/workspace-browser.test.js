@@ -12,6 +12,7 @@ const {
   handleBrowseCommand,
   handleWorkspacesCommand,
   resolveWorkspaceContext,
+  switchWorkspaceByPath,
 } = require("../src/domain/workspace/workspace-service");
 
 test("normalizeFeishuTextEvent recognizes /codex browse", () => {
@@ -381,6 +382,51 @@ test("handleWorkspacesCommand tags the workspace list with selection context", a
     bindingKey: "binding-1",
     command: "workspace",
   });
+});
+
+test("switchWorkspaceByPath clears inactive reply runs for the previous workspace", async () => {
+  const calls = [];
+  const sentCards = [];
+  const runtime = {
+    sessionStore: {
+      buildBindingKey: () => "binding-1",
+      getBinding: () => ({}),
+      setActiveWorkspaceRoot: (_bindingKey, workspaceRoot) => {
+        calls.push(["setActiveWorkspaceRoot", workspaceRoot]);
+      },
+    },
+    resolveWorkspaceRootForBinding: () => "/repo/alpha",
+    listBoundWorkspaces: () => ([
+      { workspaceRoot: "/repo/alpha", isActive: true, threadId: "thread-1" },
+      { workspaceRoot: "/repo/beta", isActive: false, threadId: "thread-2" },
+    ]),
+    disposeInactiveReplyRunsForBinding: (bindingKey, workspaceRoot) => {
+      calls.push(["disposeInactiveReplyRunsForBinding", bindingKey, workspaceRoot]);
+    },
+    resolveWorkspaceThreadState: async ({ bindingKey, workspaceRoot }) => {
+      calls.push(["resolveWorkspaceThreadState", bindingKey, workspaceRoot]);
+      return { threads: [], threadId: "" };
+    },
+    resolveReplyToMessageId: (_normalized, replyToMessageId = "") => replyToMessageId || "reply-1",
+    buildWorkspaceBindingsCard: (items) => ({ items }),
+    sendInteractiveCard: async (payload) => {
+      sentCards.push(payload);
+    },
+    sendInfoCardMessage: async () => {
+      throw new Error("unexpected info card");
+    },
+  };
+
+  await switchWorkspaceByPath(runtime, createNormalizedEvent(), "/repo/beta", {
+    replyToMessageId: "reply-1",
+  });
+
+  assert.deepEqual(calls.slice(0, 3), [
+    ["setActiveWorkspaceRoot", "/repo/beta"],
+    ["disposeInactiveReplyRunsForBinding", "binding-1", "/repo/beta"],
+    ["resolveWorkspaceThreadState", "binding-1", "/repo/beta"],
+  ]);
+  assert.equal(sentCards.length, 1);
 });
 
 function createBrowseRuntime({

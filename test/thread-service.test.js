@@ -168,6 +168,196 @@ test("resolveWorkspaceThreadState keeps an existing recovery thread when it is n
   }]);
 });
 
+test("resolveWorkspaceThreadState skips desktop sessions already claimed by another binding when shared reuse is disabled", async () => {
+  const bindingKey = "binding-2";
+  const workspaceRoot = "/repo";
+  const normalized = {
+    chatId: "chat-2",
+    messageId: "msg-2",
+    text: "继续聊天",
+  };
+
+  const threadAssignments = new Map([
+    ["binding-1:/repo", "session-1"],
+    ["binding-2:/repo", ""],
+  ]);
+  const updates = [];
+  const sessions = [
+    {
+      id: "session-1",
+      writable: true,
+      acpSessionId: "session-1",
+      acpxRecordId: "record-1",
+      cwd: workspaceRoot,
+      updatedAt: 200,
+    },
+    {
+      id: "session-2",
+      writable: true,
+      acpSessionId: "session-2",
+      acpxRecordId: "record-2",
+      cwd: workspaceRoot,
+      updatedAt: 100,
+    },
+  ];
+
+  const runtime = {
+    config: {
+      openclaw: {
+        threadSource: "acpx",
+      },
+    },
+    sessionStore: {
+      getThreadIdForWorkspace: (currentBindingKey, currentWorkspaceRoot) => (
+        threadAssignments.get(`${currentBindingKey}:${currentWorkspaceRoot}`) || ""
+      ),
+      setThreadIdForWorkspace: (currentBindingKey, currentWorkspaceRoot, threadId) => {
+        threadAssignments.set(`${currentBindingKey}:${currentWorkspaceRoot}`, threadId);
+        updates.push([currentBindingKey, currentWorkspaceRoot, threadId]);
+      },
+      clearThreadIdForWorkspace: () => {},
+      listBindings: () => ([
+        {
+          bindingKey: "binding-1",
+          binding: {
+            threadIdByWorkspaceRoot: {
+              [workspaceRoot]: threadAssignments.get("binding-1:/repo") || "",
+            },
+          },
+        },
+        {
+          bindingKey: "binding-2",
+          binding: {
+            threadIdByWorkspaceRoot: {
+              [workspaceRoot]: threadAssignments.get("binding-2:/repo") || "",
+            },
+          },
+        },
+      ]),
+    },
+    usesDesktopSessionSource: () => true,
+    resolveThreadIdForBinding: (currentBindingKey, currentWorkspaceRoot) => (
+      threadAssignments.get(`${currentBindingKey}:${currentWorkspaceRoot}`) || ""
+    ),
+    listDesktopSessionsForWorkspace: async () => sessions,
+    resolveDesktopSessionById: (_currentWorkspaceRoot, sessionId) => (
+      sessions.find((session) => (
+        session.id === sessionId
+        || session.acpSessionId === sessionId
+        || session.acpxRecordId === sessionId
+      )) || null
+    ),
+    hydrateDesktopSession: async (session) => session,
+    setThreadBindingKey: () => {},
+    setThreadWorkspaceRoot: () => {},
+    rememberSelectedThreadForSync: () => {},
+  };
+
+  const result = await resolveWorkspaceThreadState(runtime, {
+    bindingKey,
+    workspaceRoot,
+    normalized,
+    autoSelectThread: true,
+    allowClaimedThreadReuse: false,
+  });
+
+  assert.equal(result.selectedThreadId, "");
+  assert.equal(result.threadId, "session-2");
+  assert.deepEqual(updates, [["binding-2", "/repo", "session-2"]]);
+});
+
+test("resolveWorkspaceThreadState clears a shared selected desktop session when shared reuse is disabled", async () => {
+  const bindingKey = "binding-2";
+  const workspaceRoot = "/repo";
+  const normalized = {
+    chatId: "chat-2",
+    messageId: "msg-2",
+    text: "继续聊天",
+  };
+
+  const threadAssignments = new Map([
+    ["binding-1:/repo", "session-1"],
+    ["binding-2:/repo", "session-1"],
+  ]);
+  let clearCalls = 0;
+  const sessions = [
+    {
+      id: "session-1",
+      writable: true,
+      acpSessionId: "session-1",
+      acpxRecordId: "record-1",
+      cwd: workspaceRoot,
+      updatedAt: 200,
+    },
+  ];
+
+  const runtime = {
+    config: {
+      openclaw: {
+        threadSource: "acpx",
+      },
+    },
+    sessionStore: {
+      getThreadIdForWorkspace: (currentBindingKey, currentWorkspaceRoot) => (
+        threadAssignments.get(`${currentBindingKey}:${currentWorkspaceRoot}`) || ""
+      ),
+      setThreadIdForWorkspace: () => {
+        throw new Error("should not reassign a claimed desktop session");
+      },
+      clearThreadIdForWorkspace: (currentBindingKey, currentWorkspaceRoot) => {
+        clearCalls += 1;
+        threadAssignments.set(`${currentBindingKey}:${currentWorkspaceRoot}`, "");
+      },
+      listBindings: () => ([
+        {
+          bindingKey: "binding-1",
+          binding: {
+            threadIdByWorkspaceRoot: {
+              [workspaceRoot]: threadAssignments.get("binding-1:/repo") || "",
+            },
+          },
+        },
+        {
+          bindingKey: "binding-2",
+          binding: {
+            threadIdByWorkspaceRoot: {
+              [workspaceRoot]: threadAssignments.get("binding-2:/repo") || "",
+            },
+          },
+        },
+      ]),
+    },
+    usesDesktopSessionSource: () => true,
+    resolveThreadIdForBinding: (currentBindingKey, currentWorkspaceRoot) => (
+      threadAssignments.get(`${currentBindingKey}:${currentWorkspaceRoot}`) || ""
+    ),
+    listDesktopSessionsForWorkspace: async () => sessions,
+    resolveDesktopSessionById: (_currentWorkspaceRoot, sessionId) => (
+      sessions.find((session) => (
+        session.id === sessionId
+        || session.acpSessionId === sessionId
+        || session.acpxRecordId === sessionId
+      )) || null
+    ),
+    hydrateDesktopSession: async (session) => session,
+    setThreadBindingKey: () => {},
+    setThreadWorkspaceRoot: () => {},
+    rememberSelectedThreadForSync: () => {},
+  };
+
+  const result = await resolveWorkspaceThreadState(runtime, {
+    bindingKey,
+    workspaceRoot,
+    normalized,
+    autoSelectThread: true,
+    allowClaimedThreadReuse: false,
+  });
+
+  assert.equal(result.selectedThreadId, "session-1");
+  assert.equal(result.threadId, "");
+  assert.equal(clearCalls, 1);
+});
+
 test("resolveWorkspaceThreadState skips refreshing the thread list when the current thread is already selected", async () => {
   const bindingKey = "binding-1";
   const workspaceRoot = "/repo";
@@ -208,6 +398,179 @@ test("resolveWorkspaceThreadState skips refreshing the thread list when the curr
   assert.equal(refreshCalls, 0);
   assert.equal(result.selectedThreadId, "thread-1");
   assert.equal(result.threadId, "thread-1");
+});
+
+test("resolveWorkspaceThreadState skips threads already claimed by another binding when shared reuse is disabled", async () => {
+  const bindingKey = "binding-2";
+  const workspaceRoot = "/repo";
+  const normalized = {
+    chatId: "chat-2",
+    messageId: "msg-2",
+    text: "继续聊天",
+  };
+
+  const threadAssignments = new Map([
+    ["binding-1:/repo", "thread-1"],
+    ["binding-2:/repo", ""],
+  ]);
+  const updates = [];
+
+  const runtime = {
+    sessionStore: {
+      getThreadIdForWorkspace: (currentBindingKey, currentWorkspaceRoot) => (
+        threadAssignments.get(`${currentBindingKey}:${currentWorkspaceRoot}`) || ""
+      ),
+      setThreadIdForWorkspace: (currentBindingKey, currentWorkspaceRoot, threadId) => {
+        threadAssignments.set(`${currentBindingKey}:${currentWorkspaceRoot}`, threadId);
+        updates.push([currentBindingKey, currentWorkspaceRoot, threadId]);
+      },
+      listBindings: () => ([
+        {
+          bindingKey: "binding-1",
+          binding: {
+            threadIdByWorkspaceRoot: {
+              [workspaceRoot]: threadAssignments.get("binding-1:/repo") || "",
+            },
+          },
+        },
+        {
+          bindingKey: "binding-2",
+          binding: {
+            threadIdByWorkspaceRoot: {
+              [workspaceRoot]: threadAssignments.get("binding-2:/repo") || "",
+            },
+          },
+        },
+      ]),
+    },
+    resolveThreadIdForBinding: (currentBindingKey, currentWorkspaceRoot) => (
+      threadAssignments.get(`${currentBindingKey}:${currentWorkspaceRoot}`) || ""
+    ),
+    workspaceThreadListCacheByKey: new Map(),
+    workspaceThreadRefreshStateByKey: new Map(),
+    workspaceThreadSharedCacheByKey: new Map(),
+    workspaceThreadRefreshPromiseByKey: new Map(),
+    resumedThreadIds: new Set(),
+    codex: {
+      listThreads: async () => ({
+        result: {
+          data: [
+            {
+              id: "thread-1",
+              cwd: workspaceRoot,
+              name: "Thread 1",
+              updatedAt: 200,
+            },
+            {
+              id: "thread-2",
+              cwd: workspaceRoot,
+              name: "Thread 2",
+              updatedAt: 100,
+            },
+          ],
+          nextCursor: "",
+        },
+      }),
+    },
+    setThreadBindingKey: () => {},
+    setThreadWorkspaceRoot: () => {},
+    rememberSelectedThreadForSync: () => {},
+  };
+
+  const result = await resolveWorkspaceThreadState(runtime, {
+    bindingKey,
+    workspaceRoot,
+    normalized,
+    autoSelectThread: true,
+    refreshThreadList: false,
+    allowClaimedThreadReuse: false,
+  });
+
+  assert.equal(result.selectedThreadId, "");
+  assert.equal(result.threadId, "thread-2");
+  assert.deepEqual(updates, [["binding-2", "/repo", "thread-2"]]);
+});
+
+test("resolveWorkspaceThreadState ignores a shared selected thread when shared reuse is disabled", async () => {
+  const bindingKey = "binding-2";
+  const workspaceRoot = "/repo";
+  const normalized = {
+    chatId: "chat-2",
+    messageId: "msg-2",
+    text: "继续聊天",
+  };
+
+  const threadAssignments = new Map([
+    ["binding-1:/repo", "thread-1"],
+    ["binding-2:/repo", "thread-1"],
+  ]);
+
+  const runtime = {
+    sessionStore: {
+      getThreadIdForWorkspace: (currentBindingKey, currentWorkspaceRoot) => (
+        threadAssignments.get(`${currentBindingKey}:${currentWorkspaceRoot}`) || ""
+      ),
+      setThreadIdForWorkspace: () => {
+        throw new Error("should not reassign a claimed thread");
+      },
+      listBindings: () => ([
+        {
+          bindingKey: "binding-1",
+          binding: {
+            threadIdByWorkspaceRoot: {
+              [workspaceRoot]: threadAssignments.get("binding-1:/repo") || "",
+            },
+          },
+        },
+        {
+          bindingKey: "binding-2",
+          binding: {
+            threadIdByWorkspaceRoot: {
+              [workspaceRoot]: threadAssignments.get("binding-2:/repo") || "",
+            },
+          },
+        },
+      ]),
+    },
+    resolveThreadIdForBinding: (currentBindingKey, currentWorkspaceRoot) => (
+      threadAssignments.get(`${currentBindingKey}:${currentWorkspaceRoot}`) || ""
+    ),
+    workspaceThreadListCacheByKey: new Map(),
+    workspaceThreadRefreshStateByKey: new Map(),
+    workspaceThreadSharedCacheByKey: new Map(),
+    workspaceThreadRefreshPromiseByKey: new Map(),
+    resumedThreadIds: new Set(),
+    codex: {
+      listThreads: async () => ({
+        result: {
+          data: [
+            {
+              id: "thread-1",
+              cwd: workspaceRoot,
+              name: "Thread 1",
+              updatedAt: 200,
+            },
+          ],
+          nextCursor: "",
+        },
+      }),
+    },
+    setThreadBindingKey: () => {},
+    setThreadWorkspaceRoot: () => {},
+    rememberSelectedThreadForSync: () => {},
+  };
+
+  const result = await resolveWorkspaceThreadState(runtime, {
+    bindingKey,
+    workspaceRoot,
+    normalized,
+    autoSelectThread: true,
+    refreshThreadList: false,
+    allowClaimedThreadReuse: false,
+  });
+
+  assert.equal(result.selectedThreadId, "thread-1");
+  assert.equal(result.threadId, "");
 });
 
 test("refreshWorkspaceThreads reuses a fresh cache without calling Codex again", async () => {
@@ -353,6 +716,112 @@ test("refreshWorkspaceThreads previewOnly uses a single Codex page and skips ful
   assert.equal(runtime.workspaceThreadListCacheByKey.has(`${bindingKey}::${workspaceRoot}`), false);
 });
 
+test("refreshWorkspaceThreads reuses a fresh shared cache across bindings for the same workspace", async () => {
+  const workspaceRoot = "/repo";
+  const normalized = {
+    chatId: "chat-1",
+    messageId: "msg-1",
+    text: "继续聊天",
+  };
+
+  let listCalls = 0;
+  const runtime = {
+    workspaceThreadListCacheByKey: new Map(),
+    workspaceThreadSharedCacheByKey: new Map(),
+    workspaceThreadRefreshStateByKey: new Map(),
+    workspaceThreadRefreshPromiseByKey: new Map(),
+    sessionStore: {
+      getThreadIdForWorkspace: () => "",
+      setThreadIdForWorkspace: () => {},
+      clearThreadIdForWorkspace: () => {},
+    },
+    codex: {
+      listThreads: async () => {
+        listCalls += 1;
+        return {
+          result: {
+            data: [
+              {
+                id: "thread-1",
+                cwd: workspaceRoot,
+                name: "Thread 1",
+                updatedAt: 100,
+              },
+            ],
+            nextCursor: "",
+          },
+        };
+      },
+    },
+    setThreadBindingKey: () => {},
+    setThreadWorkspaceRoot: () => {},
+    rememberSelectedThreadForSync: () => {},
+  };
+
+  const first = await refreshWorkspaceThreads(runtime, "binding-1", workspaceRoot, normalized);
+  const second = await refreshWorkspaceThreads(runtime, "binding-2", workspaceRoot, normalized);
+
+  assert.equal(listCalls, 1);
+  assert.deepEqual(first, second);
+  assert.equal(runtime.workspaceThreadRefreshStateByKey.get("binding-2::/repo").fromCache, true);
+});
+
+test("refreshWorkspaceThreads de-duplicates concurrent refreshes for the same workspace", async () => {
+  const workspaceRoot = "/repo";
+  const normalized = {
+    chatId: "chat-1",
+    messageId: "msg-1",
+    text: "继续聊天",
+  };
+
+  let listCalls = 0;
+  const runtime = {
+    workspaceThreadListCacheByKey: new Map(),
+    workspaceThreadSharedCacheByKey: new Map(),
+    workspaceThreadRefreshStateByKey: new Map(),
+    workspaceThreadRefreshPromiseByKey: new Map(),
+    sessionStore: {
+      getThreadIdForWorkspace: () => "",
+      setThreadIdForWorkspace: () => {},
+      clearThreadIdForWorkspace: () => {},
+    },
+    codex: {
+      listThreads: async () => {
+        listCalls += 1;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        return {
+          result: {
+            data: [
+              {
+                id: "thread-1",
+                cwd: workspaceRoot,
+                name: "Thread 1",
+                updatedAt: 100,
+              },
+            ],
+            nextCursor: "",
+          },
+        };
+      },
+    },
+    setThreadBindingKey: () => {},
+    setThreadWorkspaceRoot: () => {},
+    rememberSelectedThreadForSync: () => {},
+  };
+
+  const [first, second] = await Promise.all([
+    refreshWorkspaceThreads(runtime, "binding-1", workspaceRoot, normalized, {
+      forceRefresh: true,
+    }),
+    refreshWorkspaceThreads(runtime, "binding-2", workspaceRoot, normalized, {
+      forceRefresh: true,
+    }),
+  ]);
+
+  assert.equal(listCalls, 1);
+  assert.deepEqual(first, second);
+});
+
 test("createWorkspaceThread invalidates the cached thread list", async () => {
   const bindingKey = "binding-1";
   const workspaceRoot = "/repo";
@@ -367,6 +836,17 @@ test("createWorkspaceThread invalidates the cached thread list", async () => {
   const runtime = {
     workspaceThreadListCacheByKey: new Map([
       [cacheKey, {
+        threads: [{
+          id: "thread-old",
+          cwd: workspaceRoot,
+          name: "Thread old",
+          updatedAt: 1,
+        }],
+        updatedAt: new Date().toISOString(),
+      }],
+    ]),
+    workspaceThreadSharedCacheByKey: new Map([
+      ["codex::/repo::full", {
         threads: [{
           id: "thread-old",
           cwd: workspaceRoot,
@@ -422,6 +902,7 @@ test("createWorkspaceThread invalidates the cached thread list", async () => {
 
   await createWorkspaceThread(runtime, { bindingKey, workspaceRoot, normalized });
   assert.equal(runtime.workspaceThreadListCacheByKey.has(cacheKey), false);
+  assert.equal(runtime.workspaceThreadSharedCacheByKey.has("codex::/repo::full"), false);
 
   await refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, normalized);
   assert.equal(listCalls, 1);
@@ -514,6 +995,134 @@ test("ensureThreadAndSendMessage creates a writable recovery session when no des
     assert.deepEqual(sentMessages, [{ threadId: "session-new", text: "继续聊天" }]);
     assert.equal(warnings.length, 1);
     assert.match(warnings[0], /created writable recovery session session-new/);
+  } finally {
+    console.warn = originalWarn;
+  }
+});
+
+test("ensureThreadAndSendMessage avoids switching to a desktop session claimed by another binding", async () => {
+  const bindingKey = "binding-2";
+  const workspaceRoot = "/repo";
+  const normalized = {
+    chatId: "chat-2",
+    messageId: "msg-2",
+    text: "继续聊天",
+  };
+
+  const threadAssignments = new Map([
+    ["binding-1:/repo", "session-write"],
+    ["binding-2:/repo", "session-read"],
+  ]);
+  const sentMessages = [];
+  const warnings = [];
+  const originalWarn = console.warn;
+
+  const sessions = [
+    {
+      id: "session-read",
+      writable: false,
+      acpSessionId: "",
+      acpxRecordId: "record-read",
+      cwd: workspaceRoot,
+      updatedAt: 200,
+    },
+    {
+      id: "session-write",
+      writable: true,
+      acpSessionId: "session-write",
+      acpxRecordId: "record-write",
+      cwd: workspaceRoot,
+      updatedAt: 100,
+    },
+  ];
+
+  const runtime = {
+    config: {
+      defaultCodexAccessMode: "default",
+      openclaw: {
+        threadSource: "acpx",
+      },
+    },
+    sessionStore: {
+      getThreadIdForWorkspace: (currentBindingKey, currentWorkspaceRoot) => (
+        threadAssignments.get(`${currentBindingKey}:${currentWorkspaceRoot}`) || ""
+      ),
+      setThreadIdForWorkspace: (currentBindingKey, currentWorkspaceRoot, threadId) => {
+        threadAssignments.set(`${currentBindingKey}:${currentWorkspaceRoot}`, threadId);
+      },
+      clearThreadIdForWorkspace: () => {},
+      listBindings: () => ([
+        {
+          bindingKey: "binding-1",
+          binding: {
+            threadIdByWorkspaceRoot: {
+              [workspaceRoot]: threadAssignments.get("binding-1:/repo") || "",
+            },
+          },
+        },
+        {
+          bindingKey: "binding-2",
+          binding: {
+            threadIdByWorkspaceRoot: {
+              [workspaceRoot]: threadAssignments.get("binding-2:/repo") || "",
+            },
+          },
+        },
+      ]),
+    },
+    usesDesktopSessionSource: () => true,
+    resolveThreadIdForBinding: (currentBindingKey, currentWorkspaceRoot) => (
+      threadAssignments.get(`${currentBindingKey}:${currentWorkspaceRoot}`) || ""
+    ),
+    listDesktopSessionsForWorkspace: async () => sessions,
+    resolveDesktopSessionById: (_currentWorkspaceRoot, sessionId) => (
+      sessions.find((session) => (
+        session.id === sessionId
+        || session.acpSessionId === sessionId
+        || session.acpxRecordId === sessionId
+      )) || null
+    ),
+    hydrateDesktopSession: async (session) => session,
+    codex: {
+      startThread: async () => ({
+        result: {
+          thread: {
+            id: "session-new",
+          },
+        },
+      }),
+      sendUserMessage: async ({ threadId, text }) => {
+        sentMessages.push({ threadId, text });
+      },
+      resumeThread: async () => ({}),
+    },
+    getCodexParamsForWorkspace: () => ({ model: "", effort: "" }),
+    setPendingThreadContext: () => {},
+    setThreadBindingKey: () => {},
+    setThreadWorkspaceRoot: () => {},
+    rememberSelectedThreadForSync: () => {},
+    resumedThreadIds: new Set(),
+  };
+
+  console.warn = (...args) => {
+    warnings.push(args.join(" "));
+  };
+
+  try {
+    const threadId = await ensureThreadAndSendMessage(runtime, {
+      bindingKey,
+      workspaceRoot,
+      normalized,
+      threadId: "session-read",
+      forceRecoverThread: true,
+    });
+
+    assert.equal(threadId, "session-new");
+    assert.equal(threadAssignments.get("binding-2:/repo"), "session-new");
+    assert.equal(threadAssignments.get("binding-1:/repo"), "session-write");
+    assert.deepEqual(sentMessages, [{ threadId: "session-new", text: "继续聊天" }]);
+    assert.equal(warnings.some((entry) => /auto-switched to writable session session-write/.test(entry)), false);
+    assert.equal(warnings.some((entry) => /created writable recovery session session-new/.test(entry)), true);
   } finally {
     console.warn = originalWarn;
   }

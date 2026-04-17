@@ -33,4 +33,7 @@ npm install
 
 echo "[codex-im] installing OpenClaw macOS LaunchAgent ..."
 echo "[codex-im] if CODEX_IM_OPENCLAW_TOKEN is empty, startup will open browser for WeChat QR login."
+if [ -n "${1:-}" ]; then
+  exec bash ./scripts/install-openclaw-launch-agent.sh "$1"
+fi
 exec npm run openclaw-bot:launchd

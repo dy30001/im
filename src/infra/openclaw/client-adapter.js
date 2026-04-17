@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
+const DEFAULT_DOWNLOAD_TIMEOUT_MS = 15_000;
 const DEFAULT_REQUEST_RETRY_ATTEMPTS = 2;
 const DEFAULT_REQUEST_RETRY_DELAY_MS = 250;
 const RETRYABLE_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
@@ -71,6 +72,7 @@ class OpenClawClientAdapter {
     fromUserId = "",
     text,
     contextToken = "",
+    clientId = "",
     timeoutMs = 15_000,
     signal,
   } = {}) {
@@ -78,6 +80,7 @@ class OpenClawClientAdapter {
     const normalizedToUserId = String(toUserId || "").trim();
     const normalizedFromUserId = String(fromUserId || "").trim();
     const normalizedContextToken = String(contextToken || "").trim();
+    const normalizedClientId = String(clientId || "").trim() || buildOpenClawClientId();
     if (!String(toUserId || "").trim() || !normalizedText) {
       return null;
     }
@@ -97,7 +100,7 @@ class OpenClawClientAdapter {
         msg: {
           from_user_id: normalizedFromUserId,
           to_user_id: normalizedToUserId,
-          client_id: buildClientId(),
+          client_id: normalizedClientId,
           message_type: 2,
           message_state: 2,
           context_token: normalizedContextToken || undefined,
@@ -113,6 +116,25 @@ class OpenClawClientAdapter {
         base_info: buildBaseInfo(),
       },
       label: "sendMessage",
+    });
+  }
+
+  async downloadMedia({
+    url,
+    timeoutMs = DEFAULT_DOWNLOAD_TIMEOUT_MS,
+    signal,
+  } = {}) {
+    return fetchBinary({
+      url,
+      token: this.token,
+      wechatUin: this.wechatUin,
+      timeoutMs,
+      fetchImpl: this.fetchImpl,
+      signal,
+      verboseLogs: this.verboseLogs,
+      retryAttempts: DEFAULT_REQUEST_RETRY_ATTEMPTS,
+      retryDelayMs: DEFAULT_REQUEST_RETRY_DELAY_MS,
+      label: "downloadMedia",
     });
   }
 
@@ -218,6 +240,78 @@ async function postJson({
   return fallbackValue;
 }
 
+async function fetchBinary({
+  url,
+  token,
+  wechatUin,
+  timeoutMs,
+  fetchImpl,
+  signal,
+  verboseLogs = false,
+  retryAttempts = 1,
+  retryDelayMs = 0,
+  label = "downloadMedia",
+}) {
+  if (typeof fetchImpl !== "function") {
+    throw new Error("OpenClaw fetch implementation is unavailable");
+  }
+
+  const normalizedUrl = String(url || "").trim();
+  if (!normalizedUrl) {
+    throw new Error("OpenClaw download URL is required");
+  }
+
+  const maxAttempts = Math.max(1, Number(retryAttempts) || 1);
+  const normalizedRetryDelayMs = Math.max(0, Number(retryDelayMs) || 0);
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const controller = new AbortController();
+    const abortHandler = () => controller.abort();
+    if (signal) {
+      if (signal.aborted) {
+        controller.abort();
+      } else {
+        signal.addEventListener("abort", abortHandler, { once: true });
+      }
+    }
+
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      if (verboseLogs) {
+        console.log(`[codex-im] openclaw=> ${label} ${maskUrl(normalizedUrl)}`);
+      }
+      const response = await fetchImpl(normalizedUrl, {
+        method: "GET",
+        headers: buildAuthHeaders({ token, wechatUin }),
+        signal: controller.signal,
+      });
+      if (!response?.ok) {
+        const error = new Error(`${label} ${response?.status || "unknown"}: download failed`);
+        error.retryable = isRetryableHttpStatus(response?.status);
+        throw error;
+      }
+
+      return {
+        buffer: Buffer.from(await response.arrayBuffer()),
+        contentType: response?.headers?.get?.("content-type") || "",
+      };
+    } catch (error) {
+      if (attempt < maxAttempts && isRetryablePostJsonError(error)) {
+        await waitForRetryDelay(normalizedRetryDelayMs * attempt, signal);
+        continue;
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      if (signal) {
+        signal.removeEventListener("abort", abortHandler);
+      }
+    }
+  }
+
+  throw new Error(`${label} failed`);
+}
+
 function buildHeaders({ token, wechatUin, bodyText }) {
   const headers = {
     ...buildAuthHeaders({ token, wechatUin }),
@@ -238,7 +332,7 @@ function buildAuthHeaders({ token, wechatUin }) {
   return headers;
 }
 
-function buildClientId() {
+function buildOpenClawClientId() {
   return `openclaw-weixin:${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
 }
 
@@ -271,8 +365,12 @@ function buildApiError(payload, label) {
     ? payload.errmsg.trim()
     : "unknown error";
   const error = new Error(`${label} errcode=${resolvedCode}: ${errmsg}`);
-  error.retryable = false;
+  error.retryable = isRetryableApiError({ label, code: resolvedCode });
   return error;
+}
+
+function isRetryableApiError({ label, code } = {}) {
+  return label === "sendMessage" && Number(code) === -2;
 }
 
 function isRetryablePostJsonError(error) {
@@ -429,7 +527,9 @@ function ensureTrailingSlash(value) {
 }
 
 module.exports = {
+  DEFAULT_DOWNLOAD_TIMEOUT_MS,
   DEFAULT_LONG_POLL_TIMEOUT_MS,
   OpenClawClientAdapter,
+  buildOpenClawClientId,
   isOpenClawCredentialError,
 };

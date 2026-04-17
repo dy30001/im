@@ -187,6 +187,70 @@ function resolveWorkspaceRootForThread(runtime, threadId) {
   return workspaceRoot;
 }
 
+function disposeInactiveReplyRunsForBinding(runtime, bindingKey, activeWorkspaceRoot) {
+  const normalizedBindingKey = String(bindingKey || "").trim();
+  const normalizedActiveWorkspaceRoot = String(activeWorkspaceRoot || "").trim();
+  if (
+    !runtime
+    || !normalizedBindingKey
+    || !normalizedActiveWorkspaceRoot
+    || !(runtime.replyCardByRunKey instanceof Map)
+    || typeof runtime.disposeReplyRunState !== "function"
+  ) {
+    return;
+  }
+
+  for (const [runKey, entry] of Array.from(runtime.replyCardByRunKey.entries())) {
+    const threadId = String(entry?.threadId || "").trim();
+    if (!threadId) {
+      continue;
+    }
+
+    const threadBindingKey = resolveBindingKeyForThread(runtime, threadId);
+    if (!threadBindingKey || threadBindingKey !== normalizedBindingKey) {
+      continue;
+    }
+
+    const threadWorkspaceRoot = getStoredThreadWorkspaceRoot(runtime, threadId);
+    if (!threadWorkspaceRoot || threadWorkspaceRoot === normalizedActiveWorkspaceRoot) {
+      continue;
+    }
+
+    runtime.disposeReplyRunState(runKey, threadId);
+  }
+}
+
+function shouldDeliverThreadEventForActiveWorkspace(runtime, threadId) {
+  const normalizedThreadId = String(threadId || "").trim();
+  if (!normalizedThreadId) {
+    return true;
+  }
+
+  const threadWorkspaceRoot = getStoredThreadWorkspaceRoot(runtime, normalizedThreadId);
+  if (!threadWorkspaceRoot) {
+    return true;
+  }
+
+  const bindingKey = resolveBindingKeyForThread(runtime, normalizedThreadId);
+  if (!bindingKey) {
+    return true;
+  }
+
+  const activeWorkspaceRoot = resolveWorkspaceRootForBinding(runtime, bindingKey);
+  if (!activeWorkspaceRoot) {
+    return true;
+  }
+
+  return activeWorkspaceRoot === threadWorkspaceRoot;
+}
+
+function getStoredThreadWorkspaceRoot(runtime, threadId) {
+  if (!runtime || !threadId) {
+    return "";
+  }
+  return String(runtime.workspaceRootByThreadId?.get(threadId) || "").trim();
+}
+
 function cleanupThreadRuntimeState(runtime, threadId) {
   if (!threadId) {
     return;
@@ -194,6 +258,8 @@ function cleanupThreadRuntimeState(runtime, threadId) {
 
   runtime.pendingApprovalByThreadId.delete(threadId);
   runtime.activeTurnIdByThreadId.delete(threadId);
+  runtime.activeTurnStartedAtByThreadId.delete(threadId);
+  runtime.lastTurnActivityAtByThreadId.delete(threadId);
   runtime.pendingChatContextByThreadId.delete(threadId);
   runtime.bindingKeyByThreadId.delete(threadId);
   runtime.workspaceRootByThreadId.delete(threadId);
@@ -207,6 +273,8 @@ function cleanupThreadRuntimeState(runtime, threadId) {
 
 function pruneRuntimeMapSizes(runtime) {
   pruneMapToLimit(runtime.activeTurnIdByThreadId, MAX_THREAD_CONTEXT_CACHE_ENTRIES);
+  pruneMapToLimit(runtime.activeTurnStartedAtByThreadId, MAX_THREAD_CONTEXT_CACHE_ENTRIES);
+  pruneMapToLimit(runtime.lastTurnActivityAtByThreadId, MAX_THREAD_CONTEXT_CACHE_ENTRIES);
   pruneMapToLimit(runtime.currentRunKeyByThreadId, MAX_THREAD_CONTEXT_CACHE_ENTRIES);
 }
 
@@ -226,9 +294,11 @@ function pruneMapToLimit(map, limit) {
 module.exports = {
   cleanupThreadRuntimeState,
   pruneRuntimeMapSizes,
+  disposeInactiveReplyRunsForBinding,
   resolveThreadIdForBinding,
   resolveWorkspaceRootForBinding,
   resolveWorkspaceRootForThread,
+  shouldDeliverThreadEventForActiveWorkspace,
   rememberSelectionContext,
   resolveSelectionContext,
   setCurrentRunKeyForThread,

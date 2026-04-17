@@ -3,12 +3,13 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.dy3000.codex-im.openclaw</string>
+  <string>__LABEL__</string>
 
   <key>ProgramArguments</key>
   <array>
     <string>__NODE_BIN__</string>
     <string>__SCRIPT_PATH__</string>
+__INSTANCE_ARG_XML__
   </array>
 
   <key>WorkingDirectory</key>
@@ -35,6 +36,10 @@
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>CODEX_IM_OPENCLAW_SUPERVISOR_DAEMONIZED</key>
     <string>1</string>
+    <key>CODEX_IM_OPENCLAW_INSTANCE_ID</key>
+    <string>__INSTANCE_ID__</string>
+    <key>CODEX_IM_OPENCLAW_ENV_FILE</key>
+    <string>__ENV_FILE__</string>
   </dict>
 </dict>
 </plist>

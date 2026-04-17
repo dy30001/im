@@ -44,6 +44,40 @@ test("readAcpxSessionIndex parses desktop-visible sessions from index.json", () 
   ]);
 });
 
+test("readAcpxSessionIndex reuses the cached parse when index.json is unchanged", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-im-acpx-cache-"));
+  const indexFile = path.join(tempDir, "index.json");
+  fs.writeFileSync(indexFile, JSON.stringify({
+    entries: [
+      {
+        file: "session-1.json",
+        acpxRecordId: "record-1",
+        acpSessionId: "session-1",
+        cwd: "/repo",
+        name: "Desktop Session",
+      },
+    ],
+  }, null, 2));
+
+  let readCalls = 0;
+  const originalReadFileSync = fs.readFileSync;
+  fs.readFileSync = (...args) => {
+    if (args[0] === indexFile) {
+      readCalls += 1;
+    }
+    return originalReadFileSync(...args);
+  };
+
+  try {
+    readAcpxSessionIndex({ indexFile });
+    readAcpxSessionIndex({ indexFile });
+  } finally {
+    fs.readFileSync = originalReadFileSync;
+  }
+
+  assert.equal(readCalls, 1);
+});
+
 test("listAcpxSessionsForWorkspace filters sessions by workspace root", () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-im-acpx-filter-"));
   const indexFile = path.join(tempDir, "index.json");

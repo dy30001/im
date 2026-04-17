@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const {
+  DEFAULT_DOWNLOAD_TIMEOUT_MS,
   OpenClawClientAdapter,
   isOpenClawCredentialError,
 } = require("../src/infra/openclaw/client-adapter");
@@ -170,6 +171,148 @@ test("OpenClawClientAdapter.sendTextMessage retries once after a transient netwo
   assert.equal(attempts, 2);
   assert.equal(capturedBodies.length, 2);
   assert.equal(capturedBodies[0]?.msg?.client_id, capturedBodies[1]?.msg?.client_id);
+});
+
+test("OpenClawClientAdapter.sendTextMessage retries once after sendMessage errcode=-2", async () => {
+  const capturedBodies = [];
+  let attempts = 0;
+  const adapter = new OpenClawClientAdapter({
+    baseUrl: "https://ilinkai.weixin.qq.com",
+    token: "token-1",
+    fetchImpl: async (_url, options) => {
+      attempts += 1;
+      capturedBodies.push(JSON.parse(String(options?.body || "{}")));
+      if (attempts === 1) {
+        return {
+          ok: true,
+          async text() {
+            return JSON.stringify({
+              errcode: -2,
+              errmsg: "unknown error",
+            });
+          },
+        };
+      }
+      return {
+        ok: true,
+        async text() {
+          return "{}";
+        },
+      };
+    },
+  });
+
+  await adapter.sendTextMessage({
+    toUserId: "wx-user-1",
+    fromUserId: "bot-account-1",
+    text: "hello",
+  });
+
+  assert.equal(attempts, 2);
+  assert.equal(capturedBodies.length, 2);
+  assert.equal(capturedBodies[0]?.msg?.client_id, capturedBodies[1]?.msg?.client_id);
+});
+
+test("OpenClawClientAdapter.sendTextMessage respects an explicit clientId", async () => {
+  const capturedBodies = [];
+  const adapter = new OpenClawClientAdapter({
+    baseUrl: "https://ilinkai.weixin.qq.com",
+    token: "token-1",
+    fetchImpl: async (_url, options) => {
+      capturedBodies.push(JSON.parse(String(options?.body || "{}")));
+      return {
+        ok: true,
+        async text() {
+          return "{}";
+        },
+      };
+    },
+  });
+
+  await adapter.sendTextMessage({
+    toUserId: "wx-user-1",
+    fromUserId: "bot-account-1",
+    text: "hello",
+    clientId: "stable-client-id",
+  });
+
+  assert.equal(capturedBodies.length, 1);
+  assert.equal(capturedBodies[0]?.msg?.client_id, "stable-client-id");
+});
+
+test("OpenClawClientAdapter.downloadMedia sends authenticated GET requests", async () => {
+  const captured = [];
+  const adapter = new OpenClawClientAdapter({
+    baseUrl: "https://ilinkai.weixin.qq.com",
+    token: "token-1",
+    wechatUin: "uin-1",
+    fetchImpl: async (url, options) => {
+      captured.push({ url, options });
+      return {
+        ok: true,
+        headers: {
+          get(name) {
+            return name === "content-type" ? "application/pdf" : "";
+          },
+        },
+        async arrayBuffer() {
+          return Buffer.from("pdf-data");
+        },
+      };
+    },
+  });
+
+  const result = await adapter.downloadMedia({
+    url: "https://cdn.example.com/file/report.pdf",
+  });
+
+  assert.deepEqual(result, {
+    buffer: Buffer.from("pdf-data"),
+    contentType: "application/pdf",
+  });
+  assert.equal(captured.length, 1);
+  assert.equal(captured[0].url, "https://cdn.example.com/file/report.pdf");
+  assert.equal(captured[0].options?.method, "GET");
+  assert.equal(captured[0].options?.headers?.Authorization, "Bearer token-1");
+  assert.equal(captured[0].options?.headers?.AuthorizationType, "ilink_bot_token");
+  assert.equal(captured[0].options?.headers?.["X-WECHAT-UIN"], "uin-1");
+  assert.ok(captured[0].options?.signal);
+});
+
+test("OpenClawClientAdapter.downloadMedia retries once after a transient network error", async () => {
+  let attempts = 0;
+  const adapter = new OpenClawClientAdapter({
+    baseUrl: "https://ilinkai.weixin.qq.com",
+    token: "token-1",
+    fetchImpl: async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw new Error("fetch failed");
+      }
+      return {
+        ok: true,
+        headers: {
+          get() {
+            return "image/png";
+          },
+        },
+        async arrayBuffer() {
+          return Buffer.from("image-data");
+        },
+      };
+    },
+  });
+
+  const result = await adapter.downloadMedia({
+    url: "https://cdn.example.com/file/image.png",
+    timeoutMs: DEFAULT_DOWNLOAD_TIMEOUT_MS,
+  });
+
+  assert.equal(attempts, 2);
+  assert.deepEqual(result, {
+    buffer: Buffer.from("image-data"),
+    contentType: "image/png",
+  });
 });
 
 test("isOpenClawCredentialError recognizes session timeout style failures", () => {

@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-LOCK_DIR="${HOME}/.codex-im/openclaw-bot.lock"
-SUPERVISOR_PID_FILE="${LOCK_DIR}/pid"
-CHILD_PID_FILE="${LOCK_DIR}/child-pid"
-LABEL="com.dy3000.codex-im.openclaw"
-LAUNCH_AGENT_PLIST="${HOME}/Library/LaunchAgents/${LABEL}.plist"
-LAUNCHD_TARGET="gui/$(id -u)/${LABEL}"
+SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" && pwd)
+APP_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
+source "$APP_ROOT/scripts/lib/openclaw-instance.sh"
+
+setup_openclaw_instance_env "$APP_ROOT" "${1:-}"
+
+LOCK_DIR="$OPENCLAW_LOCK_DIR"
+SUPERVISOR_PID_FILE="$OPENCLAW_SUPERVISOR_PID_FILE"
+CHILD_PID_FILE="$OPENCLAW_CHILD_PID_FILE"
+LAUNCH_AGENT_PLIST="$OPENCLAW_LAUNCH_AGENT_PLIST"
+LAUNCHD_TARGET="$OPENCLAW_LAUNCHD_TARGET"
 
 read_pid_file() {
   local file_path="$1"
@@ -61,9 +66,7 @@ main() {
 
   local matched_pids
   matched_pids="$(
-    ps aux 2>/dev/null \
-      | grep -E "start-openclaw-bot\.js|codex-im.js openclaw-bot" \
-      | grep -v grep \
+    list_openclaw_process_lines all \
       | awk '{print $2}' || true
   )"
   if [ -n "$matched_pids" ]; then

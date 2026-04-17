@@ -5,16 +5,19 @@ const { pathMatchesWorkspaceRoot, normalizeWorkspacePath } = require("../../shar
 
 const DEFAULT_ACPX_SESSIONS_DIR = path.join(os.homedir(), ".acpx", "sessions");
 const DEFAULT_ACPX_SESSION_INDEX_FILE = path.join(DEFAULT_ACPX_SESSIONS_DIR, "index.json");
+const ACPX_INDEX_CACHE = new Map();
+const ACPX_RECORD_CACHE = new Map();
 
 function readAcpxSessionIndex({ indexFile = DEFAULT_ACPX_SESSION_INDEX_FILE } = {}) {
-  try {
-    const raw = fs.readFileSync(indexFile, "utf8");
-    const parsed = JSON.parse(raw);
-    const entries = Array.isArray(parsed?.entries) ? parsed.entries : [];
-    return entries.map(normalizeAcpxIndexEntry).filter(Boolean);
-  } catch {
-    return [];
-  }
+  return readCachedNormalizedJsonFile({
+    filePath: indexFile,
+    cache: ACPX_INDEX_CACHE,
+    fallbackValue: [],
+    normalize: (parsed) => {
+      const entries = Array.isArray(parsed?.entries) ? parsed.entries : [];
+      return entries.map(normalizeAcpxIndexEntry).filter(Boolean);
+    },
+  });
 }
 
 function listAcpxSessionsForWorkspace(workspaceRoot, { indexFile = DEFAULT_ACPX_SESSION_INDEX_FILE } = {}) {
@@ -32,14 +35,13 @@ function readAcpxSessionRecord(record, { sessionsDir = DEFAULT_ACPX_SESSIONS_DIR
     return null;
   }
 
-  try {
-    const filePath = path.join(sessionsDir, fileName);
-    const raw = fs.readFileSync(filePath, "utf8");
-    const parsed = JSON.parse(raw);
-    return normalizeAcpxSessionRecord(parsed, filePath);
-  } catch {
-    return null;
-  }
+  const filePath = path.join(sessionsDir, fileName);
+  return readCachedNormalizedJsonFile({
+    filePath,
+    cache: ACPX_RECORD_CACHE,
+    fallbackValue: null,
+    normalize: (parsed) => normalizeAcpxSessionRecord(parsed, filePath),
+  });
 }
 
 function extractRecentConversationFromAcpxSession(sessionRecord, limit = 6) {
@@ -138,6 +140,43 @@ function normalizeIsoDate(value) {
   }
   const parsed = new Date(normalized);
   return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : "";
+}
+
+function readCachedNormalizedJsonFile({
+  filePath,
+  cache,
+  fallbackValue,
+  normalize,
+}) {
+  const normalizedPath = typeof filePath === "string" ? filePath.trim() : "";
+  if (!normalizedPath) {
+    return fallbackValue;
+  }
+
+  let stats = null;
+  try {
+    stats = fs.statSync(normalizedPath);
+  } catch {
+    cache.delete(normalizedPath);
+    return fallbackValue;
+  }
+
+  const version = `${stats.mtimeMs}:${stats.size}`;
+  const cached = cache.get(normalizedPath);
+  if (cached?.version === version) {
+    return cached.value;
+  }
+
+  try {
+    const raw = fs.readFileSync(normalizedPath, "utf8");
+    const parsed = JSON.parse(raw);
+    const value = normalize(parsed);
+    cache.set(normalizedPath, { version, value });
+    return value;
+  } catch {
+    cache.delete(normalizedPath);
+    return fallbackValue;
+  }
 }
 
 module.exports = {

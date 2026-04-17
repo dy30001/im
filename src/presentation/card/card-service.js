@@ -12,8 +12,9 @@ const {
   summarizeCardToText,
 } = require("./builders");
 
-const DEFAULT_OPENCLAW_PROGRESS_NOTICE_DELAY_MS = 1500;
+const DEFAULT_OPENCLAW_PROGRESS_NOTICE_DELAY_MS = 200;
 const DEFAULT_OPENCLAW_PROGRESS_FOLLOWUP_DELAY_MS = 5 * 60 * 1000;
+const DEFAULT_OPENCLAW_REPLY_FLUSH_DELAY_MS = 50;
 const DEFAULT_OPENCLAW_PROGRESS_NOTICE_TEXT = "已收到，正在处理，请稍等。";
 const DEFAULT_OPENCLAW_PROGRESS_FOLLOWUP_TEXT = "已经处理 5 分钟了，还在继续，请稍等。";
 
@@ -262,6 +263,7 @@ async function upsertAssistantReplyCard(
   const preferredRunKey = codexMessageUtils.buildRunKey(threadId, resolvedTurnId);
   let runKey = preferredRunKey;
   let existing = runtime.replyCardByRunKey.get(runKey) || null;
+  const pendingContext = runtime.pendingChatContextByThreadId.get(threadId) || null;
 
   if (!existing) {
     const currentRunKey = runtime.currentRunKeyByThreadId.get(threadId) || "";
@@ -289,7 +291,7 @@ async function upsertAssistantReplyCard(
       state: "streaming",
       threadId,
       turnId: resolvedTurnId,
-      progressNoticeStage: 0,
+      progressNoticeStage: shouldSkipInitialOpenClawProgressNotice(pendingContext) ? 1 : 0,
     };
   }
 
@@ -305,43 +307,28 @@ async function upsertAssistantReplyCard(
   if (resolvedTurnId) {
     existing.turnId = resolvedTurnId;
   }
+  if (shouldSkipInitialOpenClawProgressNotice(pendingContext) && Number(existing.progressNoticeStage || 0) < 1) {
+    existing.progressNoticeStage = 1;
+  }
 
   runtime.setReplyCardEntry(runKey, existing);
   runtime.setCurrentRunKeyForThread(threadId, runKey);
 
   if (!runtime.supportsInteractiveCards()) {
+    const isTerminalState = existing.state === "completed" || existing.state === "failed";
     if (shouldScheduleOpenClawProgressNotice(runtime, existing)) {
       scheduleOpenClawProgressNotices(runtime, runKey, existing);
     }
-    if (runtime.config.openclawStreamingOutput && existing.text) {
-      const unsentText = existing.text.slice(existing.sentTextLength || 0).trim();
-      if (unsentText) {
-        await runtime.sendTextMessage({
-          chatId: entryChatId(existing, chatId),
-          replyToMessageId: existing.replyToMessageId,
-          contextToken: existing.contextToken,
-          text: unsentText,
-        });
-        existing.sentTextLength = existing.text.length;
-        runtime.setReplyCardEntry(runKey, existing);
-        clearProgressNoticeTimers(runtime, runKey);
-      }
-    }
-    if (existing.state === "completed" || existing.state === "failed") {
+    if (runtime.config.openclawStreamingOutput && hasReplyText(existing)) {
       clearProgressNoticeTimers(runtime, runKey);
-      const remainingText = existing.text.slice(existing.sentTextLength || 0).trim();
-      const fallbackText = remainingText || (
-        !existing.sentTextLength ? (existing.text || (existing.state === "failed" ? "执行失败" : "执行完成")) : ""
-      );
-      if (fallbackText) {
-        await runtime.sendTextMessage({
-          chatId: entryChatId(existing, chatId),
-          replyToMessageId: existing.replyToMessageId,
-          contextToken: existing.contextToken,
-          text: fallbackText,
-        });
-      }
-      runtime.disposeReplyRunState(runKey, threadId);
+    }
+    if (isTerminalState) {
+      clearProgressNoticeTimers(runtime, runKey);
+      await scheduleOpenClawReplyFlush(runtime, runKey, { immediate: true });
+      return;
+    }
+    if (runtime.config.openclawStreamingOutput && hasUnsentReplyText(existing)) {
+      await scheduleOpenClawReplyFlush(runtime, runKey);
     }
     return;
   }
@@ -390,8 +377,155 @@ function clearReplyFlushTimer(runtime, runKey) {
   runtime.replyFlushTimersByRunKey.delete(runKey);
 }
 
+async function scheduleOpenClawReplyFlush(runtime, runKey, { immediate = false } = {}) {
+  const entry = runtime.replyCardByRunKey.get(runKey);
+  if (!entry) {
+    return;
+  }
+
+  if (isReplyFlushInFlight(runtime, runKey)) {
+    return;
+  }
+
+  if (immediate) {
+    clearReplyFlushTimer(runtime, runKey);
+    await flushOpenClawReplyText(runtime, runKey);
+    return;
+  }
+
+  if (runtime.replyFlushTimersByRunKey.has(runKey)) {
+    return;
+  }
+
+  const delayMs = resolveOpenClawReplyFlushDelayMs(runtime);
+  const timer = setTimeout(() => {
+    let flushedSuccessfully = false;
+    flushOpenClawReplyText(runtime, runKey)
+      .then(() => {
+        flushedSuccessfully = true;
+      })
+      .catch((error) => {
+        console.error(`[codex-im] failed to flush OpenClaw reply text: ${error.message}`);
+      })
+      .finally(() => {
+        const currentTimer = runtime.replyFlushTimersByRunKey.get(runKey);
+        if (currentTimer === timer) {
+          runtime.replyFlushTimersByRunKey.delete(runKey);
+        }
+        const currentEntry = runtime.replyCardByRunKey.get(runKey);
+        if (flushedSuccessfully && currentEntry && shouldScheduleOpenClawReplyFlush(runtime, currentEntry)) {
+          scheduleOpenClawReplyFlush(runtime, runKey).catch((error) => {
+            console.error(`[codex-im] failed to schedule OpenClaw reply text flush: ${error.message}`);
+          });
+        }
+      });
+  }, delayMs);
+
+  if (typeof timer.unref === "function") {
+    timer.unref();
+  }
+
+  runtime.replyFlushTimersByRunKey.set(runKey, timer);
+}
+
+async function flushOpenClawReplyText(runtime, runKey) {
+  const entry = runtime.replyCardByRunKey.get(runKey);
+  if (!entry) {
+    return;
+  }
+
+  const flushSet = getReplyFlushInFlightSet(runtime);
+  flushSet.add(runKey);
+  try {
+    const text = String(entry.text || "");
+    const sentTextLength = normalizeSentTextLength(entry.sentTextLength, text.length);
+    const unsentText = text.slice(sentTextLength).trim();
+    const isTerminalState = entry.state === "completed" || entry.state === "failed";
+
+    if (unsentText) {
+      await runtime.sendTextMessage({
+        chatId: entryChatId(entry, entry.chatId),
+        replyToMessageId: entry.replyToMessageId,
+        contextToken: entry.contextToken,
+        text: unsentText,
+      });
+      entry.sentTextLength = text.length;
+      runtime.setReplyCardEntry(runKey, entry);
+    }
+
+    if (!isTerminalState) {
+      return;
+    }
+
+    const fallbackText = unsentText
+      ? ""
+      : sentTextLength > 0
+        ? ""
+        : (text || (entry.state === "failed" ? "执行失败" : "执行完成"));
+    if (fallbackText) {
+      await runtime.sendTextMessage({
+        chatId: entryChatId(entry, entry.chatId),
+        replyToMessageId: entry.replyToMessageId,
+        contextToken: entry.contextToken,
+        text: fallbackText,
+      });
+      entry.sentTextLength = text.length || entry.sentTextLength || 0;
+      runtime.setReplyCardEntry(runKey, entry);
+    }
+
+    runtime.disposeReplyRunState(runKey, entry.threadId);
+  } finally {
+    flushSet.delete(runKey);
+  }
+}
+
+function shouldScheduleOpenClawReplyFlush(runtime, entry) {
+  if (!entry) {
+    return false;
+  }
+  if (entry.state === "completed" || entry.state === "failed") {
+    return true;
+  }
+  return Boolean(runtime?.config?.openclawStreamingOutput) && hasUnsentReplyText(entry);
+}
+
+function hasReplyText(entry) {
+  return Boolean(String(entry?.text || "").trim());
+}
+
+function hasUnsentReplyText(entry) {
+  const text = String(entry?.text || "");
+  const sentTextLength = normalizeSentTextLength(entry?.sentTextLength, text.length);
+  if (sentTextLength >= text.length) {
+    return false;
+  }
+  return Boolean(text.slice(sentTextLength).trim());
+}
+
+function normalizeSentTextLength(sentTextLength, maxLength) {
+  const normalized = Number(sentTextLength);
+  if (!Number.isFinite(normalized) || normalized <= 0) {
+    return 0;
+  }
+  return Math.min(Math.floor(normalized), Math.max(0, maxLength));
+}
+
+function isReplyFlushInFlight(runtime, runKey) {
+  return getReplyFlushInFlightSet(runtime).has(runKey);
+}
+
+function getReplyFlushInFlightSet(runtime) {
+  if (!(runtime._replyFlushInFlightRunKeys instanceof Set)) {
+    runtime._replyFlushInFlightRunKeys = new Set();
+  }
+  return runtime._replyFlushInFlightRunKeys;
+}
+
 function shouldScheduleOpenClawProgressNotice(runtime, entry) {
   if (!runtime || (typeof runtime.supportsInteractiveCards === "function" && runtime.supportsInteractiveCards())) {
+    return false;
+  }
+  if (runtime?.config?.openclaw?.minimalMode) {
     return false;
   }
   if (!entry || entry.state !== "streaming") {
@@ -548,6 +682,14 @@ function resolveOpenClawProgressFollowupDelayMs(runtime) {
     return rawDelay;
   }
   return DEFAULT_OPENCLAW_PROGRESS_FOLLOWUP_DELAY_MS;
+}
+
+function resolveOpenClawReplyFlushDelayMs(runtime) {
+  const rawDelay = Number(runtime?.config?.openclawReplyFlushDelayMs);
+  if (Number.isFinite(rawDelay) && rawDelay >= 0) {
+    return rawDelay;
+  }
+  return DEFAULT_OPENCLAW_REPLY_FLUSH_DELAY_MS;
 }
 
 function buildOpenClawProgressNoticeText() {
@@ -724,6 +866,10 @@ function buildApprovalFallbackText(approval) {
 
 function entryChatId(entry, fallbackChatId) {
   return String(entry?.chatId || fallbackChatId || "").trim();
+}
+
+function shouldSkipInitialOpenClawProgressNotice(pendingContext) {
+  return Boolean(pendingContext?.openclawReceiptAcked);
 }
 
 

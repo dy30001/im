@@ -103,8 +103,10 @@ npm run openclaw-bot:launchd
 
 这个模式会把 `openclaw-bot` 安装成 macOS LaunchAgent。  
 supervisor 或 child 进程退出时都会自动重启，不需要你手动再起服务。  
-supervisor 也会持续检查心跳；默认连续 3 小时没有新的轮询 / 发送心跳时，会判定服务卡住并自动重启。  
-可通过 `.env` 里的 `CODEX_IM_OPENCLAW_HEARTBEAT_TIMEOUT_MS` 和 `CODEX_IM_OPENCLAW_HEARTBEAT_CHECK_INTERVAL_MS` 调整。
+supervisor 也会持续检查心跳；默认连续 10 分钟没有新的轮询 / 发送心跳时，会判定服务卡住并自动重启。  
+如果子进程启动后连续 3 分钟都没有建立首次心跳，也会按启动卡死处理并拉起。  
+运行中的活跃任务默认超过 30 分钟没有新进展，也会自动重启子进程。  
+可通过 `.env` 里的 `CODEX_IM_OPENCLAW_HEARTBEAT_TIMEOUT_MS`、`CODEX_IM_OPENCLAW_STARTUP_HEARTBEAT_TIMEOUT_MS`、`CODEX_IM_OPENCLAW_HEARTBEAT_CHECK_INTERVAL_MS`、`CODEX_IM_OPENCLAW_TURN_STALL_TIMEOUT_MS` 和 `CODEX_IM_OPENCLAW_TURN_STALL_CHECK_INTERVAL_MS` 调整。
 
 查看运行状态：
 
@@ -154,6 +156,44 @@ npm run openclaw-bot:restart
 npm run watch:openclaw-bot
 ```
 
+## 两个微信实例
+
+支持按实例 ID 跑多个彼此独立的 OpenClaw 实例。推荐做法是给每个微信号一个实例 ID，例如 `wx1` 和 `wx2`。
+
+实例化后，这些文件会自动隔离：
+
+- `~/.codex-im/openclaw-credentials.<instance>.json`
+- `~/.codex-im/openclaw-sessions.<instance>.json`
+- `~/.codex-im/openclaw-bot.<instance>.lock/`
+- `/tmp/codex-im-openclaw-<instance>.log`
+- `com.dy3000.codex-im.openclaw.<instance>`
+
+安装 `wx1`：
+
+```bash
+npm run openclaw-bot:launchd -- wx1
+```
+
+安装 `wx2`：
+
+```bash
+npm run openclaw-bot:launchd -- wx2
+```
+
+查看某个实例状态：
+
+```bash
+npm run openclaw-bot:status -- wx1
+npm run openclaw-bot:status -- wx2
+```
+
+如果你想给某个实例写单独配置，可创建：
+
+- `~/.codex-im/openclaw-wx1.env`
+- `~/.codex-im/openclaw-wx2.env`
+
+脚本会先加载公共 `.env`，再加载对应实例 env 文件。
+
 ## 微信里常用命令
 
 - `/codex bind /绝对路径`
@@ -188,7 +228,8 @@ npm run watch:openclaw-bot
 检查 `.env` 里的 `CODEX_IM_OPENCLAW_TOKEN` 是否非空；如果有旧 token，可以先清空再重启。
 
 2. 扫码后仍未连接  
-重启一次进程，确认本地凭据文件已生成：`~/.codex-im/openclaw-credentials.json`。
+重启一次进程，确认本地凭据文件已生成：`~/.codex-im/openclaw-credentials.json`。  
+如果你跑的是多实例模式，则对应文件会变成 `~/.codex-im/openclaw-credentials.<instance>.json`。
 
 3. 发消息后没有回复  
 先看服务是否在跑，再看 `openclaw-bot:status` 和日志尾部。
@@ -215,4 +256,3 @@ tail -f /tmp/codex-im-openclaw.log
 - 不要把 `.env`、token、密钥提交到 Git。
 - 默认日志不会打印敏感凭据。
 - 如果你打算公开仓库，请确保本地凭据文件和日志文件没有被提交进版本库。
-
