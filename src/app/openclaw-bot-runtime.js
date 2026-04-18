@@ -4,43 +4,8 @@ const {
 } = require("../infra/config/config");
 const { SessionStore } = require("../infra/storage/session-store");
 const { CodexRpcClient } = require("../infra/codex/rpc-client");
-const {
-  buildCardResponse,
-  buildCardToast,
-  buildEffortInfoText,
-  buildEffortListText,
-  buildEffortValidationErrorText,
-  buildHelpCardText,
-  buildModelInfoText,
-  buildModelListText,
-  buildModelValidationErrorText,
-  buildStatusPanelCard,
-  buildThreadMessagesSummary,
-  buildThreadPickerCard,
-  buildThreadPickerText,
-  buildThreadSyncText,
-  buildWorkspaceBrowserCard,
-  buildWorkspaceBindingsCard,
-  listBoundWorkspaces,
-} = require("../presentation/card/builders");
-const {
-  addPendingReaction,
-  clearPendingReactionForBinding,
-  clearPendingReactionForThread,
-  disposeReplyRunState,
-  handleCardAction,
-  movePendingReactionToThread,
-  patchInteractiveCard,
-  queueCardActionWithFeedback,
-  runCardActionTask,
-  sendCardActionFeedback,
-  sendCardActionFeedbackByContext,
-  sendInfoCardMessage,
-  sendInteractiveApprovalCard,
-  sendInteractiveCard,
-  updateInteractiveCard,
-  upsertAssistantReplyCard,
-} = require("../presentation/card/card-service");
+const cardBuilders = require("../presentation/card/builders");
+const cardService = require("../presentation/card/card-service");
 const {
   OpenClawClientAdapter,
   buildOpenClawClientId,
@@ -52,7 +17,11 @@ const desktopSessionBridge = require("../infra/acpx/session-bridge");
 const runtimeCommands = require("./command-dispatcher");
 const {
   attachRuntimeForwarders: attachSharedRuntimeForwarders,
+  buildCommonPlainForwarders,
+  buildCommonRuntimeFirstForwarders,
   initializeCommonRuntimeState,
+  startRuntimeCodex,
+  stopRuntime,
 } = require("./runtime-base");
 const {
   applyOpenClawPollResponse,
@@ -128,8 +97,7 @@ class OpenClawBotRuntime {
   async start() {
     this.validateConfig();
     await this.ensureOpenClawCredentials();
-    await this.codex.connect();
-    await this.codex.initialize();
+    await startRuntimeCodex(this);
     await this.markHeartbeat("runtime-ready");
     this.startPolling();
     this.startThreadSyncLoop();
@@ -138,64 +106,31 @@ class OpenClawBotRuntime {
   }
 
   async stop() {
-    if (this.stopPromise) {
-      return this.stopPromise;
-    }
+    return stopRuntime(this, {
+      beforeStop: async () => {
+        this.stopTurnStallWatchdog();
 
-    this.isStopping = true;
-    this.stopPromise = (async () => {
-      for (const timer of this.replyFlushTimersByRunKey.values()) {
-        clearTimeout(timer);
-      }
-      this.replyFlushTimersByRunKey.clear();
-      for (const timer of this.replyProgressTimersByRunKey.values()) {
-        clearTimeout(timer);
-      }
-      this.replyProgressTimersByRunKey.clear();
-      for (const timer of this.replyProgressFollowupTimersByRunKey.values()) {
-        clearTimeout(timer);
-      }
-      this.replyProgressFollowupTimersByRunKey.clear();
-      this.stopTurnStallWatchdog();
-
-      if (this.pollAbortController) {
-        this.pollAbortController.abort();
-      }
-
-      if (this.pollLoopPromise) {
-        await this.pollLoopPromise.catch((error) => {
-          if (error?.name !== "AbortError") {
-            console.error(`[codex-im] openclaw poll loop stopped with error: ${error.message}`);
-          }
-        });
-      }
-
-      if (this.threadSyncLoopPromise) {
-        await this.threadSyncLoopPromise.catch((error) => {
-          if (error?.name !== "AbortError") {
-            console.error(`[codex-im] openclaw thread sync loop stopped with error: ${error.message}`);
-          }
-        });
-      }
-
-      try {
-        await this.codex.close();
-      } catch (error) {
-        console.error(`[codex-im] failed to close Codex client: ${error.message}`);
-      }
-
-      try {
-        if (typeof this.sessionStore.close === "function") {
-          await this.sessionStore.close();
-        } else {
-          await this.sessionStore.flush();
+        if (this.pollAbortController) {
+          this.pollAbortController.abort();
         }
-      } catch (error) {
-        console.error(`[codex-im] failed to close session store: ${error.message}`);
-      }
-    })();
 
-    return this.stopPromise;
+        if (this.pollLoopPromise) {
+          await this.pollLoopPromise.catch((error) => {
+            if (error?.name !== "AbortError") {
+              console.error(`[codex-im] openclaw poll loop stopped with error: ${error.message}`);
+            }
+          });
+        }
+
+        if (this.threadSyncLoopPromise) {
+          await this.threadSyncLoopPromise.catch((error) => {
+            if (error?.name !== "AbortError") {
+              console.error(`[codex-im] openclaw thread sync loop stopped with error: ${error.message}`);
+            }
+          });
+        }
+      },
+    });
   }
 
   validateConfig() {
@@ -584,105 +519,22 @@ class OpenClawBotRuntime {
 function attachRuntimeForwarders() {
   const proto = OpenClawBotRuntime.prototype;
 
-  const plainForwarders = {
-    buildCardResponse,
-    buildCardToast,
-    buildEffortInfoText,
-    buildEffortListText,
-    buildEffortValidationErrorText,
-    buildHelpCardText,
-    buildModelInfoText,
-    buildModelListText,
-    buildModelValidationErrorText,
-    buildStatusPanelCard,
-    buildThreadMessagesSummary,
-    buildThreadPickerCard,
-    buildThreadPickerText,
-    buildThreadSyncText,
-    buildWorkspaceBrowserCard,
-    buildWorkspaceBindingsCard,
-    listBoundWorkspaces,
-  };
-
-  const runtimeFirstForwarders = {
-    dispatchTextCommand: runtimeCommands.dispatchTextCommand,
-    resolveWorkspaceContext: workspaceRuntime.resolveWorkspaceContext,
-    resolveWorkspaceThreadState: threadRuntime.resolveWorkspaceThreadState,
-    ensureThreadAndSendMessage: threadRuntime.ensureThreadAndSendMessage,
-    ensureThreadResumed: threadRuntime.ensureThreadResumed,
-    resolveWorkspaceRootForBinding: runtimeState.resolveWorkspaceRootForBinding,
-    resolveThreadIdForBinding: runtimeState.resolveThreadIdForBinding,
-    setThreadBindingKey: runtimeState.setThreadBindingKey,
-    setThreadWorkspaceRoot: runtimeState.setThreadWorkspaceRoot,
-    setPendingBindingContext: runtimeState.setPendingBindingContext,
-    setPendingThreadContext: runtimeState.setPendingThreadContext,
-    setReplyCardEntry: runtimeState.setReplyCardEntry,
-    setCurrentRunKeyForThread: runtimeState.setCurrentRunKeyForThread,
-    rememberSelectionContext: runtimeState.rememberSelectionContext,
-    resolveSelectionContext: runtimeState.resolveSelectionContext,
-    disposeInactiveReplyRunsForBinding: runtimeState.disposeInactiveReplyRunsForBinding,
-    resolveWorkspaceRootForThread: runtimeState.resolveWorkspaceRootForThread,
-    shouldDeliverThreadEventForActiveWorkspace: runtimeState.shouldDeliverThreadEventForActiveWorkspace,
-    rememberApprovalPrefixForWorkspace: approvalPolicyRuntime.rememberApprovalPrefixForWorkspace,
-    shouldAutoApproveRequest: approvalPolicyRuntime.shouldAutoApproveRequest,
-    tryAutoApproveRequest: approvalPolicyRuntime.tryAutoApproveRequest,
-    applyApprovalDecision: approvalRuntime.applyApprovalDecision,
-    handleBindCommand: workspaceRuntime.handleBindCommand,
-    handleBrowseCommand: workspaceRuntime.handleBrowseCommand,
-    handleWhereCommand: workspaceRuntime.handleWhereCommand,
-    showStatusPanel: workspaceRuntime.showStatusPanel,
-    handleMessageCommand: workspaceRuntime.handleMessageCommand,
-    handleHelpCommand: workspaceRuntime.handleHelpCommand,
-    handleUnknownCommand: workspaceRuntime.handleUnknownCommand,
-    handleThreadsCommand: workspaceRuntime.handleThreadsCommand,
-    handleWorkspacesCommand: workspaceRuntime.handleWorkspacesCommand,
-    showThreadPicker: workspaceRuntime.showThreadPicker,
-    handleNewCommand: threadRuntime.handleNewCommand,
-    handleSwitchCommand: threadRuntime.handleSwitchCommand,
-    handleRemoveCommand: workspaceRuntime.handleRemoveCommand,
-    handleSendCommand: workspaceRuntime.handleSendCommand,
-    handleModelCommand: workspaceRuntime.handleModelCommand,
-    handleEffortCommand: workspaceRuntime.handleEffortCommand,
-    refreshWorkspaceThreads: threadRuntime.refreshWorkspaceThreads,
-    getWorkspaceThreadRefreshState: threadRuntime.getWorkspaceThreadRefreshState,
-    describeWorkspaceStatus: threadRuntime.describeWorkspaceStatus,
-    switchThreadById: threadRuntime.switchThreadById,
-    handleStopCommand: eventsRuntime.handleStopCommand,
-    handleApprovalCommand: approvalRuntime.handleApprovalCommand,
-    deliverToProvider: eventsRuntime.deliverToProvider,
-    clearQueuedMessagesForBinding: appDispatcher.clearQueuedMessagesForBinding,
-    drainQueuedMessagesForBinding: appDispatcher.drainQueuedMessagesForBinding,
-    processQueuedNormalizedTextEvent: appDispatcher.processQueuedNormalizedTextEvent,
-    sendInfoCardMessage,
-    sendInteractiveApprovalCard,
-    updateInteractiveCard,
-    sendInteractiveCard,
-    patchInteractiveCard,
-    handleCardAction,
-    dispatchCardAction: runtimeCommands.dispatchCardAction,
-    handlePanelCardAction: runtimeCommands.handlePanelCardAction,
-    handleThreadCardAction: runtimeCommands.handleThreadCardAction,
-    handleWorkspaceCardAction: runtimeCommands.handleWorkspaceCardAction,
-    queueCardActionWithFeedback,
-    runCardActionTask,
-    handleApprovalCardActionAsync: approvalRuntime.handleApprovalCardActionAsync,
-    sendCardActionFeedbackByContext,
-    sendCardActionFeedback,
-    switchWorkspaceByPath: workspaceRuntime.switchWorkspaceByPath,
-    removeWorkspaceByPath: workspaceRuntime.removeWorkspaceByPath,
-    upsertAssistantReplyCard,
-    addPendingReaction,
-    movePendingReactionToThread,
-    clearPendingReactionForBinding,
-    clearPendingReactionForThread,
-    disposeReplyRunState,
-    cleanupThreadRuntimeState: runtimeState.cleanupThreadRuntimeState,
-    pruneRuntimeMapSizes: runtimeState.pruneRuntimeMapSizes,
-  };
-
   attachSharedRuntimeForwarders(proto, {
-    plainForwarders,
-    runtimeFirstForwarders,
+    plainForwarders: buildCommonPlainForwarders(cardBuilders, [
+      "buildThreadPickerText",
+      "buildThreadSyncText",
+    ]),
+    runtimeFirstForwarders: buildCommonRuntimeFirstForwarders({
+      runtimeCommands,
+      workspaceRuntime,
+      threadRuntime,
+      runtimeState,
+      approvalPolicyRuntime,
+      approvalRuntime,
+      eventsRuntime,
+      appDispatcher,
+      cardService,
+    }),
   });
 }
 

@@ -8,20 +8,15 @@ const {
 } = require("../../shared/workspace-paths");
 const {
   extractBindPath,
-  extractEffortValue,
-  extractModelValue,
   extractRemoveWorkspacePath,
   extractSendPath,
   extractNaturalBrowseSelectionIndex,
-  extractNaturalWorkspaceSelectionIndex,
-  isNaturalSelectionTextCompatibleWithCommand,
 } = require("../../shared/command-parsing");
-const {
-  resolveEffectiveModelForEffort,
-} = require("../../shared/model-catalog");
 const codexMessageUtils = require("../../infra/codex/message-utils");
 const { buildMissingWorkspaceGuideText, formatFailureText } = require("../../shared/error-text");
 const browserRuntime = require("./browser-service");
+const workspaceBindingRuntime = require("./workspace-binding-service");
+const workspaceSettingsCommandRuntime = require("./workspace-settings-command-service");
 const settingsRuntime = require("./settings-service");
 
 const MAX_FEISHU_UPLOAD_FILE_BYTES = 30 * 1024 * 1024;
@@ -534,180 +529,6 @@ async function handleSendCommand(runtime, normalized) {
   }
 }
 
-async function handleModelCommand(runtime, normalized) {
-  const workspaceContext = await resolveCodexSettingWorkspaceContext(runtime, normalized);
-  if (!workspaceContext) {
-    return;
-  }
-  const { bindingKey, workspaceRoot } = workspaceContext;
-
-  const rawModel = extractModelValue(normalized.text);
-  if (!rawModel) {
-    const current = runtime.getCodexParamsForWorkspace(bindingKey, workspaceRoot);
-    const availableModelsResult = await settingsRuntime.loadAvailableModels(runtime, {
-      forceRefresh: false,
-    });
-    await runtime.sendInfoCardMessage({
-      chatId: normalized.chatId,
-      replyToMessageId: normalized.messageId,
-      text: runtime.buildModelInfoText(workspaceRoot, current, availableModelsResult),
-    });
-    return;
-  }
-
-  const modelUpdateDirective = parseUpdateDirective(rawModel);
-  if (modelUpdateDirective) {
-    const availableModelsResult = await settingsRuntime.loadAvailableModels(runtime, {
-      forceRefresh: true,
-    });
-    await runtime.sendInfoCardMessage({
-      chatId: normalized.chatId,
-      replyToMessageId: normalized.messageId,
-      text: runtime.buildModelListText(workspaceRoot, availableModelsResult, {
-        refreshed: true,
-      }),
-    });
-    return;
-  }
-
-  const availableModelsResult = await settingsRuntime.loadAvailableModelsForSetting(runtime, normalized, {
-    settingType: "model",
-  });
-  if (!availableModelsResult) {
-    return;
-  }
-
-  const resolvedModel = settingsRuntime.resolveRequestedModel(availableModelsResult.models, rawModel);
-  if (!resolvedModel) {
-    await runtime.sendInfoCardMessage({
-      chatId: normalized.chatId,
-      replyToMessageId: normalized.messageId,
-      text: runtime.buildModelValidationErrorText(workspaceRoot, rawModel, availableModelsResult.models),
-    });
-    return;
-  }
-
-  const current = runtime.getCodexParamsForWorkspace(bindingKey, workspaceRoot);
-  runtime.sessionStore.setCodexParamsForWorkspace(bindingKey, workspaceRoot, {
-    model: resolvedModel,
-    effort: current.effort || "",
-  });
-  await runtime.showStatusPanel(normalized, {
-    replyToMessageId: normalized.messageId,
-    noticeText: `已设置模型：${resolvedModel}`,
-  });
-}
-
-async function handleEffortCommand(runtime, normalized) {
-  const workspaceContext = await resolveCodexSettingWorkspaceContext(runtime, normalized);
-  if (!workspaceContext) {
-    return;
-  }
-  const { bindingKey, workspaceRoot } = workspaceContext;
-
-  const rawEffort = extractEffortValue(normalized.text);
-  if (!rawEffort) {
-    const current = runtime.getCodexParamsForWorkspace(bindingKey, workspaceRoot);
-    const availableModelsResult = await settingsRuntime.loadAvailableModels(runtime, {
-      forceRefresh: false,
-    });
-    await runtime.sendInfoCardMessage({
-      chatId: normalized.chatId,
-      replyToMessageId: normalized.messageId,
-      text: runtime.buildEffortInfoText(workspaceRoot, current, availableModelsResult),
-    });
-    return;
-  }
-
-  const availableModelsResult = await settingsRuntime.loadAvailableModelsForSetting(runtime, normalized, {
-    settingType: "effort",
-  });
-  if (!availableModelsResult) {
-    return;
-  }
-
-  const current = runtime.getCodexParamsForWorkspace(bindingKey, workspaceRoot);
-  const effectiveModel = resolveEffectiveModelForEffort(availableModelsResult.models, current.model);
-  if (!effectiveModel) {
-    await runtime.sendInfoCardMessage({
-      chatId: normalized.chatId,
-      replyToMessageId: normalized.messageId,
-      text: "当前无法确定模型，请先执行 `/codex model` 并设置模型后再设置推理强度。",
-    });
-    return;
-  }
-
-  const resolvedEffort = settingsRuntime.resolveRequestedEffort(effectiveModel, rawEffort);
-  if (!resolvedEffort) {
-    await runtime.sendInfoCardMessage({
-      chatId: normalized.chatId,
-      replyToMessageId: normalized.messageId,
-      text: runtime.buildEffortValidationErrorText(workspaceRoot, effectiveModel, rawEffort),
-    });
-    return;
-  }
-
-  runtime.sessionStore.setCodexParamsForWorkspace(bindingKey, workspaceRoot, {
-    model: current.model || "",
-    effort: resolvedEffort,
-  });
-  await runtime.showStatusPanel(normalized, {
-    replyToMessageId: normalized.messageId,
-    noticeText: `已设置推理强度：${resolvedEffort}`,
-  });
-}
-
-async function handleWorkspacesCommand(runtime, normalized, { replyToMessageId } = {}) {
-  const bindingKey = runtime.sessionStore.buildBindingKey(normalized);
-  const binding = runtime.sessionStore.getBinding(bindingKey) || {};
-  const items = runtime.listBoundWorkspaces(binding);
-  const replyTarget = runtime.resolveReplyToMessageId(normalized, replyToMessageId);
-  if (!items.length) {
-    await runtime.sendInfoCardMessage({
-      chatId: normalized.chatId,
-      replyToMessageId: replyTarget,
-      text: "当前会话还没有已绑定项目。先发送 `/codex bind /绝对路径`。",
-    });
-    return;
-  }
-
-  const selectionContext = typeof runtime.resolveSelectionContext === "function"
-    ? runtime.resolveSelectionContext(normalized)
-    : null;
-  const workspaceIndex = extractNaturalWorkspaceSelectionIndex(normalized.text);
-  const genericWorkspaceIndex = selectionContext?.command === "workspace"
-    && isNaturalSelectionTextCompatibleWithCommand(normalized.text, "workspace")
-    ? extractNaturalBrowseSelectionIndex(normalized.text)
-    : 0;
-  const resolvedWorkspaceIndex = workspaceIndex > 0 ? workspaceIndex : genericWorkspaceIndex;
-  if (resolvedWorkspaceIndex > 0) {
-    const selectedWorkspace = items[resolvedWorkspaceIndex - 1] || null;
-    if (!selectedWorkspace) {
-      await runtime.sendInfoCardMessage({
-        chatId: normalized.chatId,
-        replyToMessageId: replyTarget,
-        text: `当前只有 ${items.length} 个已绑定项目，无法选择第 ${resolvedWorkspaceIndex} 个。`,
-      });
-      return;
-    }
-
-    await runtime.switchWorkspaceByPath(normalized, selectedWorkspace.workspaceRoot, {
-      replyToMessageId: replyTarget,
-    });
-    return;
-  }
-
-  await runtime.sendInteractiveCard({
-    chatId: normalized.chatId,
-    replyToMessageId: replyTarget,
-    card: runtime.buildWorkspaceBindingsCard(items),
-    selectionContext: {
-      bindingKey,
-      command: "workspace",
-    },
-  });
-}
-
 async function handleThreadsCommand(runtime, normalized) {
   const selectionContext = typeof runtime.resolveSelectionContext === "function"
     ? runtime.resolveSelectionContext(normalized)
@@ -863,125 +684,29 @@ async function handleRemoveCommand(runtime, normalized) {
     return;
   }
 
-  await removeWorkspaceByPath(runtime, normalized, workspaceRoot, {
+  await workspaceBindingRuntime.removeWorkspaceByPath(runtime, normalized, workspaceRoot, {
     replyToMessageId: normalized.messageId,
-  });
-}
-
-async function switchWorkspaceByPath(runtime, normalized, workspaceRoot, { replyToMessageId } = {}) {
-  const targetWorkspaceRoot = normalizeWorkspacePath(workspaceRoot);
-  if (!targetWorkspaceRoot) {
-    await runtime.sendInfoCardMessage({
-      chatId: normalized.chatId,
-      replyToMessageId: replyToMessageId || normalized.messageId,
-      text: "目标项目无效，请刷新后重试。",
-    });
-    return;
-  }
-
-  const bindingKey = runtime.sessionStore.buildBindingKey(normalized);
-  const currentWorkspaceRoot = runtime.resolveWorkspaceRootForBinding(bindingKey);
-  if (currentWorkspaceRoot && currentWorkspaceRoot === targetWorkspaceRoot) {
-    await runtime.sendInfoCardMessage({
-      chatId: normalized.chatId,
-      replyToMessageId: replyToMessageId || normalized.messageId,
-      text: "已经是当前项目，无需切换。",
-    });
-    return;
-  }
-
-  const binding = runtime.sessionStore.getBinding(bindingKey) || {};
-  const items = runtime.listBoundWorkspaces(binding);
-  if (!items.some((item) => item.workspaceRoot === targetWorkspaceRoot)) {
-    await runtime.sendInfoCardMessage({
-      chatId: normalized.chatId,
-      replyToMessageId: replyToMessageId || normalized.messageId,
-      text: "该项目未绑定到当前会话，请先执行 `/codex bind /绝对路径`。",
-    });
-    return;
-  }
-
-  runtime.sessionStore.setActiveWorkspaceRoot(bindingKey, targetWorkspaceRoot);
-  if (
-    currentWorkspaceRoot
-    && currentWorkspaceRoot !== targetWorkspaceRoot
-    && typeof runtime.clearQueuedMessagesForBinding === "function"
-  ) {
-    runtime.clearQueuedMessagesForBinding(bindingKey, currentWorkspaceRoot);
-  }
-  if (typeof runtime.disposeInactiveReplyRunsForBinding === "function") {
-    runtime.disposeInactiveReplyRunsForBinding(bindingKey, targetWorkspaceRoot);
-  }
-  await runtime.resolveWorkspaceThreadState({
-    bindingKey,
-    workspaceRoot: targetWorkspaceRoot,
-    normalized,
-    autoSelectThread: true,
-    allowClaimedThreadReuse: false,
-  });
-
-  await handleWorkspacesCommand(runtime, normalized, {
-    replyToMessageId: replyToMessageId || normalized.messageId,
-  });
-}
-
-async function removeWorkspaceByPath(runtime, normalized, workspaceRoot, { replyToMessageId } = {}) {
-  const targetWorkspaceRoot = normalizeWorkspacePath(workspaceRoot);
-  if (!targetWorkspaceRoot) {
-    await runtime.sendInfoCardMessage({
-      chatId: normalized.chatId,
-      replyToMessageId: replyToMessageId || normalized.messageId,
-      text: "目标项目无效，请刷新后重试。",
-    });
-    return;
-  }
-
-  const bindingKey = runtime.sessionStore.buildBindingKey(normalized);
-  const currentWorkspaceRoot = runtime.resolveWorkspaceRootForBinding(bindingKey);
-  if (currentWorkspaceRoot && currentWorkspaceRoot === targetWorkspaceRoot) {
-    await runtime.sendInfoCardMessage({
-      chatId: normalized.chatId,
-      replyToMessageId: replyToMessageId || normalized.messageId,
-      text: "当前项目不支持移除，请先切换到其他项目。",
-    });
-    return;
-  }
-
-  const binding = runtime.sessionStore.getBinding(bindingKey) || {};
-  const items = runtime.listBoundWorkspaces(binding);
-  if (!items.some((item) => item.workspaceRoot === targetWorkspaceRoot)) {
-    await runtime.sendInfoCardMessage({
-      chatId: normalized.chatId,
-      replyToMessageId: replyToMessageId || normalized.messageId,
-      text: "该项目未绑定到当前会话，无需移除。",
-    });
-    return;
-  }
-
-  runtime.sessionStore.removeWorkspace(bindingKey, targetWorkspaceRoot);
-  await handleWorkspacesCommand(runtime, normalized, {
-    replyToMessageId: replyToMessageId || normalized.messageId,
   });
 }
 
 module.exports = {
   handleBindCommand,
   handleBrowseCommand,
-  handleEffortCommand,
+  handleEffortCommand: workspaceSettingsCommandRuntime.handleEffortCommand,
   handleHelpCommand,
   handleMessageCommand,
-  handleModelCommand,
+  handleModelCommand: workspaceSettingsCommandRuntime.handleModelCommand,
   handleRemoveCommand,
   handleSendCommand,
   handleThreadsCommand,
   handleUnknownCommand,
   handleWhereCommand,
-  handleWorkspacesCommand,
-  removeWorkspaceByPath,
+  handleWorkspacesCommand: workspaceBindingRuntime.handleWorkspacesCommand,
+  removeWorkspaceByPath: workspaceBindingRuntime.removeWorkspaceByPath,
   resolveWorkspaceContext,
   showStatusPanel,
   showThreadPicker,
-  switchWorkspaceByPath,
+  switchWorkspaceByPath: workspaceBindingRuntime.switchWorkspaceByPath,
   validateDefaultCodexParamsConfig: settingsRuntime.validateDefaultCodexParamsConfig,
 };
 
@@ -1042,19 +767,4 @@ function resolveWorkspaceSendTarget(workspaceRoot, requestedPath) {
     filePath,
     displayPath: normalizeWorkspacePath(path.relative(workspaceRoot, filePath)) || path.basename(filePath),
   };
-}
-
-function parseUpdateDirective(value) {
-  const normalized = String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
-  if (normalized === "update") {
-    return { forceRefresh: true };
-  }
-  return null;
-}
-
-async function resolveCodexSettingWorkspaceContext(runtime, normalized) {
-  return resolveWorkspaceContext(runtime, normalized, {
-    replyToMessageId: normalized.messageId,
-    missingWorkspaceText: buildMissingWorkspaceGuideText(),
-  });
 }

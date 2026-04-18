@@ -32,6 +32,115 @@ function initializeCommonRuntimeState(runtime) {
   return runtime;
 }
 
+function buildCommonPlainForwarders(builders = {}, additionalNames = []) {
+  return pickNamedFunctions(builders, [
+    "buildCardResponse",
+    "buildCardToast",
+    "buildEffortInfoText",
+    "buildEffortListText",
+    "buildEffortValidationErrorText",
+    "buildHelpCardText",
+    "buildModelInfoText",
+    "buildModelListText",
+    "buildModelValidationErrorText",
+    "buildStatusPanelCard",
+    "buildThreadMessagesSummary",
+    "buildThreadPickerCard",
+    "buildWorkspaceBrowserCard",
+    "buildWorkspaceBindingsCard",
+    "listBoundWorkspaces",
+    ...additionalNames,
+  ]);
+}
+
+function buildCommonRuntimeFirstForwarders({
+  runtimeCommands,
+  workspaceRuntime,
+  threadRuntime,
+  runtimeState,
+  approvalPolicyRuntime,
+  approvalRuntime,
+  eventsRuntime,
+  appDispatcher,
+  cardService,
+} = {}) {
+  return {
+    dispatchTextCommand: runtimeCommands.dispatchTextCommand,
+    resolveWorkspaceContext: workspaceRuntime.resolveWorkspaceContext,
+    resolveWorkspaceThreadState: threadRuntime.resolveWorkspaceThreadState,
+    ensureThreadAndSendMessage: threadRuntime.ensureThreadAndSendMessage,
+    ensureThreadResumed: threadRuntime.ensureThreadResumed,
+    resolveWorkspaceRootForBinding: runtimeState.resolveWorkspaceRootForBinding,
+    resolveThreadIdForBinding: runtimeState.resolveThreadIdForBinding,
+    setThreadBindingKey: runtimeState.setThreadBindingKey,
+    setThreadWorkspaceRoot: runtimeState.setThreadWorkspaceRoot,
+    setPendingBindingContext: runtimeState.setPendingBindingContext,
+    setPendingThreadContext: runtimeState.setPendingThreadContext,
+    setReplyCardEntry: runtimeState.setReplyCardEntry,
+    setCurrentRunKeyForThread: runtimeState.setCurrentRunKeyForThread,
+    rememberSelectionContext: runtimeState.rememberSelectionContext,
+    resolveSelectionContext: runtimeState.resolveSelectionContext,
+    disposeInactiveReplyRunsForBinding: runtimeState.disposeInactiveReplyRunsForBinding,
+    resolveWorkspaceRootForThread: runtimeState.resolveWorkspaceRootForThread,
+    shouldDeliverThreadEventForActiveWorkspace: runtimeState.shouldDeliverThreadEventForActiveWorkspace,
+    rememberApprovalPrefixForWorkspace: approvalPolicyRuntime.rememberApprovalPrefixForWorkspace,
+    shouldAutoApproveRequest: approvalPolicyRuntime.shouldAutoApproveRequest,
+    tryAutoApproveRequest: approvalPolicyRuntime.tryAutoApproveRequest,
+    applyApprovalDecision: approvalRuntime.applyApprovalDecision,
+    handleBindCommand: workspaceRuntime.handleBindCommand,
+    handleBrowseCommand: workspaceRuntime.handleBrowseCommand,
+    handleWhereCommand: workspaceRuntime.handleWhereCommand,
+    showStatusPanel: workspaceRuntime.showStatusPanel,
+    handleMessageCommand: workspaceRuntime.handleMessageCommand,
+    handleHelpCommand: workspaceRuntime.handleHelpCommand,
+    handleUnknownCommand: workspaceRuntime.handleUnknownCommand,
+    handleThreadsCommand: workspaceRuntime.handleThreadsCommand,
+    handleWorkspacesCommand: workspaceRuntime.handleWorkspacesCommand,
+    showThreadPicker: workspaceRuntime.showThreadPicker,
+    handleNewCommand: threadRuntime.handleNewCommand,
+    handleSwitchCommand: threadRuntime.handleSwitchCommand,
+    handleRemoveCommand: workspaceRuntime.handleRemoveCommand,
+    handleSendCommand: workspaceRuntime.handleSendCommand,
+    handleModelCommand: workspaceRuntime.handleModelCommand,
+    handleEffortCommand: workspaceRuntime.handleEffortCommand,
+    refreshWorkspaceThreads: threadRuntime.refreshWorkspaceThreads,
+    getWorkspaceThreadRefreshState: threadRuntime.getWorkspaceThreadRefreshState,
+    describeWorkspaceStatus: threadRuntime.describeWorkspaceStatus,
+    switchThreadById: threadRuntime.switchThreadById,
+    handleStopCommand: eventsRuntime.handleStopCommand,
+    handleApprovalCommand: approvalRuntime.handleApprovalCommand,
+    deliverToProvider: eventsRuntime.deliverToProvider,
+    clearQueuedMessagesForBinding: appDispatcher.clearQueuedMessagesForBinding,
+    drainQueuedMessagesForBinding: appDispatcher.drainQueuedMessagesForBinding,
+    processQueuedNormalizedTextEvent: appDispatcher.processQueuedNormalizedTextEvent,
+    sendInfoCardMessage: cardService.sendInfoCardMessage,
+    sendInteractiveApprovalCard: cardService.sendInteractiveApprovalCard,
+    updateInteractiveCard: cardService.updateInteractiveCard,
+    sendInteractiveCard: cardService.sendInteractiveCard,
+    patchInteractiveCard: cardService.patchInteractiveCard,
+    handleCardAction: cardService.handleCardAction,
+    dispatchCardAction: runtimeCommands.dispatchCardAction,
+    handlePanelCardAction: runtimeCommands.handlePanelCardAction,
+    handleThreadCardAction: runtimeCommands.handleThreadCardAction,
+    handleWorkspaceCardAction: runtimeCommands.handleWorkspaceCardAction,
+    queueCardActionWithFeedback: cardService.queueCardActionWithFeedback,
+    runCardActionTask: cardService.runCardActionTask,
+    handleApprovalCardActionAsync: approvalRuntime.handleApprovalCardActionAsync,
+    sendCardActionFeedbackByContext: cardService.sendCardActionFeedbackByContext,
+    sendCardActionFeedback: cardService.sendCardActionFeedback,
+    switchWorkspaceByPath: workspaceRuntime.switchWorkspaceByPath,
+    removeWorkspaceByPath: workspaceRuntime.removeWorkspaceByPath,
+    upsertAssistantReplyCard: cardService.upsertAssistantReplyCard,
+    addPendingReaction: cardService.addPendingReaction,
+    movePendingReactionToThread: cardService.movePendingReactionToThread,
+    clearPendingReactionForBinding: cardService.clearPendingReactionForBinding,
+    clearPendingReactionForThread: cardService.clearPendingReactionForThread,
+    disposeReplyRunState: cardService.disposeReplyRunState,
+    cleanupThreadRuntimeState: runtimeState.cleanupThreadRuntimeState,
+    pruneRuntimeMapSizes: runtimeState.pruneRuntimeMapSizes,
+  };
+}
+
 function attachRuntimeForwarders(proto, {
   plainForwarders = {},
   runtimeFirstForwarders = {},
@@ -55,7 +164,73 @@ function attachRuntimeForwarders(proto, {
   return proto;
 }
 
+async function startRuntimeCodex(runtime) {
+  await runtime.codex.connect();
+  await runtime.codex.initialize();
+}
+
+function stopRuntime(runtime, { beforeStop } = {}) {
+  if (runtime.stopPromise) {
+    return runtime.stopPromise;
+  }
+
+  runtime.isStopping = true;
+  runtime.stopPromise = (async () => {
+    clearTimerMap(runtime.replyFlushTimersByRunKey);
+    clearTimerMap(runtime.replyProgressTimersByRunKey);
+    clearTimerMap(runtime.replyProgressFollowupTimersByRunKey);
+
+    if (typeof beforeStop === "function") {
+      await beforeStop(runtime);
+    }
+
+    try {
+      if (typeof runtime.codex?.close === "function") {
+        await runtime.codex.close();
+      }
+    } catch (error) {
+      console.error(`[codex-im] failed to close Codex client: ${error.message}`);
+    }
+
+    try {
+      if (typeof runtime.sessionStore?.close === "function") {
+        await runtime.sessionStore.close();
+      } else if (typeof runtime.sessionStore?.flush === "function") {
+        await runtime.sessionStore.flush();
+      }
+    } catch (error) {
+      console.error(`[codex-im] failed to close session store: ${error.message}`);
+    }
+  })();
+
+  return runtime.stopPromise;
+}
+
+function clearTimerMap(map) {
+  if (!(map instanceof Map)) {
+    return;
+  }
+  for (const timer of map.values()) {
+    clearTimeout(timer);
+  }
+  map.clear();
+}
+
+function pickNamedFunctions(source, names) {
+  const forwarders = {};
+  for (const name of names) {
+    if (typeof source?.[name] === "function") {
+      forwarders[name] = source[name];
+    }
+  }
+  return forwarders;
+}
+
 module.exports = {
   attachRuntimeForwarders,
+  buildCommonPlainForwarders,
+  buildCommonRuntimeFirstForwarders,
   initializeCommonRuntimeState,
+  startRuntimeCodex,
+  stopRuntime,
 };
