@@ -5,8 +5,17 @@ const {
   extractNaturalThreadSelectionIndex,
   isNaturalSelectionTextCompatibleWithCommand,
 } = require("../../shared/command-parsing");
+const {
+  isThreadDispatchClaimedByDifferentBinding,
+  resolveThreadDispatchKeys,
+} = require("../../shared/thread-dispatch-claims");
 const codexMessageUtils = require("../../infra/codex/message-utils");
 const { buildMissingWorkspaceGuideText } = require("../../shared/error-text");
+const {
+  getPerfTrace,
+  markPerfStage,
+  setPerfTraceFields,
+} = require("../../shared/perf-trace");
 
 const THREAD_SOURCE_KINDS = new Set([
   "app",
@@ -43,14 +52,17 @@ async function resolveWorkspaceThreadState(runtime, {
   }
 
   const selectedThreadId = runtime.resolveThreadIdForBinding(bindingKey, workspaceRoot);
-  const selectedThreadClaimedByDifferentBinding = (
-    !allowClaimedThreadReuse
-    && isThreadAssignedToDifferentBinding(runtime, bindingKey, workspaceRoot, selectedThreadId)
+  const selectedThreadUnavailable = isThreadUnavailableForBinding(
+    runtime,
+    bindingKey,
+    workspaceRoot,
+    selectedThreadId,
+    { allowClaimedThreadReuse }
   );
-  const threads = refreshThreadList || !selectedThreadId || selectedThreadClaimedByDifferentBinding
+  const threads = refreshThreadList || !selectedThreadId || selectedThreadUnavailable
     ? await refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, normalized)
     : [];
-  const reusableSelectedThreadId = selectedThreadClaimedByDifferentBinding ? "" : selectedThreadId;
+  const reusableSelectedThreadId = selectedThreadUnavailable ? "" : selectedThreadId;
   const threadId = reusableSelectedThreadId || (
     autoSelectThread
       ? selectAutoThreadForBinding(runtime, bindingKey, workspaceRoot, threads, {
@@ -80,20 +92,9 @@ function selectAutoThreadForBinding(runtime, bindingKey, workspaceRoot, threads,
   allowClaimedThreadReuse = true,
 } = {}) {
   const candidates = Array.isArray(threads) ? threads : [];
-  if (allowClaimedThreadReuse) {
-    return String(candidates[0]?.id || "").trim();
-  }
-
-  for (const thread of candidates) {
-    const threadId = String(thread?.id || "").trim();
-    if (!threadId) {
-      continue;
-    }
-    if (!isThreadAssignedToDifferentBinding(runtime, bindingKey, workspaceRoot, threadId)) {
-      return threadId;
-    }
-  }
-  return "";
+  return selectFirstAvailableThreadForBinding(runtime, bindingKey, workspaceRoot, candidates, {
+    allowClaimedThreadReuse,
+  });
 }
 
 function isThreadAssignedToDifferentBinding(runtime, bindingKey, workspaceRoot, threadId) {
@@ -117,6 +118,63 @@ function isThreadAssignedToDifferentBinding(runtime, bindingKey, workspaceRoot, 
   });
 }
 
+function selectFirstAvailableThreadForBinding(runtime, bindingKey, workspaceRoot, threads, {
+  allowClaimedThreadReuse = true,
+} = {}) {
+  for (const thread of threads) {
+    const threadId = String(thread?.id || "").trim();
+    if (!threadId) {
+      continue;
+    }
+    if (isThreadUnavailableForBinding(runtime, bindingKey, workspaceRoot, thread, { allowClaimedThreadReuse })) {
+      continue;
+    }
+    return threadId;
+  }
+  return "";
+}
+
+function isThreadUnavailableForBinding(runtime, bindingKey, workspaceRoot, threadOrId, {
+  allowClaimedThreadReuse = true,
+} = {}) {
+  const threadId = String(threadOrId?.id || threadOrId || "").trim();
+  if (!threadId) {
+    return false;
+  }
+  if (
+    !allowClaimedThreadReuse
+    && isThreadAssignedToDifferentBinding(runtime, bindingKey, workspaceRoot, threadId)
+  ) {
+    return true;
+  }
+  if (isThreadDispatchClaimedByDifferentBinding(runtime, {
+    bindingKey,
+    workspaceRoot,
+    target: threadOrId,
+  })) {
+    return true;
+  }
+  return isThreadBusyForDifferentBinding(runtime, bindingKey, workspaceRoot, threadOrId);
+}
+
+function isThreadBusyForDifferentBinding(runtime, bindingKey, workspaceRoot, threadOrId) {
+  const normalizedBindingKey = String(bindingKey || "").trim();
+  const threadIds = resolveThreadDispatchKeys(runtime, workspaceRoot, threadOrId);
+  for (const threadId of threadIds) {
+    if (
+      !runtime.pendingApprovalByThreadId?.has(threadId)
+      && !runtime.activeTurnIdByThreadId?.has(threadId)
+    ) {
+      continue;
+    }
+    const ownerBindingKey = String(runtime.bindingKeyByThreadId?.get(threadId) || "").trim();
+    if (ownerBindingKey && ownerBindingKey !== normalizedBindingKey) {
+      return true;
+    }
+  }
+  return false;
+}
+
 async function ensureThreadAndSendMessage(runtime, {
   bindingKey,
   workspaceRoot,
@@ -135,14 +193,25 @@ async function ensureThreadAndSendMessage(runtime, {
   }
 
   const codexParams = runtime.getCodexParamsForWorkspace(bindingKey, workspaceRoot);
+  const perfTrace = getPerfTrace(normalized);
+  setPerfTraceFields(perfTrace, {
+    bindingKey,
+    workspaceRoot,
+    threadId,
+  });
 
   if (!threadId) {
+    const createThreadStartedAt = Date.now();
     const createdThreadId = await createWorkspaceThread(runtime, {
       bindingKey,
       workspaceRoot,
       normalized,
     });
+    markPerfStage(perfTrace, "start_thread", createThreadStartedAt, {
+      threadId: createdThreadId,
+    });
     console.log(`[codex-im] turn/start first message thread=${createdThreadId}`);
+    const sendUserMessageStartedAt = Date.now();
     await runtime.codex.sendUserMessage({
       threadId: createdThreadId,
       text: normalized.text,
@@ -151,13 +220,17 @@ async function ensureThreadAndSendMessage(runtime, {
       accessMode: runtime.config.defaultCodexAccessMode,
       workspaceRoot,
     });
+    markPerfStage(perfTrace, "turn_start_request", sendUserMessageStartedAt, {
+      threadId: createdThreadId,
+    });
     runtime.setThreadBindingKey(createdThreadId, bindingKey);
     runtime.setThreadWorkspaceRoot(createdThreadId, workspaceRoot);
     return createdThreadId;
   }
 
   try {
-    await ensureThreadResumed(runtime, threadId);
+    await ensureThreadResumed(runtime, threadId, { normalized });
+    const sendUserMessageStartedAt = Date.now();
     await runtime.codex.sendUserMessage({
       threadId,
       text: normalized.text,
@@ -165,6 +238,9 @@ async function ensureThreadAndSendMessage(runtime, {
       effort: codexParams.effort || null,
       accessMode: runtime.config.defaultCodexAccessMode,
       workspaceRoot,
+    });
+    markPerfStage(perfTrace, "turn_start_request", sendUserMessageStartedAt, {
+      threadId,
     });
     console.log(`[codex-im] turn/start ok workspace=${workspaceRoot} thread=${threadId}`);
     runtime.setThreadBindingKey(threadId, bindingKey);
@@ -178,12 +254,21 @@ async function ensureThreadAndSendMessage(runtime, {
     console.warn(`[codex-im] stale thread detected, recreating workspace thread: ${threadId}`);
     runtime.resumedThreadIds.delete(threadId);
     runtime.sessionStore.clearThreadIdForWorkspace(bindingKey, workspaceRoot);
+    setPerfTraceFields(perfTrace, {
+      recreatedThread: true,
+    });
+    const recreateThreadStartedAt = Date.now();
     const recreatedThreadId = await createWorkspaceThread(runtime, {
       bindingKey,
       workspaceRoot,
       normalized,
     });
+    markPerfStage(perfTrace, "start_thread", recreateThreadStartedAt, {
+      threadId: recreatedThreadId,
+      recreatedThread: true,
+    });
     console.log(`[codex-im] turn/start retry thread=${recreatedThreadId}`);
+    const retrySendStartedAt = Date.now();
     await runtime.codex.sendUserMessage({
       threadId: recreatedThreadId,
       text: normalized.text,
@@ -191,6 +276,10 @@ async function ensureThreadAndSendMessage(runtime, {
       effort: codexParams.effort || null,
       accessMode: runtime.config.defaultCodexAccessMode,
       workspaceRoot,
+    });
+    markPerfStage(perfTrace, "turn_start_request", retrySendStartedAt, {
+      threadId: recreatedThreadId,
+      recreatedThread: true,
     });
     runtime.setThreadBindingKey(recreatedThreadId, bindingKey);
     runtime.setThreadWorkspaceRoot(recreatedThreadId, workspaceRoot);
@@ -207,15 +296,18 @@ async function resolveDesktopSessionState(runtime, {
 }) {
   const threads = await refreshWorkspaceThreads(runtime, bindingKey, workspaceRoot, normalized);
   const selectedThreadId = runtime.resolveThreadIdForBinding(bindingKey, workspaceRoot);
-  const selectedThreadClaimedByDifferentBinding = (
-    !allowClaimedThreadReuse
-    && isThreadAssignedToDifferentBinding(runtime, bindingKey, workspaceRoot, selectedThreadId)
+  const selectedThreadUnavailable = isThreadUnavailableForBinding(
+    runtime,
+    bindingKey,
+    workspaceRoot,
+    selectedThreadId,
+    { allowClaimedThreadReuse }
   );
   let selectedThread = null;
   let threadId = "";
   let desktopVisibleExpected = true;
 
-  if (selectedThreadId && !selectedThreadClaimedByDifferentBinding) {
+  if (selectedThreadId && !selectedThreadUnavailable) {
     selectedThread = await hydrateSelectedDesktopSession(runtime, workspaceRoot, selectedThreadId);
     if (!selectedThread) {
       threadId = selectedThreadId;
@@ -482,13 +574,23 @@ async function createWorkspaceThread(runtime, { bindingKey, workspaceRoot, norma
   return resolvedThreadId;
 }
 
-async function ensureThreadResumed(runtime, threadId) {
+async function ensureThreadResumed(runtime, threadId, { normalized = null } = {}) {
   const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+  const perfTrace = getPerfTrace(normalized) || getPerfTrace(runtime.pendingChatContextByThreadId?.get(normalizedThreadId));
+  const resumeStartedAt = Date.now();
   if (!normalizedThreadId || runtime.resumedThreadIds.has(normalizedThreadId)) {
+    markPerfStage(perfTrace, "resume_thread", resumeStartedAt, {
+      threadId: normalizedThreadId,
+      resumedFromCache: true,
+    });
     return null;
   }
 
   const response = await runtime.codex.resumeThread({ threadId: normalizedThreadId });
+  markPerfStage(perfTrace, "resume_thread", resumeStartedAt, {
+    threadId: normalizedThreadId,
+    resumedFromCache: false,
+  });
   runtime.resumedThreadIds.add(normalizedThreadId);
   console.log(`[codex-im] thread/resume ok thread=${normalizedThreadId}`);
   return response;
@@ -1107,10 +1209,7 @@ async function findWritableDesktopSession(runtime, workspaceRoot, sessions, {
     if (!session?.id || session.id === excludedSessionId) {
       continue;
     }
-    if (
-      !allowClaimedThreadReuse
-      && isThreadAssignedToDifferentBinding(runtime, bindingKey, workspaceRoot, session.id)
-    ) {
+    if (isThreadUnavailableForBinding(runtime, bindingKey, workspaceRoot, session, { allowClaimedThreadReuse })) {
       continue;
     }
     const hydrated = await hydrateSelectedDesktopSession(runtime, workspaceRoot, session.id);

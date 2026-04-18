@@ -228,6 +228,9 @@ async function bindWorkspaceByPath(runtime, normalized, rawWorkspaceRoot, { repl
   const bindingKey = runtime.sessionStore.buildBindingKey(normalized);
   const replyTarget = runtime.resolveReplyToMessageId(normalized, replyToMessageId || normalized.messageId);
   const workspaceRoot = normalizeWorkspacePath(rawWorkspaceRoot);
+  const previousWorkspaceRoot = typeof runtime.resolveWorkspaceRootForBinding === "function"
+    ? runtime.resolveWorkspaceRootForBinding(bindingKey)
+    : "";
   const bindRoots = browserRuntime.resolveBrowseRoots(runtime);
   if (!isAbsoluteWorkspacePath(workspaceRoot)) {
     await runtime.sendInfoCardMessage({
@@ -270,6 +273,13 @@ async function bindWorkspaceByPath(runtime, normalized, rawWorkspaceRoot, { repl
 
   settingsRuntime.applyDefaultCodexParamsOnBind(runtime, bindingKey, workspaceRoot);
   runtime.sessionStore.setActiveWorkspaceRoot(bindingKey, workspaceRoot);
+  if (
+    previousWorkspaceRoot
+    && previousWorkspaceRoot !== workspaceRoot
+    && typeof runtime.clearQueuedMessagesForBinding === "function"
+  ) {
+    runtime.clearQueuedMessagesForBinding(bindingKey, previousWorkspaceRoot);
+  }
   if (typeof runtime.disposeInactiveReplyRunsForBinding === "function") {
     runtime.disposeInactiveReplyRunsForBinding(bindingKey, workspaceRoot);
   }
@@ -305,8 +315,14 @@ async function showStatusPanel(runtime, normalized, { replyToMessageId, noticeTe
     workspaceThreadsPromise,
     availableModelsPromise,
   ]);
-  const threadId = selectedThreadId || threads[0]?.id || "";
-  if (!selectedThreadId && threadId) {
+  const sharedSelectedThreadId = isThreadAssignedToDifferentBinding(runtime, bindingKey, workspaceRoot, selectedThreadId);
+  if (sharedSelectedThreadId && typeof runtime?.sessionStore?.clearThreadIdForWorkspace === "function") {
+    runtime.sessionStore.clearThreadIdForWorkspace(bindingKey, workspaceRoot);
+  }
+  const threadId = sharedSelectedThreadId
+    ? selectUnclaimedThreadId(runtime, bindingKey, workspaceRoot, threads)
+    : (selectedThreadId || selectUnclaimedThreadId(runtime, bindingKey, workspaceRoot, threads));
+  if (threadId && threadId !== selectedThreadId) {
     runtime.sessionStore.setThreadIdForWorkspace(
       bindingKey,
       workspaceRoot,
@@ -363,6 +379,7 @@ async function handleMessageCommand(runtime, normalized) {
     workspaceRoot,
     normalized,
     autoSelectThread: true,
+    allowClaimedThreadReuse: false,
   });
 
   if (!threadId) {
@@ -885,6 +902,13 @@ async function switchWorkspaceByPath(runtime, normalized, workspaceRoot, { reply
   }
 
   runtime.sessionStore.setActiveWorkspaceRoot(bindingKey, targetWorkspaceRoot);
+  if (
+    currentWorkspaceRoot
+    && currentWorkspaceRoot !== targetWorkspaceRoot
+    && typeof runtime.clearQueuedMessagesForBinding === "function"
+  ) {
+    runtime.clearQueuedMessagesForBinding(bindingKey, currentWorkspaceRoot);
+  }
   if (typeof runtime.disposeInactiveReplyRunsForBinding === "function") {
     runtime.disposeInactiveReplyRunsForBinding(bindingKey, targetWorkspaceRoot);
   }
@@ -893,6 +917,7 @@ async function switchWorkspaceByPath(runtime, normalized, workspaceRoot, { reply
     workspaceRoot: targetWorkspaceRoot,
     normalized,
     autoSelectThread: true,
+    allowClaimedThreadReuse: false,
   });
 
   await handleWorkspacesCommand(runtime, normalized, {
@@ -962,6 +987,40 @@ module.exports = {
 
 function usesDesktopSessionSource(runtime) {
   return typeof runtime.usesDesktopSessionSource === "function" && runtime.usesDesktopSessionSource();
+}
+
+function selectUnclaimedThreadId(runtime, bindingKey, workspaceRoot, threads) {
+  for (const thread of Array.isArray(threads) ? threads : []) {
+    const threadId = String(thread?.id || "").trim();
+    if (!threadId) {
+      continue;
+    }
+    if (!isThreadAssignedToDifferentBinding(runtime, bindingKey, workspaceRoot, threadId)) {
+      return threadId;
+    }
+  }
+  return "";
+}
+
+function isThreadAssignedToDifferentBinding(runtime, bindingKey, workspaceRoot, threadId) {
+  const normalizedThreadId = String(threadId || "").trim();
+  const normalizedBindingKey = String(bindingKey || "").trim();
+  const normalizedWorkspaceRoot = String(workspaceRoot || "").trim();
+  if (
+    !normalizedThreadId
+    || !normalizedBindingKey
+    || !normalizedWorkspaceRoot
+    || typeof runtime?.sessionStore?.listBindings !== "function"
+  ) {
+    return false;
+  }
+
+  return runtime.sessionStore.listBindings({ clone: false }).some((entry) => {
+    if (String(entry?.bindingKey || "").trim() === normalizedBindingKey) {
+      return false;
+    }
+    return String(entry?.binding?.threadIdByWorkspaceRoot?.[normalizedWorkspaceRoot] || "").trim() === normalizedThreadId;
+  });
 }
 
 function resolveWorkspaceSendTarget(workspaceRoot, requestedPath) {

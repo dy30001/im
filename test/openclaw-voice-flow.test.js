@@ -266,6 +266,8 @@ test("onOpenClawTextEvent queues a new inbound file while the selected thread is
   assert.match(seen.notices[0].text, /上一条消息还在处理中/);
   assert.match(seen.notices[0].text, /前面还有 1 条消息/);
   assert.equal(runtime.pendingMessageQueueByBindingKey.get("binding-1")?.length, 1);
+  assert.equal(runtime.pendingMessageQueueByBindingKey.get("binding-1")?.[0]?.workspaceRoot, "/repo");
+  assert.equal(runtime.pendingMessageQueueByBindingKey.get("binding-1")?.[0]?.normalized?.messageId, "301");
   assert.equal(runtime.inFlightBindingDispatchKeys.has("binding-1"), true);
   assert.equal(seen.prepared, 0);
   assert.equal(seen.pendingReactions, 0);
@@ -336,7 +338,172 @@ test("onOpenClawTextEvent queues a duplicate message while the binding dispatch 
   assert.match(seen.notices[0].text, /上一条消息刚开始处理/);
   assert.match(seen.notices[0].text, /前面还有 1 条消息/);
   assert.equal(runtime.pendingMessageQueueByBindingKey.get("binding-1")?.length, 1);
+  assert.equal(runtime.pendingMessageQueueByBindingKey.get("binding-1")?.[0]?.workspaceRoot, "/repo");
+  assert.equal(runtime.pendingMessageQueueByBindingKey.get("binding-1")?.[0]?.normalized?.messageId, "401");
   assert.equal(seen.resolvedThreads, 0);
+});
+
+test("onOpenClawTextEvent creates a fresh thread when the auto-selected thread is locally claimed by another binding", async () => {
+  const seen = {
+    ensured: [],
+    notices: [],
+    resolvedThreads: 0,
+  };
+  const existingClaim = {
+    bindingKey: "binding-2",
+    workspaceRoot: "/repo",
+    claimedAt: Date.now(),
+    keys: ["thread-1"],
+  };
+  const runtime = {
+    isStopping: false,
+    config: {
+      defaultWorkspaceId: "default",
+      verboseCodexLogs: false,
+    },
+    inFlightBindingDispatchKeys: new Set(),
+    inFlightThreadDispatchClaimsById: new Map([
+      ["thread-1", existingClaim],
+    ]),
+    activeTurnIdByThreadId: new Map(),
+    pendingApprovalByThreadId: new Map(),
+    pendingMessageQueueByBindingKey: new Map(),
+    supportsInteractiveCards() {
+      return false;
+    },
+    rememberInboundContext() {},
+    async dispatchTextCommand() {
+      return false;
+    },
+    sessionStore: {
+      buildBindingKey() {
+        return "binding-1";
+      },
+    },
+    async resolveWorkspaceContext() {
+      return {
+        bindingKey: "binding-1",
+        workspaceRoot: "/repo",
+        replyTarget: "451",
+      };
+    },
+    async resolveWorkspaceThreadState() {
+      seen.resolvedThreads += 1;
+      return {
+        threadId: "thread-1",
+      };
+    },
+    async sendInfoCardMessage(payload) {
+      seen.notices.push(payload);
+    },
+    async prepareInboundMessage() {
+      return null;
+    },
+    setPendingBindingContext() {},
+    setPendingThreadContext() {
+      throw new Error("should not bind the conflicting thread before recovery");
+    },
+    async addPendingReaction() {},
+    async ensureThreadAndSendMessage(payload) {
+      seen.ensured.push(payload);
+      return "thread-new";
+    },
+    movePendingReactionToThread() {},
+    async clearPendingReactionForBinding() {},
+  };
+
+  await appDispatcher.onOpenClawTextEvent(runtime, {
+    from_user_id: "wx-user-1",
+    message_id: 451,
+    message_type: 1,
+    item_list: [
+      {
+        type: 1,
+        text_item: {
+          text: "继续处理",
+        },
+      },
+    ],
+  });
+
+  assert.equal(seen.resolvedThreads, 2);
+  assert.equal(seen.notices.length, 0);
+  assert.equal(seen.ensured.length, 1);
+  assert.equal(seen.ensured[0].threadId, "");
+  assert.equal(runtime.pendingMessageQueueByBindingKey.size, 0);
+  assert.equal(runtime.inFlightBindingDispatchKeys.has("binding-1"), true);
+});
+
+test("onOpenClawTextEvent releases the local thread dispatch claim when message send fails", async () => {
+  const failures = [];
+  const runtime = {
+    isStopping: false,
+    config: {
+      defaultWorkspaceId: "default",
+      verboseCodexLogs: false,
+    },
+    inFlightBindingDispatchKeys: new Set(),
+    inFlightThreadDispatchClaimsById: new Map(),
+    activeTurnIdByThreadId: new Map(),
+    pendingApprovalByThreadId: new Map(),
+    pendingMessageQueueByBindingKey: new Map(),
+    supportsInteractiveCards() {
+      return false;
+    },
+    rememberInboundContext() {},
+    async dispatchTextCommand() {
+      return false;
+    },
+    sessionStore: {
+      buildBindingKey() {
+        return "binding-1";
+      },
+    },
+    async resolveWorkspaceContext() {
+      return {
+        bindingKey: "binding-1",
+        workspaceRoot: "/repo",
+        replyTarget: "461",
+      };
+    },
+    async resolveWorkspaceThreadState() {
+      return {
+        threadId: "thread-1",
+      };
+    },
+    async sendInfoCardMessage(payload) {
+      failures.push(payload);
+    },
+    async prepareInboundMessage() {
+      return null;
+    },
+    setPendingBindingContext() {},
+    setPendingThreadContext() {},
+    async addPendingReaction() {},
+    async ensureThreadAndSendMessage() {
+      throw new Error("send failed");
+    },
+    movePendingReactionToThread() {},
+    async clearPendingReactionForBinding() {},
+  };
+
+  await assert.rejects(() => appDispatcher.onOpenClawTextEvent(runtime, {
+    from_user_id: "wx-user-1",
+    message_id: 461,
+    message_type: 1,
+    item_list: [
+      {
+        type: 1,
+        text_item: {
+          text: "继续处理",
+        },
+      },
+    ],
+  }), /send failed/);
+
+  assert.equal(runtime.inFlightThreadDispatchClaimsById.size, 0);
+  assert.equal(failures.length, 1);
+  assert.match(failures[0].text, /处理失败/);
 });
 
 test("drainQueuedMessagesForBinding starts the next queued message in order", async () => {
@@ -352,19 +519,23 @@ test("drainQueuedMessagesForBinding starts the next queued message in order", as
     },
     pendingMessageQueueByBindingKey: new Map([
       ["binding-1", [{
-        provider: "openclaw",
-        chatId: "wx-user-1",
-        messageId: "501",
-        contextToken: "ctx-501",
-        command: "message",
-        text: "请继续处理这个文件",
-        attachments: [
-          {
-            kind: "file",
-            name: "report.pdf",
-            url: "https://cdn.example.com/path/report",
-          },
-        ],
+        bindingKey: "binding-1",
+        workspaceRoot: "/repo",
+        normalized: {
+          provider: "openclaw",
+          chatId: "wx-user-1",
+          messageId: "501",
+          contextToken: "ctx-501",
+          command: "message",
+          text: "请继续处理这个文件",
+          attachments: [
+            {
+              kind: "file",
+              name: "report.pdf",
+              url: "https://cdn.example.com/path/report",
+            },
+          ],
+        },
       }]],
     ]),
     inFlightBindingDispatchKeys: new Set(["binding-1"]),
@@ -380,6 +551,9 @@ test("drainQueuedMessagesForBinding starts the next queued message in order", as
       buildBindingKey() {
         return "binding-1";
       },
+    },
+    resolveWorkspaceRootForBinding() {
+      return "/repo";
     },
     async resolveWorkspaceContext() {
       return {
@@ -420,4 +594,61 @@ test("drainQueuedMessagesForBinding starts the next queued message in order", as
   assert.equal(seen.ensured.length, 1);
   assert.equal(runtime.pendingMessageQueueByBindingKey.has("binding-1"), false);
   assert.equal(runtime.inFlightBindingDispatchKeys.has("binding-1"), true);
+});
+
+test("drainQueuedMessagesForBinding drops stale queued messages after the active workspace changes", async () => {
+  const seen = {
+    ensured: 0,
+  };
+  const runtime = {
+    isStopping: false,
+    config: {
+      defaultWorkspaceId: "default",
+      verboseCodexLogs: false,
+    },
+    pendingMessageQueueByBindingKey: new Map([
+      ["binding-1", [{
+        bindingKey: "binding-1",
+        workspaceRoot: "/repo/alpha",
+        normalized: {
+          provider: "openclaw",
+          chatId: "wx-user-1",
+          messageId: "601",
+          command: "message",
+          text: "继续处理 alpha",
+        },
+      }]],
+    ]),
+    inFlightBindingDispatchKeys: new Set(["binding-1"]),
+    activeTurnIdByThreadId: new Map(),
+    pendingApprovalByThreadId: new Map(),
+    supportsInteractiveCards() {
+      return false;
+    },
+    async dispatchTextCommand() {
+      return false;
+    },
+    resolveWorkspaceRootForBinding() {
+      return "/repo/beta";
+    },
+    sessionStore: {
+      buildBindingKey() {
+        return "binding-1";
+      },
+    },
+    async resolveWorkspaceContext() {
+      throw new Error("stale queued message should not resolve workspace context");
+    },
+    async ensureThreadAndSendMessage() {
+      seen.ensured += 1;
+      return "thread-1";
+    },
+  };
+
+  const drained = await appDispatcher.drainQueuedMessagesForBinding(runtime, "binding-1");
+
+  assert.equal(drained, false);
+  assert.equal(seen.ensured, 0);
+  assert.equal(runtime.pendingMessageQueueByBindingKey.has("binding-1"), false);
+  assert.equal(runtime.inFlightBindingDispatchKeys.has("binding-1"), false);
 });

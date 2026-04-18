@@ -11,6 +11,7 @@ const {
   resolveOpenClawDefaultLockDir,
   resolveOpenClawDefaultLogFile,
   resolveOpenClawInstanceId,
+  resolveOpenClawLaunchdLabel,
 } = require("../src/infra/config/config");
 
 const APP_ROOT = path.resolve(__dirname, "..");
@@ -55,6 +56,19 @@ const HEARTBEAT_CHECK_INTERVAL_MS = parseRestartDelay(
   process.env.CODEX_IM_OPENCLAW_HEARTBEAT_CHECK_INTERVAL_MS,
   60 * 1_000
 );
+const LAUNCHD_REPAIR_INTERVAL_MS = parseRestartDelay(
+  process.env.CODEX_IM_OPENCLAW_LAUNCHD_REPAIR_INTERVAL_MS,
+  60 * 1_000
+);
+const OPENCLAW_LAUNCHD_LABEL = process.env.CODEX_IM_OPENCLAW_LAUNCHD_LABEL
+  || resolveOpenClawLaunchdLabel(OPENCLAW_INSTANCE_ID);
+const OPENCLAW_LAUNCHD_DOMAIN = typeof process.getuid === "function" ? `gui/${process.getuid()}` : "";
+const OPENCLAW_LAUNCHD_TARGET = process.env.CODEX_IM_OPENCLAW_LAUNCHD_TARGET
+  || (OPENCLAW_LAUNCHD_DOMAIN && OPENCLAW_LAUNCHD_LABEL
+    ? `${OPENCLAW_LAUNCHD_DOMAIN}/${OPENCLAW_LAUNCHD_LABEL}`
+    : "");
+const OPENCLAW_LAUNCH_AGENT_PLIST = process.env.CODEX_IM_OPENCLAW_LAUNCH_AGENT_PLIST
+  || path.join(os.homedir(), "Library", "LaunchAgents", `${OPENCLAW_LAUNCHD_LABEL}.plist`);
 process.env.CODEX_IM_OPENCLAW_LOCK_DIR = LOCK_DIR;
 process.env.CODEX_IM_OPENCLAW_HEARTBEAT_FILE = HEARTBEAT_FILE;
 process.env.CODEX_IM_OPENCLAW_LOG_FILE = LOG_FILE;
@@ -64,6 +78,7 @@ let currentChildStartedAt = 0;
 let restartTimer = null;
 let heartbeatTimer = null;
 let startupStateTimer = null;
+let launchdRepairTimer = null;
 let shuttingDown = false;
 let restartAttempt = 0;
 let lastExitAt = 0;
@@ -71,6 +86,9 @@ let lastExitReason = "";
 let nextRestartAt = 0;
 let lastRestartDelayMs = 0;
 let currentSupervisorStatus = "";
+let launchdRepairInFlight = false;
+let lastLaunchdRepairAt = 0;
+let supervisorLockOwned = false;
 
 main().catch((error) => {
   console.error(`[codex-im] openclaw supervisor failed: ${error.message}`);
@@ -90,15 +108,14 @@ async function main() {
     return;
   }
 
-  const acquisition = acquireSupervisorLock();
+  const acquisition = await waitForSupervisorLock();
   if (!acquisition.acquired) {
-    console.log(`[codex-im] openclaw-bot already running (pid=${acquisition.pid}), skip duplicate start`);
-    console.log(`[codex-im] log file: ${LOG_FILE}`);
     return;
   }
 
   installShutdownHooks();
   startHeartbeatWatchdog();
+  startLaunchdRepairWatchdog();
   writeSupervisorState("supervising");
   console.log(`[codex-im] openclaw-bot supervisor ready pid=${process.pid}`);
   console.log(`[codex-im] log file: ${LOG_FILE}`);
@@ -151,17 +168,20 @@ function acquireSupervisorLock() {
   while (true) {
     const existingPid = readPidFile(SUPERVISOR_PID_FILE);
     if (existingPid === String(process.pid)) {
+      supervisorLockOwned = true;
       fs.mkdirSync(LOCK_DIR, { recursive: true });
       writePidFile(SUPERVISOR_PID_FILE, process.pid);
       fs.rmSync(CHILD_PID_FILE, { force: true });
       return { acquired: true };
     }
     if (existingPid && existingPid !== String(process.pid) && isPidAlive(existingPid)) {
+      supervisorLockOwned = false;
       return { acquired: false, pid: existingPid };
     }
 
     const runningSupervisorPid = findRunningSupervisorPid();
     if (runningSupervisorPid && runningSupervisorPid !== String(process.pid) && isPidAlive(runningSupervisorPid)) {
+      supervisorLockOwned = false;
       return { acquired: false, pid: runningSupervisorPid };
     }
 
@@ -173,6 +193,7 @@ function acquireSupervisorLock() {
 
     try {
       fs.mkdirSync(LOCK_DIR);
+      supervisorLockOwned = true;
       writePidFile(SUPERVISOR_PID_FILE, process.pid);
       fs.rmSync(CHILD_PID_FILE, { force: true });
       return { acquired: true };
@@ -183,6 +204,26 @@ function acquireSupervisorLock() {
       fs.rmSync(LOCK_DIR, { recursive: true, force: true });
     }
   }
+}
+
+async function waitForSupervisorLock() {
+  let watchedPid = "";
+
+  while (!shuttingDown) {
+    const acquisition = acquireSupervisorLock();
+    if (acquisition.acquired) {
+      return acquisition;
+    }
+
+    const activePid = String(acquisition.pid || "").trim();
+    if (activePid && activePid !== watchedPid) {
+      watchedPid = activePid;
+      console.log(`[codex-im] openclaw launchd guard watching existing supervisor pid=${activePid}`);
+    }
+    await delay(1_000);
+  }
+
+  return { acquired: false, pid: "" };
 }
 
 function startChild() {
@@ -327,6 +368,26 @@ function clearStartupStateSync() {
   startupStateTimer = null;
 }
 
+function startLaunchdRepairWatchdog() {
+  clearLaunchdRepairWatchdog();
+  if (!canRepairLaunchdRegistration()) {
+    return;
+  }
+
+  maybeRepairLaunchdRegistration({ reason: "startup" });
+  launchdRepairTimer = setInterval(() => {
+    maybeRepairLaunchdRegistration({ reason: "watchdog" });
+  }, LAUNCHD_REPAIR_INTERVAL_MS);
+}
+
+function clearLaunchdRepairWatchdog() {
+  if (!launchdRepairTimer) {
+    return;
+  }
+  clearInterval(launchdRepairTimer);
+  launchdRepairTimer = null;
+}
+
 function startHeartbeatWatchdog() {
   clearHeartbeatWatchdog();
   heartbeatTimer = setInterval(() => {
@@ -377,6 +438,7 @@ async function shutdown(signal) {
   clearRestartTimer();
   clearHeartbeatWatchdog();
   clearStartupStateSync();
+  clearLaunchdRepairWatchdog();
   writeSupervisorState("stopping", {
     signal,
   });
@@ -418,6 +480,15 @@ function waitForChildExit(child, timeoutMs) {
 }
 
 function cleanupLockFiles() {
+  if (!supervisorLockOwned) {
+    return;
+  }
+  const recordedPid = readPidFile(SUPERVISOR_PID_FILE);
+  if (recordedPid && recordedPid !== String(process.pid)) {
+    supervisorLockOwned = false;
+    return;
+  }
+  supervisorLockOwned = false;
   fs.rmSync(LOCK_DIR, { recursive: true, force: true });
 }
 
@@ -454,6 +525,82 @@ function readHeartbeatFile() {
       reason: "",
     };
   }
+}
+
+function maybeRepairLaunchdRegistration({ reason = "" } = {}) {
+  if (
+    shuttingDown
+    || !supervisorLockOwned
+    || launchdRepairInFlight
+    || !canRepairLaunchdRegistration()
+    || isLaunchdTargetLoaded()
+  ) {
+    return false;
+  }
+
+  const now = Date.now();
+  const minimumRepairGapMs = Math.max(10_000, Math.min(LAUNCHD_REPAIR_INTERVAL_MS, 30_000));
+  if ((now - lastLaunchdRepairAt) < minimumRepairGapMs) {
+    return false;
+  }
+
+  lastLaunchdRepairAt = now;
+  launchdRepairInFlight = true;
+  try {
+    console.warn(
+      `[codex-im] launchd target missing, reloading ${OPENCLAW_LAUNCHD_TARGET}${reason ? ` reason=${reason}` : ""}`
+    );
+    runLaunchctl(["enable", OPENCLAW_LAUNCHD_TARGET], { allowFailure: true });
+    runLaunchctl(["bootstrap", OPENCLAW_LAUNCHD_DOMAIN, OPENCLAW_LAUNCH_AGENT_PLIST], { allowFailure: true });
+
+    if (isLaunchdTargetLoaded()) {
+      console.log(`[codex-im] restored launchd keepalive target=${OPENCLAW_LAUNCHD_TARGET}`);
+      return true;
+    }
+
+    console.error(`[codex-im] failed to restore launchd keepalive target=${OPENCLAW_LAUNCHD_TARGET}`);
+    return false;
+  } finally {
+    launchdRepairInFlight = false;
+  }
+}
+
+function canRepairLaunchdRegistration() {
+  return (
+    process.platform === "darwin"
+    && Boolean(OPENCLAW_LAUNCHD_DOMAIN)
+    && Boolean(OPENCLAW_LAUNCHD_TARGET)
+    && fs.existsSync(OPENCLAW_LAUNCH_AGENT_PLIST)
+    && commandExists("launchctl")
+  );
+}
+
+function isLaunchdTargetLoaded() {
+  if (!canRepairLaunchdRegistration()) {
+    return false;
+  }
+  const result = runLaunchctl(["print", OPENCLAW_LAUNCHD_TARGET], { allowFailure: true });
+  return result.status === 0;
+}
+
+function runLaunchctl(args, { allowFailure = false } = {}) {
+  const result = spawnSync("launchctl", args, {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (!allowFailure && result.status !== 0) {
+    const stderr = String(result.stderr || "").trim();
+    const stdout = String(result.stdout || "").trim();
+    throw new Error(stderr || stdout || `launchctl ${args.join(" ")} failed`);
+  }
+  return result;
+}
+
+function commandExists(commandName) {
+  const result = spawnSync("/bin/sh", ["-lc", `command -v "${String(commandName || "")}" >/dev/null 2>&1`], {
+    stdio: "ignore",
+  });
+  return result.status === 0;
 }
 
 function findRunningSupervisorPid() {
@@ -596,6 +743,12 @@ function normalizeRestartDelay(delayMs) {
 function parseRestartDelay(rawValue, defaultValue) {
   const parsed = Number.parseInt(String(rawValue || "").trim(), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 function loadSupervisorEnv() {

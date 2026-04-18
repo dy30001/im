@@ -17,6 +17,7 @@ const MACOS_CODEX_APP_CANDIDATES = [
 ];
 const DEFAULT_WORKSPACE_ALIAS_ROOT = path.join(os.homedir(), ".codex-im", "workspaces");
 const DEFAULT_CODEX_HOME_ROOT = path.join(os.homedir(), ".codex-im", "homes");
+const WORKSPACE_ALIAS_METADATA_FILE = ".codex-im-workspace-root";
 const CODEX_CLIENT_INFO = {
   name: "codex_im_agent",
   title: "Codex IM Agent",
@@ -219,7 +220,8 @@ class CodexRpcClient {
   }
 
   async startThread({ cwd }) {
-    return this.sendRequest("thread/start", buildStartThreadParams(this.resolveCodexWorkspaceRoot(cwd)));
+    const response = await this.sendRequest("thread/start", buildStartThreadParams(this.resolveCodexWorkspaceRoot(cwd)));
+    return this.rewriteThreadResponse(response);
   }
 
   async resumeThread({ threadId }) {
@@ -227,7 +229,8 @@ class CodexRpcClient {
     if (!normalizedThreadId) {
       throw new Error("thread/resume requires a non-empty threadId");
     }
-    return this.sendRequest("thread/resume", { threadId: normalizedThreadId });
+    const response = await this.sendRequest("thread/resume", { threadId: normalizedThreadId });
+    return this.rewriteThreadResponse(response);
   }
 
   async listThreads({ cursor = null, limit = 100, sortKey = "updated_at" } = {}) {
@@ -334,6 +337,24 @@ class CodexRpcClient {
     };
   }
 
+  rewriteThreadResponse(response) {
+    const thread = response?.result?.thread;
+    if (!thread || typeof thread !== "object") {
+      return response;
+    }
+
+    return {
+      ...response,
+      result: {
+        ...(response.result || {}),
+        thread: {
+          ...thread,
+          cwd: this.restoreWorkspacePath(thread?.cwd),
+        },
+      },
+    };
+  }
+
   restoreWorkspacePath(workspacePath) {
     const normalizedWorkspacePath = normalizeNonEmptyString(workspacePath);
     if (
@@ -356,6 +377,14 @@ class CodexRpcClient {
         const suffix = normalizedWorkspacePath.slice(aliasPath.length);
         return `${originalRoot}${suffix}`;
       }
+    }
+
+    const persistedAlias = loadPersistedWorkspaceAlias(normalizedWorkspacePath, this.workspaceAliasRoot);
+    if (persistedAlias) {
+      this.workspaceAliasByRoot.set(persistedAlias.originalRoot, persistedAlias.aliasPath);
+      this.workspaceRootByAlias.set(persistedAlias.aliasPath, persistedAlias.originalRoot);
+      const suffix = normalizedWorkspacePath.slice(persistedAlias.aliasPath.length);
+      return `${persistedAlias.originalRoot}${suffix}`;
     }
 
     return normalizedWorkspacePath;
@@ -848,6 +877,7 @@ function resolveCodexSpawnCwd(workspaceRoot, aliasRoot = DEFAULT_WORKSPACE_ALIAS
     `workspace-${crypto.createHash("sha1").update(normalizedWorkspaceRoot).digest("hex")}`
   );
   ensureWorkspaceMirror(aliasPath, normalizedWorkspaceRoot);
+  writeWorkspaceAliasMetadata(aliasPath, normalizedWorkspaceRoot);
   return aliasPath;
 }
 
@@ -877,6 +907,15 @@ function ensureWorkspaceMirror(aliasPath, targetPath) {
   }
 }
 
+function writeWorkspaceAliasMetadata(aliasPath, workspaceRoot) {
+  const metadataPath = path.join(aliasPath, WORKSPACE_ALIAS_METADATA_FILE);
+  try {
+    fs.writeFileSync(metadataPath, `${workspaceRoot}\n`, "utf8");
+  } catch (error) {
+    throw new Error(`Unable to persist Codex workspace alias metadata at ${metadataPath}: ${error.message}`);
+  }
+}
+
 function isAsciiOnly(value) {
   return /^[\x00-\x7F]*$/.test(String(value || ""));
 }
@@ -891,6 +930,47 @@ function matchesWorkspaceAliasPrefix(workspacePath, aliasPath) {
     || workspacePath.startsWith(`${aliasPath}/`)
     || workspacePath.startsWith(`${aliasPath}\\`)
   );
+}
+
+function loadPersistedWorkspaceAlias(workspacePath, aliasRoot = DEFAULT_WORKSPACE_ALIAS_ROOT) {
+  const normalizedWorkspacePath = normalizeNonEmptyString(workspacePath);
+  const normalizedAliasRoot = normalizeNonEmptyString(aliasRoot) || DEFAULT_WORKSPACE_ALIAS_ROOT;
+  if (!normalizedWorkspacePath || !normalizedAliasRoot) {
+    return null;
+  }
+
+  const relativePath = path.relative(normalizedAliasRoot, normalizedWorkspacePath);
+  if (
+    !relativePath
+    || relativePath === "."
+    || relativePath.startsWith("..")
+    || path.isAbsolute(relativePath)
+  ) {
+    return null;
+  }
+
+  const [aliasDirName] = relativePath.split(/[\\/]+/).filter(Boolean);
+  if (!aliasDirName) {
+    return null;
+  }
+
+  const aliasPath = path.join(normalizedAliasRoot, aliasDirName);
+  const metadataPath = path.join(aliasPath, WORKSPACE_ALIAS_METADATA_FILE);
+  let originalRoot = "";
+  try {
+    originalRoot = normalizeNonEmptyString(fs.readFileSync(metadataPath, "utf8"));
+  } catch {
+    return null;
+  }
+
+  if (!originalRoot) {
+    return null;
+  }
+
+  return {
+    aliasPath,
+    originalRoot,
+  };
 }
 
 function buildStartThreadParams(cwd) {

@@ -27,6 +27,7 @@ test("initializeCommonRuntimeState seeds shared runtime containers", () => {
   assert.ok(runtime.pendingReactionByThreadId instanceof Map);
   assert.ok(runtime.bindingKeyByThreadId instanceof Map);
   assert.ok(runtime.workspaceRootByThreadId instanceof Map);
+  assert.ok(runtime.inFlightThreadDispatchClaimsById instanceof Map);
   assert.ok(runtime.inFlightApprovalRequestKeys instanceof Set);
   assert.ok(runtime.resumedThreadIds instanceof Set);
   assert.ok(runtime.messageContextByMessageId instanceof Map);

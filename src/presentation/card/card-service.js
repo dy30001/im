@@ -3,6 +3,16 @@ const messageNormalizers = require("../message/normalizers");
 const reactionRepo = require("../../infra/feishu/reaction-repo");
 const { formatFailureText } = require("../../shared/error-text");
 const {
+  attachPerfTrace,
+  calculatePerfDurationMs,
+  getPerfFlag,
+  getPerfTrace,
+  logPerf,
+  markPerfTimestamp,
+  setPerfFlag,
+  setPerfTraceFields,
+} = require("../../shared/perf-trace");
+const {
   buildApprovalCard,
   buildApprovalResolvedCard,
   buildAssistantReplyCard,
@@ -14,6 +24,7 @@ const {
 
 const DEFAULT_OPENCLAW_PROGRESS_NOTICE_DELAY_MS = 200;
 const DEFAULT_OPENCLAW_PROGRESS_FOLLOWUP_DELAY_MS = 5 * 60 * 1000;
+const DEFAULT_OPENCLAW_FIRST_REPLY_IMMEDIATE_MIN_CHARS = 12;
 const DEFAULT_OPENCLAW_REPLY_FLUSH_DELAY_MS = 50;
 const DEFAULT_OPENCLAW_PROGRESS_NOTICE_TEXT = "已收到，正在处理，请稍等。";
 const DEFAULT_OPENCLAW_PROGRESS_FOLLOWUP_TEXT = "已经处理 5 分钟了，还在继续，请稍等。";
@@ -295,6 +306,16 @@ async function upsertAssistantReplyCard(
     };
   }
 
+  const perfTrace = getPerfTrace(existing) || getPerfTrace(pendingContext);
+  if (perfTrace) {
+    attachPerfTrace(existing, perfTrace);
+    setPerfTraceFields(perfTrace, {
+      chatId,
+      threadId,
+      turnId: resolvedTurnId,
+    });
+  }
+
   if (typeof text === "string" && text.trim()) {
     existing.text = mergeReplyText(existing.text, text.trim());
   }
@@ -328,7 +349,9 @@ async function upsertAssistantReplyCard(
       return;
     }
     if (runtime.config.openclawStreamingOutput && hasUnsentReplyText(existing)) {
-      await scheduleOpenClawReplyFlush(runtime, runKey);
+      await scheduleOpenClawReplyFlush(runtime, runKey, {
+        immediate: shouldFlushOpenClawReplyImmediately(existing),
+      });
     }
     return;
   }
@@ -443,12 +466,14 @@ async function flushOpenClawReplyText(runtime, runKey) {
     const isTerminalState = entry.state === "completed" || entry.state === "failed";
 
     if (unsentText) {
+      const sendStartedAt = Date.now();
       await runtime.sendTextMessage({
         chatId: entryChatId(entry, entry.chatId),
         replyToMessageId: entry.replyToMessageId,
         contextToken: entry.contextToken,
         text: unsentText,
       });
+      logFirstOpenClawPhoneReply(runtime, entry, unsentText, sentTextLength, sendStartedAt);
       entry.sentTextLength = text.length;
       runtime.setReplyCardEntry(runKey, entry);
     }
@@ -463,12 +488,14 @@ async function flushOpenClawReplyText(runtime, runKey) {
         ? ""
         : (text || (entry.state === "failed" ? "执行失败" : "执行完成"));
     if (fallbackText) {
+      const fallbackSendStartedAt = Date.now();
       await runtime.sendTextMessage({
         chatId: entryChatId(entry, entry.chatId),
         replyToMessageId: entry.replyToMessageId,
         contextToken: entry.contextToken,
         text: fallbackText,
       });
+      logFirstOpenClawPhoneReply(runtime, entry, fallbackText, sentTextLength, fallbackSendStartedAt);
       entry.sentTextLength = text.length || entry.sentTextLength || 0;
       runtime.setReplyCardEntry(runKey, entry);
     }
@@ -487,6 +514,33 @@ function shouldScheduleOpenClawReplyFlush(runtime, entry) {
     return true;
   }
   return Boolean(runtime?.config?.openclawStreamingOutput) && hasUnsentReplyText(entry);
+}
+
+function shouldFlushOpenClawReplyImmediately(entry) {
+  if (!entry) {
+    return false;
+  }
+  if (entry.state === "completed" || entry.state === "failed") {
+    return true;
+  }
+
+  const text = String(entry.text || "");
+  const sentTextLength = normalizeSentTextLength(entry.sentTextLength, text.length);
+  if (sentTextLength > 0) {
+    return false;
+  }
+
+  const unsentText = text.slice(sentTextLength).trim();
+  if (!unsentText) {
+    return false;
+  }
+  if (/[\r\n]/.test(unsentText)) {
+    return true;
+  }
+  if (/[。！？!?；;:：]$/.test(unsentText)) {
+    return true;
+  }
+  return unsentText.length >= DEFAULT_OPENCLAW_FIRST_REPLY_IMMEDIATE_MIN_CHARS;
 }
 
 function hasReplyText(entry) {
@@ -519,6 +573,31 @@ function getReplyFlushInFlightSet(runtime) {
     runtime._replyFlushInFlightRunKeys = new Set();
   }
   return runtime._replyFlushInFlightRunKeys;
+}
+
+function logFirstOpenClawPhoneReply(runtime, entry, text, sentTextLength, sendStartedAt) {
+  if (sentTextLength > 0) {
+    return false;
+  }
+  const perfTrace = getPerfTrace(entry);
+  if (!perfTrace || getPerfFlag(perfTrace, "first_phone_reply_logged")) {
+    return false;
+  }
+  const firstPhoneReplyAt = Date.now();
+  markPerfTimestamp(perfTrace, "firstPhoneReplyAt", firstPhoneReplyAt);
+  setPerfFlag(perfTrace, "first_phone_reply_logged");
+  return logPerf(runtime, "phone-first-reply-sent", {
+    chat: perfTrace.chatId || entry.chatId,
+    msg: perfTrace.messageId,
+    workspace: perfTrace.workspaceRoot,
+    thread: perfTrace.threadId || entry.threadId,
+    turn: perfTrace.turnId || entry.turnId,
+    totalMs: calculatePerfDurationMs(perfTrace.startedAt, firstPhoneReplyAt),
+    sendMs: calculatePerfDurationMs(sendStartedAt, firstPhoneReplyAt),
+    sinceCodexReplyMs: calculatePerfDurationMs(perfTrace.firstCodexReplyAt, firstPhoneReplyAt),
+    chars: String(text || "").length,
+    immediate: shouldFlushOpenClawReplyImmediately(entry),
+  });
 }
 
 function shouldScheduleOpenClawProgressNotice(runtime, entry) {
@@ -563,7 +642,7 @@ function scheduleOpenClawInitialProgressNotice(runtime, runKey, entry) {
       runtime.replyProgressTimersByRunKey.delete(runKey);
     }
 
-    const currentEntry = runtime.replyCardByRunKey.get(runKey) || entry;
+    const currentEntry = runtime.replyCardByRunKey.get(runKey) || null;
     if (
       !currentEntry
       || currentEntry.state !== "streaming"
@@ -608,7 +687,7 @@ function scheduleOpenClawFollowupProgressNotice(runtime, runKey, entry) {
       runtime.replyProgressFollowupTimersByRunKey.delete(runKey);
     }
 
-    const currentEntry = runtime.replyCardByRunKey.get(runKey) || entry;
+    const currentEntry = runtime.replyCardByRunKey.get(runKey) || null;
     if (
       !currentEntry
       || currentEntry.state !== "streaming"

@@ -1,5 +1,14 @@
 const codexMessageUtils = require("../infra/codex/message-utils");
 const { formatFailureText } = require("../shared/error-text");
+const {
+  calculatePerfDurationMs,
+  getPerfFlag,
+  getPerfTrace,
+  logPerf,
+  markPerfTimestamp,
+  setPerfFlag,
+  setPerfTraceFields,
+} = require("../shared/perf-trace");
 
 async function handleStopCommand(runtime, normalized) {
   const bindingKey = runtime.sessionStore.buildBindingKey(normalized);
@@ -84,6 +93,8 @@ function handleCodexMessage(runtime, message) {
     outbound.payload.chatId = context.chatId;
     outbound.payload.threadKey = context.threadKey;
   }
+  recordCodexTurnPerf(runtime, outbound, context);
+  persistActiveWorkspaceThreadSelection(runtime, threadId, context);
 
   if (codexMessageUtils.eventShouldClearPendingReaction(outbound)) {
     runtime.clearPendingReactionForThread(threadId).catch((error) => {
@@ -108,6 +119,7 @@ function handleCodexMessage(runtime, message) {
 
 async function finalizeTerminalTurn(runtime, threadId, context) {
   const bindingKey = resolveBindingKeyForTerminalTurn(runtime, threadId, context);
+  logCompletedTurnPerf(runtime, threadId, context);
   await runtime.clearPendingReactionForThread(threadId).catch((error) => {
     console.error(`[codex-im] failed to clear pending reaction: ${error.message}`);
   });
@@ -127,6 +139,45 @@ function resolveBindingKeyForTerminalTurn(runtime, threadId, context) {
     return "";
   }
   return String(runtime.sessionStore.buildBindingKey(context) || "").trim();
+}
+
+function persistActiveWorkspaceThreadSelection(runtime, threadId, context) {
+  const normalizedThreadId = String(threadId || "").trim();
+  if (
+    !normalizedThreadId
+    || typeof runtime?.sessionStore?.getActiveWorkspaceRoot !== "function"
+    || typeof runtime?.sessionStore?.getThreadIdForWorkspace !== "function"
+    || typeof runtime?.sessionStore?.setThreadIdForWorkspace !== "function"
+  ) {
+    return;
+  }
+
+  const bindingKey = resolveBindingKeyForTerminalTurn(runtime, normalizedThreadId, context);
+  if (!bindingKey) {
+    return;
+  }
+
+  const activeWorkspaceRoot = String(runtime.sessionStore.getActiveWorkspaceRoot(bindingKey) || "").trim();
+  const threadWorkspaceRoot = typeof runtime?.resolveWorkspaceRootForThread === "function"
+    ? String(runtime.resolveWorkspaceRootForThread(normalizedThreadId) || "").trim()
+    : "";
+  if (!activeWorkspaceRoot || !threadWorkspaceRoot || activeWorkspaceRoot !== threadWorkspaceRoot) {
+    return;
+  }
+
+  const currentSelectedThreadId = String(
+    runtime.sessionStore.getThreadIdForWorkspace(bindingKey, activeWorkspaceRoot) || ""
+  ).trim();
+  if (currentSelectedThreadId) {
+    return;
+  }
+
+  runtime.sessionStore.setThreadIdForWorkspace(
+    bindingKey,
+    activeWorkspaceRoot,
+    normalizedThreadId,
+    context ? codexMessageUtils.buildBindingMetadata(context) : {}
+  );
 }
 
 function logProviderDeliveryFailureOnce(runtime, outbound, error) {
@@ -160,6 +211,85 @@ function getRuntimeLogKeySet(runtime, propertyName) {
     runtime[propertyName] = new Set();
   }
   return runtime[propertyName];
+}
+
+function recordCodexTurnPerf(runtime, outbound, context) {
+  const threadId = String(outbound?.payload?.threadId || "").trim();
+  if (!threadId) {
+    return;
+  }
+  const trace = getPerfTrace(context);
+  if (!trace) {
+    return;
+  }
+
+  const turnId = String(outbound?.payload?.turnId || "").trim();
+  setPerfTraceFields(trace, {
+    threadId,
+    turnId,
+    chatId: outbound?.payload?.chatId || trace.chatId,
+    workspaceRoot: resolvePerfWorkspaceRoot(runtime, threadId),
+  });
+
+  if (
+    outbound.type === "im.run_state"
+    && outbound.payload?.state === "streaming"
+    && !getPerfFlag(trace, "turn_started_logged")
+  ) {
+    const turnStartedAt = Date.now();
+    markPerfTimestamp(trace, "turnStartedAt", turnStartedAt);
+    setPerfFlag(trace, "turn_started_logged");
+    logPerf(runtime, "phone-turn-started", {
+      chat: trace.chatId,
+      msg: trace.messageId,
+      workspace: trace.workspaceRoot,
+      thread: threadId,
+      turn: turnId,
+      totalMs: calculatePerfDurationMs(trace.startedAt, turnStartedAt),
+    });
+  }
+
+  if (outbound.type === "im.agent_reply" && !getPerfFlag(trace, "first_codex_reply_logged")) {
+    const firstReplyAt = Date.now();
+    markPerfTimestamp(trace, "firstCodexReplyAt", firstReplyAt);
+    setPerfFlag(trace, "first_codex_reply_logged");
+    logPerf(runtime, "phone-first-codex-reply", {
+      chat: trace.chatId,
+      msg: trace.messageId,
+      workspace: trace.workspaceRoot,
+      thread: threadId,
+      turn: turnId,
+      totalMs: calculatePerfDurationMs(trace.startedAt, firstReplyAt),
+      sinceTurnMs: calculatePerfDurationMs(trace.turnStartedAt, firstReplyAt),
+    });
+  }
+}
+
+function logCompletedTurnPerf(runtime, threadId, context) {
+  const trace = getPerfTrace(context);
+  if (!trace || getPerfFlag(trace, "turn_completed_logged")) {
+    return false;
+  }
+  const completedAt = Date.now();
+  markPerfTimestamp(trace, "completedAt", completedAt);
+  setPerfFlag(trace, "turn_completed_logged");
+  return logPerf(runtime, "phone-turn-completed", {
+    chat: trace.chatId,
+    msg: trace.messageId,
+    workspace: trace.workspaceRoot || resolvePerfWorkspaceRoot(runtime, threadId),
+    thread: threadId || trace.threadId,
+    turn: trace.turnId,
+    totalMs: calculatePerfDurationMs(trace.startedAt, completedAt),
+    firstCodexReplyMs: calculatePerfDurationMs(trace.startedAt, trace.firstCodexReplyAt),
+    firstPhoneReplyMs: calculatePerfDurationMs(trace.startedAt, trace.firstPhoneReplyAt),
+  });
+}
+
+function resolvePerfWorkspaceRoot(runtime, threadId) {
+  if (!threadId || typeof runtime?.resolveWorkspaceRootForThread !== "function") {
+    return "";
+  }
+  return String(runtime.resolveWorkspaceRootForThread(threadId) || "").trim();
 }
 
 async function deliverToProvider(runtime, event) {

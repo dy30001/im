@@ -266,6 +266,83 @@ test("resolveWorkspaceThreadState skips desktop sessions already claimed by anot
   assert.deepEqual(updates, [["binding-2", "/repo", "session-2"]]);
 });
 
+test("resolveWorkspaceThreadState skips desktop sessions with an inflight dispatch claim from another binding", async () => {
+  const bindingKey = "binding-2";
+  const workspaceRoot = "/repo";
+  const normalized = {
+    chatId: "chat-2",
+    messageId: "msg-2",
+    text: "继续聊天",
+  };
+
+  const claim = {
+    bindingKey: "binding-1",
+    workspaceRoot,
+    claimedAt: Date.now(),
+    keys: ["session-1", "thread-1", "record-1"],
+  };
+  const sessions = [
+    {
+      id: "session-1",
+      writable: true,
+      acpSessionId: "thread-1",
+      acpxRecordId: "record-1",
+      cwd: workspaceRoot,
+      updatedAt: 200,
+    },
+    {
+      id: "session-2",
+      writable: true,
+      acpSessionId: "thread-2",
+      acpxRecordId: "record-2",
+      cwd: workspaceRoot,
+      updatedAt: 100,
+    },
+  ];
+
+  const runtime = {
+    config: {
+      openclaw: {
+        threadSource: "acpx",
+      },
+    },
+    sessionStore: {
+      getThreadIdForWorkspace: () => "",
+      setThreadIdForWorkspace: () => {},
+    },
+    usesDesktopSessionSource: () => true,
+    resolveThreadIdForBinding: () => "",
+    listDesktopSessionsForWorkspace: async () => sessions,
+    resolveDesktopSessionById: (_currentWorkspaceRoot, sessionId) => (
+      sessions.find((session) => (
+        session.id === sessionId
+        || session.acpSessionId === sessionId
+        || session.acpxRecordId === sessionId
+      )) || null
+    ),
+    hydrateDesktopSession: async (session) => session,
+    setThreadBindingKey: () => {},
+    setThreadWorkspaceRoot: () => {},
+    rememberSelectedThreadForSync: () => {},
+    inFlightThreadDispatchClaimsById: new Map([
+      ["session-1", claim],
+      ["thread-1", claim],
+      ["record-1", claim],
+    ]),
+  };
+
+  const result = await resolveWorkspaceThreadState(runtime, {
+    bindingKey,
+    workspaceRoot,
+    normalized,
+    autoSelectThread: true,
+    allowClaimedThreadReuse: false,
+  });
+
+  assert.equal(result.selectedThreadId, "");
+  assert.equal(result.threadId, "session-2");
+});
+
 test("resolveWorkspaceThreadState clears a shared selected desktop session when shared reuse is disabled", async () => {
   const bindingKey = "binding-2";
   const workspaceRoot = "/repo";
@@ -489,6 +566,75 @@ test("resolveWorkspaceThreadState skips threads already claimed by another bindi
   assert.equal(result.selectedThreadId, "");
   assert.equal(result.threadId, "thread-2");
   assert.deepEqual(updates, [["binding-2", "/repo", "thread-2"]]);
+});
+
+test("resolveWorkspaceThreadState skips threads with an inflight dispatch claim from another binding", async () => {
+  const bindingKey = "binding-2";
+  const workspaceRoot = "/repo";
+  const normalized = {
+    chatId: "chat-2",
+    messageId: "msg-2",
+    text: "继续聊天",
+  };
+
+  const claim = {
+    bindingKey: "binding-1",
+    workspaceRoot,
+    claimedAt: Date.now(),
+    keys: ["thread-1"],
+  };
+
+  const runtime = {
+    sessionStore: {
+      getThreadIdForWorkspace: () => "",
+      setThreadIdForWorkspace: () => {},
+    },
+    resolveThreadIdForBinding: () => "",
+    workspaceThreadListCacheByKey: new Map(),
+    workspaceThreadRefreshStateByKey: new Map(),
+    workspaceThreadSharedCacheByKey: new Map(),
+    workspaceThreadRefreshPromiseByKey: new Map(),
+    resumedThreadIds: new Set(),
+    inFlightThreadDispatchClaimsById: new Map([
+      ["thread-1", claim],
+    ]),
+    codex: {
+      listThreads: async () => ({
+        result: {
+          data: [
+            {
+              id: "thread-1",
+              cwd: workspaceRoot,
+              name: "Thread 1",
+              updatedAt: 200,
+            },
+            {
+              id: "thread-2",
+              cwd: workspaceRoot,
+              name: "Thread 2",
+              updatedAt: 100,
+            },
+          ],
+          nextCursor: "",
+        },
+      }),
+    },
+    setThreadBindingKey: () => {},
+    setThreadWorkspaceRoot: () => {},
+    rememberSelectedThreadForSync: () => {},
+  };
+
+  const result = await resolveWorkspaceThreadState(runtime, {
+    bindingKey,
+    workspaceRoot,
+    normalized,
+    autoSelectThread: true,
+    refreshThreadList: false,
+    allowClaimedThreadReuse: false,
+  });
+
+  assert.equal(result.selectedThreadId, "");
+  assert.equal(result.threadId, "thread-2");
 });
 
 test("resolveWorkspaceThreadState ignores a shared selected thread when shared reuse is disabled", async () => {

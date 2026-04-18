@@ -194,6 +194,152 @@ test("OpenClaw selected thread sync sends one summary when the desktop thread ch
   }
 });
 
+test("OpenClaw selected thread sync clears a mismatched workspace thread before sending a summary", async () => {
+  const runtime = createRuntime();
+  const sentMessages = [];
+  const cleared = [];
+  let selectedThreadId = "thread-1";
+  let currentUpdatedAt = 100;
+  const originalDateNow = Date.now;
+  let now = 1_700_000_000_000;
+  let currentResumeResponse = buildResumeResponse("桌面提问 1", "桌面回答 1", {
+    name: "Cross Repo Thread",
+    cwd: "/repo-other",
+    updatedAt: currentUpdatedAt,
+  });
+
+  Date.now = () => now;
+  try {
+    runtime.sessionStore = {
+      listBindings: () => [{
+        bindingKey: "binding-1",
+        binding: {
+          provider: "openclaw",
+          workspaceId: "default",
+          chatId: "chat-1@im.wechat",
+          activeWorkspaceRoot: "/repo",
+          threadIdByWorkspaceRoot: {
+            "/repo": "thread-1",
+          },
+        },
+      }],
+      getActiveWorkspaceRoot: () => "/repo",
+      getThreadIdForWorkspace: () => selectedThreadId,
+      clearThreadIdForWorkspace: (bindingKey, workspaceRoot) => {
+        cleared.push([bindingKey, workspaceRoot]);
+        selectedThreadId = "";
+      },
+    };
+    runtime.refreshWorkspaceThreads = async () => [{
+      id: "thread-1",
+      cwd: "/repo-other",
+      title: "Cross Repo Thread",
+      updatedAt: currentUpdatedAt,
+    }];
+    runtime.codex = {
+      resumeThread: async () => currentResumeResponse,
+    };
+    runtime.sendTextMessage = async (payload) => {
+      sentMessages.push(payload);
+    };
+
+    await runtime.syncSelectedThreads({ aborted: false });
+
+    currentUpdatedAt = 200;
+    currentResumeResponse = buildResumeResponse("桌面提问 2", "桌面回答 2", {
+      name: "Cross Repo Thread",
+      cwd: "/repo-other",
+      updatedAt: currentUpdatedAt,
+    });
+    now += 5_000;
+    await runtime.syncSelectedThreads({ aborted: false });
+
+    assert.ok(cleared.length >= 1);
+    assert.deepEqual(cleared[0], ["binding-1", "/repo"]);
+    assert.equal(sentMessages.length, 0);
+  } finally {
+    Date.now = originalDateNow;
+  }
+});
+
+test("OpenClaw selected thread sync pauses while the same binding is dispatching a phone message", async () => {
+  const runtime = createRuntime();
+  let resumeCalls = 0;
+
+  runtime.sessionStore = {
+    listBindings: () => [{
+      bindingKey: "binding-1",
+      binding: {
+        provider: "openclaw",
+        workspaceId: "default",
+        chatId: "chat-1@im.wechat",
+        activeWorkspaceRoot: "/repo",
+        threadIdByWorkspaceRoot: {
+          "/repo": "thread-1",
+        },
+      },
+    }],
+  };
+  runtime.inFlightBindingDispatchKeys = new Set(["binding-1"]);
+  runtime.codex = {
+    resumeThread: async () => {
+      resumeCalls += 1;
+      return buildResumeResponse("桌面提问", "桌面回答", {
+        name: "Resume Thread",
+        cwd: "/repo",
+        updatedAt: 100,
+      });
+    },
+  };
+
+  await runtime.syncSelectedThreads({ aborted: false });
+  assert.equal(resumeCalls, 0);
+
+  runtime.inFlightBindingDispatchKeys.clear();
+  await runtime.syncSelectedThreads({ aborted: false });
+  assert.equal(resumeCalls, 1);
+});
+
+test("OpenClaw selected thread sync pauses while the binding still has queued phone messages", async () => {
+  const runtime = createRuntime();
+  let resumeCalls = 0;
+
+  runtime.sessionStore = {
+    listBindings: () => [{
+      bindingKey: "binding-1",
+      binding: {
+        provider: "openclaw",
+        workspaceId: "default",
+        chatId: "chat-1@im.wechat",
+        activeWorkspaceRoot: "/repo",
+        threadIdByWorkspaceRoot: {
+          "/repo": "thread-1",
+        },
+      },
+    }],
+  };
+  runtime.pendingMessageQueueByBindingKey = new Map([
+    ["binding-1", [{ bindingKey: "binding-1", workspaceRoot: "/repo", normalized: { messageId: "msg-2" } }]],
+  ]);
+  runtime.codex = {
+    resumeThread: async () => {
+      resumeCalls += 1;
+      return buildResumeResponse("桌面提问", "桌面回答", {
+        name: "Resume Thread",
+        cwd: "/repo",
+        updatedAt: 100,
+      });
+    },
+  };
+
+  await runtime.syncSelectedThreads({ aborted: false });
+  assert.equal(resumeCalls, 0);
+
+  runtime.pendingMessageQueueByBindingKey.clear();
+  await runtime.syncSelectedThreads({ aborted: false });
+  assert.equal(resumeCalls, 1);
+});
+
 test("OpenClaw selected thread sync skips the next update after local activity", async () => {
   const runtime = createRuntime();
   const sentMessages = [];

@@ -1,3 +1,5 @@
+const { releaseThreadDispatchClaim } = require("../../shared/thread-dispatch-claims");
+
 const MAX_PENDING_BINDING_CONTEXT_ENTRIES = 300;
 const MAX_PENDING_THREAD_CONTEXT_ENTRIES = 500;
 const MAX_REPLY_CARD_ENTRIES = 500;
@@ -226,19 +228,24 @@ function shouldDeliverThreadEventForActiveWorkspace(runtime, threadId) {
     return true;
   }
 
-  const threadWorkspaceRoot = getStoredThreadWorkspaceRoot(runtime, normalizedThreadId);
-  if (!threadWorkspaceRoot) {
-    return true;
-  }
-
   const bindingKey = resolveBindingKeyForThread(runtime, normalizedThreadId);
   if (!bindingKey) {
-    return true;
+    return false;
   }
 
   const activeWorkspaceRoot = resolveWorkspaceRootForBinding(runtime, bindingKey);
   if (!activeWorkspaceRoot) {
-    return true;
+    return false;
+  }
+
+  const selectedThreadId = resolveThreadIdForBinding(runtime, bindingKey, activeWorkspaceRoot);
+  if (selectedThreadId) {
+    return selectedThreadId === normalizedThreadId;
+  }
+
+  const threadWorkspaceRoot = getStoredThreadWorkspaceRoot(runtime, normalizedThreadId);
+  if (!threadWorkspaceRoot) {
+    return false;
   }
 
   return activeWorkspaceRoot === threadWorkspaceRoot;
@@ -256,6 +263,7 @@ function cleanupThreadRuntimeState(runtime, threadId) {
     return;
   }
 
+  releaseThreadDispatchClaim(runtime, { target: threadId });
   runtime.pendingApprovalByThreadId.delete(threadId);
   runtime.activeTurnIdByThreadId.delete(threadId);
   runtime.activeTurnStartedAtByThreadId.delete(threadId);

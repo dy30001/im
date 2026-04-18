@@ -328,6 +328,12 @@ class OpenClawBotRuntime {
       if (!threadId || !turnId || this.pendingApprovalByThreadId.has(threadId)) {
         continue;
       }
+      if (
+        typeof this.shouldDeliverThreadEventForActiveWorkspace === "function"
+        && !this.shouldDeliverThreadEventForActiveWorkspace(threadId)
+      ) {
+        continue;
+      }
 
       const startedAt = Number(this.activeTurnStartedAtByThreadId.get(threadId) || 0);
       const lastActivityAt = Number(this.lastTurnActivityAtByThreadId.get(threadId) || startedAt || 0);
@@ -377,6 +383,14 @@ class OpenClawBotRuntime {
   }
 
   async notifyStalledTurnRestart(threadId, { inactiveMs = 0, timeoutMs = 0 } = {}) {
+    if (
+      threadId
+      && typeof this.shouldDeliverThreadEventForActiveWorkspace === "function"
+      && !this.shouldDeliverThreadEventForActiveWorkspace(threadId)
+    ) {
+      return;
+    }
+
     const context = this.pendingChatContextByThreadId.get(threadId) || null;
     if (!context?.chatId) {
       return;
@@ -478,7 +492,24 @@ class OpenClawBotRuntime {
   }
 
   usesDesktopSessionSource() {
-    return String(this.config.openclaw?.threadSource || "").trim().toLowerCase() === "acpx";
+    const threadSource = String(this.config.openclaw?.threadSource || "").trim().toLowerCase();
+    if (threadSource !== "acpx") {
+      return false;
+    }
+
+    const acpxSessionIndexFile = String(this.config.openclaw?.acpxSessionIndexFile || "").trim();
+    if (!acpxSessionIndexFile || fs.existsSync(acpxSessionIndexFile)) {
+      return true;
+    }
+
+    if (!this._missingAcpxSessionIndexWarningLogged) {
+      this._missingAcpxSessionIndexWarningLogged = true;
+      console.warn(
+        `[codex-im] ACPX session index is unavailable (${acpxSessionIndexFile}); `
+        + "falling back to Codex thread source for phone dispatch"
+      );
+    }
+    return false;
   }
 
   async listDesktopSessionsForWorkspace(workspaceRoot) {
@@ -619,6 +650,7 @@ function attachRuntimeForwarders() {
     handleStopCommand: eventsRuntime.handleStopCommand,
     handleApprovalCommand: approvalRuntime.handleApprovalCommand,
     deliverToProvider: eventsRuntime.deliverToProvider,
+    clearQueuedMessagesForBinding: appDispatcher.clearQueuedMessagesForBinding,
     drainQueuedMessagesForBinding: appDispatcher.drainQueuedMessagesForBinding,
     processQueuedNormalizedTextEvent: appDispatcher.processQueuedNormalizedTextEvent,
     sendInfoCardMessage,

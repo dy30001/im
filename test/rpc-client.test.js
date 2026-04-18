@@ -194,6 +194,10 @@ test("resolveCodexSpawnCwd creates an ASCII workspace mirror for non-ASCII works
     fs.statSync(path.join(resolved, "marker.txt")).ino,
     fs.statSync(sourceFile).ino
   );
+  assert.equal(
+    fs.readFileSync(path.join(resolved, ".codex-im-workspace-root"), "utf8").trim(),
+    unicodeWorkspaceRoot
+  );
 });
 
 test("resolveCodexHome copies auth and config into an isolated Codex home", () => {
@@ -267,6 +271,16 @@ test("CodexRpcClient uses an ASCII workspace mirror for turn requests and maps l
         },
       };
     }
+    if (method === "thread/resume") {
+      return {
+        result: {
+          thread: {
+            id: "thread-1",
+            cwd: aliasWorkspaceRoot,
+          },
+        },
+      };
+    }
     return {
       result: {
         thread: {
@@ -289,6 +303,9 @@ test("CodexRpcClient uses an ASCII workspace mirror for turn requests and maps l
   const listResponse = await client.listThreads();
   const mappedThreads = listResponse.result.data;
   assert.equal(mappedThreads[0].cwd, unicodeWorkspaceRoot);
+
+  const resumeResponse = await client.resumeThread({ threadId: "thread-1" });
+  assert.equal(resumeResponse.result.thread.cwd, unicodeWorkspaceRoot);
 });
 
 test("CodexRpcClient keeps workspace aliases isolated per workspace root", () => {
@@ -334,6 +351,30 @@ test("CodexRpcClient keeps workspace aliases isolated per workspace root", () =>
 
   assert.equal(rewritten.result.data[0].cwd, projectARoot);
   assert.equal(rewritten.result.data[1].cwd, `${projectBRoot}/nested`);
+});
+
+test("CodexRpcClient restores persisted alias metadata after a fresh restart", () => {
+  const tempAliasRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-im-alias-"));
+  const unicodeWorkspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-im-读书-"));
+  fs.writeFileSync(path.join(unicodeWorkspaceRoot, "marker.txt"), "resume me");
+
+  const aliasWorkspaceRoot = resolveCodexSpawnCwd(unicodeWorkspaceRoot, tempAliasRoot);
+  const restartedClient = new CodexRpcClient({
+    endpoint: "",
+    env: {},
+    codexCommand: "codex",
+    spawnImpl: () => {
+      throw new Error("spawn should not be used in this test");
+    },
+    webSocketImpl: class FakeWebSocket {},
+    workspaceAliasRoot: tempAliasRoot,
+  });
+
+  assert.equal(restartedClient.restoreWorkspacePath(aliasWorkspaceRoot), unicodeWorkspaceRoot);
+  assert.equal(
+    restartedClient.restoreWorkspacePath(path.join(aliasWorkspaceRoot, "nested", "child.txt")),
+    path.join(unicodeWorkspaceRoot, "nested", "child.txt")
+  );
 });
 
 test("spawnCodexProcess forwards the cwd through both spawn options and environment", async () => {

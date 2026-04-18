@@ -13,6 +13,9 @@ echo "[codex-im] openclaw quick"
 bash "$APP_ROOT/scripts/check-openclaw-status.sh" "${OPENCLAW_INSTANCE_ID:-}"
 
 if [ -f "$LOG_FILE" ]; then
-  echo "[codex-im] key errors (last 80 lines)"
-  tail -n 80 "$LOG_FILE" | grep -E "errcode=-14|openclaw poll failed|sendMessage|timeout|QR expired" || true
+  echo "[codex-im] key errors (current run)"
+  supervisor_pid="$(cat "$OPENCLAW_SUPERVISOR_PID_FILE" 2>/dev/null || true)"
+  child_pid="$(cat "$OPENCLAW_CHILD_PID_FILE" 2>/dev/null || true)"
+  collect_openclaw_log_window "$LOG_FILE" "$supervisor_pid" "$child_pid" 80 \
+    | grep -E "errcode=-14|openclaw poll failed|sendMessage|timeout|QR expired" || true
 fi

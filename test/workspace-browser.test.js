@@ -12,6 +12,7 @@ const {
   handleBrowseCommand,
   handleWorkspacesCommand,
   resolveWorkspaceContext,
+  showStatusPanel,
   switchWorkspaceByPath,
 } = require("../src/domain/workspace/workspace-service");
 
@@ -400,11 +401,14 @@ test("switchWorkspaceByPath clears inactive reply runs for the previous workspac
       { workspaceRoot: "/repo/alpha", isActive: true, threadId: "thread-1" },
       { workspaceRoot: "/repo/beta", isActive: false, threadId: "thread-2" },
     ]),
+    clearQueuedMessagesForBinding: (bindingKey, workspaceRoot) => {
+      calls.push(["clearQueuedMessagesForBinding", bindingKey, workspaceRoot]);
+    },
     disposeInactiveReplyRunsForBinding: (bindingKey, workspaceRoot) => {
       calls.push(["disposeInactiveReplyRunsForBinding", bindingKey, workspaceRoot]);
     },
-    resolveWorkspaceThreadState: async ({ bindingKey, workspaceRoot }) => {
-      calls.push(["resolveWorkspaceThreadState", bindingKey, workspaceRoot]);
+    resolveWorkspaceThreadState: async ({ bindingKey, workspaceRoot, allowClaimedThreadReuse }) => {
+      calls.push(["resolveWorkspaceThreadState", bindingKey, workspaceRoot, allowClaimedThreadReuse]);
       return { threads: [], threadId: "" };
     },
     resolveReplyToMessageId: (_normalized, replyToMessageId = "") => replyToMessageId || "reply-1",
@@ -421,12 +425,90 @@ test("switchWorkspaceByPath clears inactive reply runs for the previous workspac
     replyToMessageId: "reply-1",
   });
 
-  assert.deepEqual(calls.slice(0, 3), [
+  assert.deepEqual(calls.slice(0, 4), [
     ["setActiveWorkspaceRoot", "/repo/beta"],
+    ["clearQueuedMessagesForBinding", "binding-1", "/repo/alpha"],
     ["disposeInactiveReplyRunsForBinding", "binding-1", "/repo/beta"],
-    ["resolveWorkspaceThreadState", "binding-1", "/repo/beta"],
+    ["resolveWorkspaceThreadState", "binding-1", "/repo/beta", false],
   ]);
   assert.equal(sentCards.length, 1);
+});
+
+test("showStatusPanel does not auto-select a thread already claimed by another binding", async () => {
+  const calls = [];
+  const sentCards = [];
+  const runtime = {
+    config: {
+      defaultCodexModel: "",
+      defaultCodexEffort: "",
+    },
+    sessionStore: {
+      buildBindingKey: () => "binding-2",
+      getBinding: () => ({}),
+      listBindings: () => ([
+        {
+          bindingKey: "binding-1",
+          binding: {
+            threadIdByWorkspaceRoot: {
+              "/repo": "thread-1",
+            },
+          },
+        },
+      ]),
+      clearThreadIdForWorkspace: (bindingKey, workspaceRoot) => {
+        calls.push(["clearThreadIdForWorkspace", bindingKey, workspaceRoot]);
+      },
+      setThreadIdForWorkspace: (bindingKey, workspaceRoot, threadId) => {
+        calls.push(["setThreadIdForWorkspace", bindingKey, workspaceRoot, threadId]);
+      },
+      getAvailableModelCatalog: () => null,
+    },
+    codex: {
+      listModels: async () => ({
+        result: {
+          data: [],
+        },
+      }),
+    },
+    getBindingContext: () => ({
+      bindingKey: "binding-2",
+      workspaceRoot: "/repo",
+    }),
+    resolveReplyToMessageId: (_normalized, replyToMessageId = "") => replyToMessageId || "reply-1",
+    refreshWorkspaceThreads: async () => ([
+      { id: "thread-1", title: "Claimed Thread", updatedAt: 200 },
+      { id: "thread-2", title: "Available Thread", updatedAt: 100 },
+    ]),
+    resolveThreadIdForBinding: () => "thread-1",
+    setThreadBindingKey: (threadId, bindingKey) => {
+      calls.push(["setThreadBindingKey", threadId, bindingKey]);
+    },
+    setThreadWorkspaceRoot: (threadId, workspaceRoot) => {
+      calls.push(["setThreadWorkspaceRoot", threadId, workspaceRoot]);
+    },
+    rememberSelectedThreadForSync: (bindingKey, workspaceRoot, threadId) => {
+      calls.push(["rememberSelectedThreadForSync", bindingKey, workspaceRoot, threadId]);
+    },
+    describeWorkspaceStatus: () => ({ code: "idle", label: "空闲" }),
+    getCodexParamsForWorkspace: () => ({ model: "", effort: "" }),
+    buildStatusPanelCard: (payload) => payload,
+    sendInteractiveCard: async (payload) => {
+      sentCards.push(payload);
+    },
+  };
+
+  await showStatusPanel(runtime, createNormalizedEvent(), {
+    replyToMessageId: "reply-1",
+  });
+
+  assert.deepEqual(calls.slice(0, 4), [
+    ["clearThreadIdForWorkspace", "binding-2", "/repo"],
+    ["setThreadIdForWorkspace", "binding-2", "/repo", "thread-2"],
+    ["setThreadBindingKey", "thread-2", "binding-2"],
+    ["setThreadWorkspaceRoot", "thread-2", "/repo"],
+  ]);
+  assert.equal(sentCards.length, 1);
+  assert.equal(sentCards[0].card.threadId, "thread-2");
 });
 
 function createBrowseRuntime({

@@ -98,6 +98,14 @@ npm run openclaw-bot
 后台常驻启动：
 
 ```bash
+npm run openclaw-bot:connect
+```
+
+这是推荐入口。它会自动补齐 `.env`、按需安装依赖、拉起后台常驻服务，并在 token 为空时等待微信扫码直到服务就绪。
+
+如果你只想单独安装后台常驻：
+
+```bash
 npm run openclaw-bot:launchd
 ```
 

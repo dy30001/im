@@ -18,6 +18,10 @@ LAUNCHD_TARGET="$OPENCLAW_LAUNCHD_TARGET"
 LOG_FILE="$OPENCLAW_LOG_FILE"
 HEARTBEAT_TIMEOUT_MS="${CODEX_IM_OPENCLAW_HEARTBEAT_TIMEOUT_MS:-600000}"
 STARTUP_HEARTBEAT_TIMEOUT_MS="${CODEX_IM_OPENCLAW_STARTUP_HEARTBEAT_TIMEOUT_MS:-180000}"
+INSTANCE_CMD_SUFFIX=""
+if [ -n "$OPENCLAW_INSTANCE_ID" ]; then
+  INSTANCE_CMD_SUFFIX=" -- ${OPENCLAW_INSTANCE_ID}"
+fi
 
 echo "[codex-im] openclaw status"
 echo "instance_id=${OPENCLAW_INSTANCE_ID:-default}"
@@ -34,13 +38,15 @@ else
   echo "launchd_plist=${LAUNCH_AGENT_PLIST} (missing)"
 fi
 if command -v launchctl >/dev/null 2>&1 && launchctl print "$LAUNCHD_TARGET" >/dev/null 2>&1; then
+  launchd_status="loaded"
   echo "launchd_status=loaded"
 else
+  launchd_status="not_loaded"
   echo "launchd_status=not_loaded"
 fi
 
 if [ -f "$HEARTBEAT_FILE" ]; then
-  heartbeat_summary="$(node -e 'const fs=require("fs"); try { const p=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); const updatedAt=Number(p.updatedAt||0); const reason=String(p.reason||"").trim()||"unknown"; const age=Math.max(0, Date.now()-updatedAt); process.stdout.write(`${updatedAt}|${age}|${reason}`); } catch { process.stdout.write("||"); }' "$HEARTBEAT_FILE")"
+  heartbeat_summary="$(run_openclaw_node -e 'const fs=require("fs"); try { const p=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); const updatedAt=Number(p.updatedAt||0); const reason=String(p.reason||"").trim()||"unknown"; const age=Math.max(0, Date.now()-updatedAt); process.stdout.write(`${updatedAt}|${age}|${reason}`); } catch { process.stdout.write("||"); }' "$HEARTBEAT_FILE")"
   heartbeat_updated_at="${heartbeat_summary%%|*}"
   heartbeat_rest="${heartbeat_summary#*|}"
   heartbeat_age_ms="${heartbeat_rest%%|*}"
@@ -58,7 +64,7 @@ else
 fi
 
 if [ -f "$SUPERVISOR_STATE_FILE" ]; then
-  supervisor_summary="$(node -e 'const fs=require("fs"); try { const p=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); const updatedAt=Number(p.updatedAt||0); const status=String(p.status||"").trim()||"unknown"; const restartAttempt=Number(p.restartAttempt||0); const restartDelayMs=Number(p.restartDelayMs||0); const nextRestartAt=Number(p.nextRestartAt||0); const nextRestartInMs=nextRestartAt > 0 ? Math.max(0, nextRestartAt - Date.now()) : 0; const lastExitAt=Number(p.lastExitAt||0); const lastExitReason=String(p.lastExitReason||"").trim()||"unknown"; const heartbeatTimeoutMs=Number(p.heartbeatTimeoutMs||0); const startupHeartbeatTimeoutMs=Number(p.startupHeartbeatTimeoutMs||0); process.stdout.write(`${updatedAt}|${status}|${restartAttempt}|${restartDelayMs}|${nextRestartAt}|${nextRestartInMs}|${lastExitAt}|${lastExitReason}|${heartbeatTimeoutMs}|${startupHeartbeatTimeoutMs}`); } catch { process.stdout.write("||0|0|0|0|0||0|0"); }' "$SUPERVISOR_STATE_FILE")"
+  supervisor_summary="$(run_openclaw_node -e 'const fs=require("fs"); try { const p=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); const updatedAt=Number(p.updatedAt||0); const status=String(p.status||"").trim()||"unknown"; const restartAttempt=Number(p.restartAttempt||0); const restartDelayMs=Number(p.restartDelayMs||0); const nextRestartAt=Number(p.nextRestartAt||0); const nextRestartInMs=nextRestartAt > 0 ? Math.max(0, nextRestartAt - Date.now()) : 0; const lastExitAt=Number(p.lastExitAt||0); const lastExitReason=String(p.lastExitReason||"").trim()||"unknown"; const heartbeatTimeoutMs=Number(p.heartbeatTimeoutMs||0); const startupHeartbeatTimeoutMs=Number(p.startupHeartbeatTimeoutMs||0); process.stdout.write(`${updatedAt}|${status}|${restartAttempt}|${restartDelayMs}|${nextRestartAt}|${nextRestartInMs}|${lastExitAt}|${lastExitReason}|${heartbeatTimeoutMs}|${startupHeartbeatTimeoutMs}`); } catch { process.stdout.write("||0|0|0|0|0||0|0"); }' "$SUPERVISOR_STATE_FILE")"
   supervisor_updated_at="${supervisor_summary%%|*}"
   supervisor_rest="${supervisor_summary#*|}"
   supervisor_status="${supervisor_rest%%|*}"
@@ -141,22 +147,40 @@ else
 fi
 
 if [ "$supervisor_status" = "restarting" ]; then
-  echo "service_state=restarting"
+  service_state="restarting"
 elif [ -n "$child_pid" ] && kill -0 "$child_pid" >/dev/null 2>&1; then
   if [ "${heartbeat_updated_at:-}" = "<missing>" ]; then
-    echo "service_state=starting"
+    service_state="starting"
   else
-    echo "service_state=running"
+    service_state="running"
   fi
 elif [ -n "$supervisor_pid" ] && kill -0 "$supervisor_pid" >/dev/null 2>&1; then
-  echo "service_state=supervising"
+  service_state="supervising"
 else
-  echo "service_state=stopped"
+  service_state="stopped"
 fi
+echo "service_state=${service_state}"
 
 if [ -f "$LOG_FILE" ]; then
-  echo "[codex-im] recent log tail:"
-  tail -n 40 "$LOG_FILE"
+  current_log_window="$(collect_openclaw_log_window "$LOG_FILE" "$supervisor_pid" "$child_pid" 40)"
+  echo "[codex-im] current log window:"
+  printf '%s\n' "$current_log_window"
 else
+  current_log_window=""
   echo "[codex-im] log file missing"
 fi
+
+env_token_present="0"
+if [ -n "${CODEX_IM_OPENCLAW_TOKEN:-}" ]; then
+  env_token_present="1"
+fi
+
+has_saved_credentials="0"
+if [ -f "$OPENCLAW_CREDENTIALS_FILE" ]; then
+  credentials_token_length="$(run_openclaw_node -e 'const fs=require("fs");try{const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));process.stdout.write(String((p.token||"").trim().length));}catch{process.stdout.write("0");}' "$OPENCLAW_CREDENTIALS_FILE")"
+  if [ "${credentials_token_length:-0}" -gt 0 ] 2>/dev/null; then
+    has_saved_credentials="1"
+  fi
+fi
+
+print_openclaw_next_action "$INSTANCE_CMD_SUFFIX"

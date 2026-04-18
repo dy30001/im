@@ -186,6 +186,60 @@ test("OpenClawBotRuntime falls back to QR re-login when stored credentials are a
   assert.equal(runtime.config.openclaw.accountId, "account-9");
 });
 
+test("OpenClawBotRuntime falls back to codex threads when the ACPX index is missing", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-im-openclaw-acpx-missing-"));
+  const runtime = new OpenClawBotRuntime({
+    mode: "openclaw-bot",
+    workspaceAllowlist: [],
+    codexEndpoint: "",
+    codexCommand: "codex",
+    defaultCodexModel: "gpt-5.3-codex",
+    defaultCodexEffort: "medium",
+    defaultCodexAccessMode: "default",
+    verboseCodexLogs: false,
+    openclaw: {
+      baseUrl: "https://ilinkai.weixin.qq.com",
+      token: "token",
+      threadSource: "acpx",
+      acpxSessionIndexFile: path.join(tempDir, "missing-index.json"),
+      longPollTimeoutMs: 35000,
+    },
+    defaultWorkspaceId: "default",
+    openclawStreamingOutput: false,
+    sessionsFile: path.join(tempDir, "sessions.json"),
+  });
+
+  assert.equal(runtime.usesDesktopSessionSource(), false);
+});
+
+test("OpenClawBotRuntime keeps the ACPX thread source when the desktop session index exists", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-im-openclaw-acpx-ready-"));
+  const acpxSessionIndexFile = path.join(tempDir, "index.json");
+  fs.writeFileSync(acpxSessionIndexFile, JSON.stringify({ entries: [] }), "utf8");
+  const runtime = new OpenClawBotRuntime({
+    mode: "openclaw-bot",
+    workspaceAllowlist: [],
+    codexEndpoint: "",
+    codexCommand: "codex",
+    defaultCodexModel: "gpt-5.3-codex",
+    defaultCodexEffort: "medium",
+    defaultCodexAccessMode: "default",
+    verboseCodexLogs: false,
+    openclaw: {
+      baseUrl: "https://ilinkai.weixin.qq.com",
+      token: "token",
+      threadSource: "acpx",
+      acpxSessionIndexFile,
+      longPollTimeoutMs: 35000,
+    },
+    defaultWorkspaceId: "default",
+    openclawStreamingOutput: false,
+    sessionsFile: path.join(tempDir, "sessions.json"),
+  });
+
+  assert.equal(runtime.usesDesktopSessionSource(), true);
+});
+
 test("OpenClawBotRuntime does not auto override an explicit env token during credential recovery", async () => {
   const previousEnvToken = process.env.CODEX_IM_OPENCLAW_TOKEN;
   process.env.CODEX_IM_OPENCLAW_TOKEN = "env-token";
@@ -672,6 +726,7 @@ test("OpenClawBotRuntime restarts itself when a running turn has been inactive f
     messageId: "msg-1",
     contextToken: "ctx-1",
   });
+  runtime.shouldDeliverThreadEventForActiveWorkspace = () => true;
   runtime.markHeartbeat = async (reason) => {
     heartbeatReasons.push(reason);
   };
@@ -777,5 +832,55 @@ test("OpenClawBotRuntime does not restart while the turn is waiting for approval
 
   assert.equal(result, null);
   assert.equal(exited, false);
+  assert.equal(runtime.pendingSupervisorRestart, false);
+});
+
+test("OpenClawBotRuntime ignores stalled turns from threads outside the active selection", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-im-openclaw-stall-inactive-selection-"));
+  const runtime = new OpenClawBotRuntime({
+    mode: "openclaw-bot",
+    workspaceAllowlist: [],
+    codexEndpoint: "",
+    codexCommand: "codex",
+    defaultCodexModel: "gpt-5.3-codex",
+    defaultCodexEffort: "medium",
+    defaultCodexAccessMode: "default",
+    verboseCodexLogs: false,
+    openclaw: {
+      baseUrl: "https://ilinkai.weixin.qq.com",
+      token: "token",
+      longPollTimeoutMs: 35000,
+      turnStallTimeoutMs: 60 * 60 * 1000,
+      turnStallCheckIntervalMs: 60 * 1000,
+    },
+    defaultWorkspaceId: "default",
+    openclawStreamingOutput: false,
+    sessionsFile: path.join(tempDir, "sessions.json"),
+  });
+
+  const now = Date.now();
+  const notices = [];
+  let exited = false;
+  runtime.activeTurnIdByThreadId.set("thread-old", "turn-1");
+  runtime.activeTurnStartedAtByThreadId.set("thread-old", now - (65 * 60 * 1000));
+  runtime.lastTurnActivityAtByThreadId.set("thread-old", now - (62 * 60 * 1000));
+  runtime.pendingChatContextByThreadId.set("thread-old", {
+    chatId: "wx-user-1",
+    messageId: "msg-1",
+    contextToken: "ctx-1",
+  });
+  runtime.shouldDeliverThreadEventForActiveWorkspace = () => false;
+  runtime.sendInfoCardMessage = async (payload) => {
+    notices.push(payload);
+  };
+  runtime.exitForSupervisorRestart = async () => {
+    exited = true;
+  };
+
+  const result = await runtime.checkForStalledTurns(now);
+
+  assert.equal(result, null);
+  assert.equal(exited, false);
+  assert.equal(notices.length, 0);
   assert.equal(runtime.pendingSupervisorRestart, false);
 });

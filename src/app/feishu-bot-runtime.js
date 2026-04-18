@@ -302,6 +302,7 @@ function attachRuntimeForwarders() {
     handleStopCommand: eventsRuntime.handleStopCommand,
     handleApprovalCommand: approvalRuntime.handleApprovalCommand,
     deliverToProvider: eventsRuntime.deliverToProvider,
+    clearQueuedMessagesForBinding: appDispatcher.clearQueuedMessagesForBinding,
     drainQueuedMessagesForBinding: appDispatcher.drainQueuedMessagesForBinding,
     processQueuedNormalizedTextEvent: appDispatcher.processQueuedNormalizedTextEvent,
     sendInfoCardMessage,

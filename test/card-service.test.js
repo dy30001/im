@@ -232,6 +232,29 @@ test("upsertAssistantReplyCard suppresses the initial progress notice once a rea
   assert.equal(calls[0].text, "第一段正文");
 });
 
+test("upsertAssistantReplyCard flushes the first substantial OpenClaw reply immediately", async () => {
+  const calls = [];
+  const runtime = createOpenClawReplyRuntime({
+    openclawStreamingOutput: true,
+    openclawReplyFlushDelayMs: 80,
+    openclawProgressNoticeDelayMs: 100,
+    openclawProgressFollowupDelayMs: 200,
+  }, calls);
+
+  await upsertAssistantReplyCard(runtime, {
+    threadId: "thread-1",
+    turnId: "turn-1",
+    chatId: "chat-1",
+    text: "这是第一段比较完整的回复。",
+    state: "streaming",
+  });
+
+  await delay(10);
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].text, "这是第一段比较完整的回复。");
+});
+
 test("upsertAssistantReplyCard skips the initial OpenClaw progress notice after an inbound receipt ack", async () => {
   const calls = [];
   const runtime = createOpenClawReplyRuntime({

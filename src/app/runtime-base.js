@@ -15,6 +15,7 @@ function initializeCommonRuntimeState(runtime) {
   runtime.pendingReactionByThreadId = new Map();
   runtime.bindingKeyByThreadId = new Map();
   runtime.workspaceRootByThreadId = new Map();
+  runtime.inFlightThreadDispatchClaimsById = new Map();
   runtime.inFlightApprovalRequestKeys = new Set();
   runtime.resumedThreadIds = new Set();
   runtime.messageContextByMessageId = new Map();

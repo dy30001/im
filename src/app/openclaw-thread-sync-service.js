@@ -1,4 +1,5 @@
 const { delayWithAbort } = require("../shared/abortable-delay");
+const { pathMatchesWorkspaceRoot } = require("../shared/workspace-paths");
 
 const THREAD_SYNC_DELIVERY_RETRY_COOLDOWN_MS = 60_000;
 const THREAD_SYNC_IDLE_POLL_INTERVALS_MS = [5_000, 10_000, 20_000, 30_000];
@@ -99,6 +100,9 @@ async function syncSelectedThreadBinding(runtime, { bindingKey, binding }) {
   if (!bindingKey || !workspaceRoot || !chatId || !threadId) {
     return;
   }
+  if (shouldPauseThreadSyncForBinding(runtime, bindingKey)) {
+    return;
+  }
   if (runtime.activeTurnIdByThreadId.has(threadId) || runtime.pendingApprovalByThreadId.has(threadId)) {
     return;
   }
@@ -107,6 +111,9 @@ async function syncSelectedThreadBinding(runtime, { bindingKey, binding }) {
   const syncKey = buildThreadSyncKey(bindingKey, workspaceRoot);
   const state = runtime.threadSyncStateByKey.get(syncKey);
   if (!state || state.threadId !== threadId) {
+    return;
+  }
+  if (!isCurrentThreadSyncSelection(runtime, bindingKey, workspaceRoot, threadId)) {
     return;
   }
   if (shouldSkipThreadSyncPoll(state)) {
@@ -128,6 +135,9 @@ async function syncSelectedThreadBinding(runtime, { bindingKey, binding }) {
     });
     if (!selectedThread && isMissingCodexThreadError(error)) {
       advanceThreadSyncPollSchedule(state);
+      if (!isCurrentThreadSyncSelection(runtime, bindingKey, workspaceRoot, threadId)) {
+        return;
+      }
       await maybeSendThreadSyncWarning(runtime, state, {
         chatId,
         text: [
@@ -159,6 +169,13 @@ async function syncSelectedThreadBinding(runtime, { bindingKey, binding }) {
         state,
       })
     );
+  }
+  if (!isCurrentThreadSyncSelection(runtime, bindingKey, workspaceRoot, threadId)) {
+    return;
+  }
+  if (!threadSyncSnapshotMatchesWorkspace(selectedThread, workspaceRoot)) {
+    clearSelectedThreadForSync(runtime, bindingKey, workspaceRoot, threadId, state);
+    return;
   }
   state.thread = selectedThread;
 
@@ -230,6 +247,9 @@ async function syncSelectedDesktopSessionBinding(runtime, { bindingKey, binding 
   const chatId = String(binding?.chatId || "").trim();
   const threadId = String(binding?.threadIdByWorkspaceRoot?.[workspaceRoot] || "").trim();
   if (!bindingKey || !workspaceRoot || !chatId || !threadId) {
+    return;
+  }
+  if (shouldPauseThreadSyncForBinding(runtime, bindingKey)) {
     return;
   }
 
@@ -603,6 +623,81 @@ function buildThreadSyncKey(bindingKey, workspaceRoot) {
     return "";
   }
   return `${normalizedBindingKey}::${normalizedWorkspaceRoot}`;
+}
+
+function shouldPauseThreadSyncForBinding(runtime, bindingKey) {
+  const normalizedBindingKey = String(bindingKey || "").trim();
+  if (!normalizedBindingKey) {
+    return false;
+  }
+
+  if (
+    runtime?.inFlightBindingDispatchKeys instanceof Set
+    && runtime.inFlightBindingDispatchKeys.has(normalizedBindingKey)
+  ) {
+    return true;
+  }
+
+  const pendingQueue = runtime?.pendingMessageQueueByBindingKey instanceof Map
+    ? runtime.pendingMessageQueueByBindingKey.get(normalizedBindingKey)
+    : null;
+  return Array.isArray(pendingQueue) && pendingQueue.length > 0;
+}
+
+function isCurrentThreadSyncSelection(runtime, bindingKey, workspaceRoot, threadId) {
+  const normalizedBindingKey = String(bindingKey || "").trim();
+  const normalizedWorkspaceRoot = String(workspaceRoot || "").trim();
+  const normalizedThreadId = String(threadId || "").trim();
+  if (!normalizedBindingKey || !normalizedWorkspaceRoot || !normalizedThreadId) {
+    return false;
+  }
+  if (typeof runtime?.sessionStore?.getActiveWorkspaceRoot === "function") {
+    const activeWorkspaceRoot = runtime.sessionStore.getActiveWorkspaceRoot(normalizedBindingKey);
+    if (activeWorkspaceRoot && activeWorkspaceRoot !== normalizedWorkspaceRoot) {
+      return false;
+    }
+  }
+  if (typeof runtime?.sessionStore?.getThreadIdForWorkspace === "function") {
+    const selectedThreadId = runtime.sessionStore.getThreadIdForWorkspace(
+      normalizedBindingKey,
+      normalizedWorkspaceRoot
+    );
+    if (selectedThreadId && selectedThreadId !== normalizedThreadId) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function threadSyncSnapshotMatchesWorkspace(thread, workspaceRoot) {
+  if (!thread) {
+    return false;
+  }
+  const threadCwd = String(thread.cwd || "").trim();
+  if (!threadCwd) {
+    return false;
+  }
+  return pathMatchesWorkspaceRoot(threadCwd, workspaceRoot);
+}
+
+function clearSelectedThreadForSync(runtime, bindingKey, workspaceRoot, threadId, state) {
+  if (typeof runtime?.sessionStore?.clearThreadIdForWorkspace === "function") {
+    const currentThreadId = typeof runtime?.sessionStore?.getThreadIdForWorkspace === "function"
+      ? runtime.sessionStore.getThreadIdForWorkspace(bindingKey, workspaceRoot)
+      : "";
+    if (!currentThreadId || currentThreadId === threadId) {
+      runtime.sessionStore.clearThreadIdForWorkspace(bindingKey, workspaceRoot);
+    }
+  }
+  if (state) {
+    state.thread = null;
+    state.needsBaseline = true;
+    state.lastUpdatedAt = 0;
+    state.lastMessageSignature = "";
+    state.lastError = "";
+    clearThreadSyncDeliveryFailure(state);
+    resetThreadSyncPollSchedule(state, { immediate: true });
+  }
 }
 
 module.exports = {

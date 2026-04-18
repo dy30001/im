@@ -113,3 +113,58 @@ test("prepareOpenClawInboundMessage decrypts encrypted file attachments before s
   assert.match(normalized.text, /帮我读一下这个文件/);
   assert.match(normalized.text, /原文件名: report\.pdf/);
 });
+
+test("prepareOpenClawInboundMessage downloads multiple attachments concurrently while preserving order", async () => {
+  const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-im-openclaw-multi-"));
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const runtime = {
+    openclawAdapter: {
+      downloadMedia: async ({ url }) => {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        inFlight -= 1;
+        return {
+          buffer: Buffer.from(`payload:${url}`),
+          contentType: "image/png",
+        };
+      },
+    },
+  };
+
+  const normalized = await prepareOpenClawInboundMessage(runtime, {
+    messageId: "1003",
+    text: "看看这些图片",
+    attachments: [
+      {
+        kind: "image",
+        downloadUrl: "https://cdn.example.com/image-a",
+        aesKey: "",
+        mimeType: "image/png",
+        originalFilename: "a.png",
+      },
+      {
+        kind: "image",
+        downloadUrl: "https://cdn.example.com/image-b",
+        aesKey: "",
+        mimeType: "image/png",
+        originalFilename: "b.png",
+      },
+    ],
+  }, workspaceRoot);
+
+  assert.ok(maxInFlight > 1);
+  assert.equal(normalized.attachments[0].originalFilename, "a.png");
+  assert.equal(normalized.attachments[1].originalFilename, "b.png");
+  assert.deepEqual(
+    fs.readFileSync(normalized.attachments[0].localPath),
+    Buffer.from("payload:https://cdn.example.com/image-a")
+  );
+  assert.deepEqual(
+    fs.readFileSync(normalized.attachments[1].localPath),
+    Buffer.from("payload:https://cdn.example.com/image-b")
+  );
+  assert.match(normalized.text, /\[图片 1\].*a\.png/s);
+  assert.match(normalized.text, /\[图片 2\].*b\.png/s);
+});

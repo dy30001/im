@@ -4,6 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const MAX_INBOUND_ATTACHMENT_BYTES = 100 * 1024 * 1024;
+const MAX_INBOUND_ATTACHMENT_CONCURRENCY = 3;
 
 const MIME_TO_EXTENSION = {
   "application/pdf": ".pdf",
@@ -41,30 +42,34 @@ async function prepareOpenClawInboundMessage(runtime, normalized, workspaceRoot)
     return normalized;
   }
 
-  const preparedAttachments = [];
-  for (let index = 0; index < attachments.length; index += 1) {
-    const attachment = attachments[index];
-    try {
-      const saved = await downloadInboundAttachment(runtime, attachment, {
-        workspaceRoot,
-        messageId: normalized?.messageId,
-        index,
-      });
-      preparedAttachments.push({
-        ...attachment,
-        localPath: saved.localPath,
-        mimeType: attachment.mimeType || saved.mimeType,
-        originalFilename: attachment.originalFilename || saved.originalFilename,
-        downloadError: "",
-      });
-    } catch (error) {
-      preparedAttachments.push({
-        ...attachment,
-        localPath: "",
-        downloadError: error?.message || "附件下载失败",
-      });
+  const saveDir = await ensureInboundAttachmentDirectory(workspaceRoot);
+  const preparedAttachments = await mapWithConcurrencyLimit(
+    attachments,
+    Math.min(MAX_INBOUND_ATTACHMENT_CONCURRENCY, attachments.length),
+    async (attachment, index) => {
+      try {
+        const saved = await downloadInboundAttachment(runtime, attachment, {
+          workspaceRoot,
+          messageId: normalized?.messageId,
+          index,
+          saveDir,
+        });
+        return {
+          ...attachment,
+          localPath: saved.localPath,
+          mimeType: attachment.mimeType || saved.mimeType,
+          originalFilename: attachment.originalFilename || saved.originalFilename,
+          downloadError: "",
+        };
+      } catch (error) {
+        return {
+          ...attachment,
+          localPath: "",
+          downloadError: error?.message || "附件下载失败",
+        };
+      }
     }
-  }
+  );
 
   return {
     ...normalized,
@@ -106,7 +111,12 @@ function buildInboundAttachmentPrompt({ bodyText = "", attachments = [] } = {}) 
   return [normalizedBodyText, header, ...lines].filter(Boolean).join("\n\n");
 }
 
-async function downloadInboundAttachment(runtime, attachment, { workspaceRoot = "", messageId = "", index = 0 } = {}) {
+async function downloadInboundAttachment(runtime, attachment, {
+  workspaceRoot = "",
+  messageId = "",
+  index = 0,
+  saveDir = "",
+} = {}) {
   const downloadUrl = String(attachment?.downloadUrl || "").trim();
   if (!downloadUrl) {
     throw new Error("附件缺少可用下载地址");
@@ -120,13 +130,13 @@ async function downloadInboundAttachment(runtime, attachment, { workspaceRoot = 
   }
 
   const decryptedBuffer = maybeDecryptAttachment(encryptedBuffer, attachment);
-  const saveDir = await ensureInboundAttachmentDirectory(workspaceRoot);
+  const resolvedSaveDir = String(saveDir || "").trim() || await ensureInboundAttachmentDirectory(workspaceRoot);
   const fileName = resolveAttachmentFileName(attachment, {
     contentType,
     messageId,
     index,
   });
-  const localPath = path.join(saveDir, fileName);
+  const localPath = path.join(resolvedSaveDir, fileName);
   await fs.promises.writeFile(localPath, decryptedBuffer);
 
   return {
@@ -293,6 +303,27 @@ function attachmentLabel(kind, index) {
     return `[文件 ${index + 1}]`;
   }
   return `[附件 ${index + 1}]`;
+}
+
+async function mapWithConcurrencyLimit(items, limit, mapper) {
+  const normalizedItems = Array.isArray(items) ? items : [];
+  if (!normalizedItems.length) {
+    return [];
+  }
+
+  const results = new Array(normalizedItems.length);
+  const workerCount = Math.max(1, Math.min(Number(limit) || 1, normalizedItems.length));
+  let nextIndex = 0;
+
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextIndex < normalizedItems.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      results[currentIndex] = await mapper(normalizedItems[currentIndex], currentIndex);
+    }
+  }));
+
+  return results;
 }
 
 module.exports = {

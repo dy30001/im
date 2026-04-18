@@ -34,6 +34,7 @@ test("readConfig loads openclaw bot settings from env", () => {
     CODEX_IM_OPENCLAW_HEARTBEAT_FILE: process.env.CODEX_IM_OPENCLAW_HEARTBEAT_FILE,
     CODEX_IM_OPENCLAW_LOG_FILE: process.env.CODEX_IM_OPENCLAW_LOG_FILE,
     CODEX_IM_OPENCLAW_ENV_FILE: process.env.CODEX_IM_OPENCLAW_ENV_FILE,
+    CODEX_IM_PERF_LOGS: process.env.CODEX_IM_PERF_LOGS,
     CODEX_IM_DEFAULT_WORKSPACE_ROOT: process.env.CODEX_IM_DEFAULT_WORKSPACE_ROOT,
     CODEX_IM_SESSIONS_FILE: process.env.CODEX_IM_SESSIONS_FILE,
   };
@@ -51,6 +52,7 @@ test("readConfig loads openclaw bot settings from env", () => {
   process.env.CODEX_IM_OPENCLAW_PROGRESS_NOTICE_DELAY_MS = "1500";
   process.env.CODEX_IM_OPENCLAW_PROGRESS_FOLLOWUP_DELAY_MS = "300000";
   process.env.CODEX_IM_OPENCLAW_INSTANCE_ID = "wx1";
+  process.env.CODEX_IM_PERF_LOGS = "true";
   process.env.CODEX_IM_DEFAULT_WORKSPACE_ROOT = "/Users/dy3000/code/im";
   delete process.env.CODEX_IM_OPENCLAW_CREDENTIALS_FILE;
   delete process.env.CODEX_IM_OPENCLAW_LOCK_DIR;
@@ -73,6 +75,7 @@ test("readConfig loads openclaw bot settings from env", () => {
     assert.equal(config.openclawProgressNoticeDelayMs, 1500);
     assert.equal(config.openclawProgressFollowupDelayMs, 300000);
     assert.equal(config.openclaw.instanceId, "wx1");
+    assert.equal(config.performanceLogs, true);
     assert.equal(config.defaultWorkspaceRoot, "/Users/dy3000/code/im");
     assert.equal(
       config.sessionsFile,

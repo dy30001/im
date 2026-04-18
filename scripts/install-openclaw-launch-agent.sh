@@ -15,7 +15,7 @@ LOG_FILE="$OPENCLAW_LOG_FILE"
 USER_ID="$(id -u)"
 LAUNCHD_TARGET="gui/${USER_ID}/${LABEL}"
 LAUNCHD_ROOT="$HOME/.codex-im/launchd-root"
-NODE_BIN="$(command -v node)"
+NODE_BIN="$(resolve_openclaw_node_bin || true)"
 INSTANCE_ARG_XML=""
 if [ -n "$OPENCLAW_INSTANCE_ARG" ]; then
   INSTANCE_ARG_XML="    <string>${OPENCLAW_INSTANCE_ARG}</string>"
@@ -30,7 +30,7 @@ fi
 
 if [ "$(uname -s)" != "Darwin" ]; then
   echo "[codex-im] launchd is only available on macOS; falling back to background daemon"
-  exec npm run openclaw-bot:daemon
+  exec bash ./scripts/start-openclaw-bot.sh "${OPENCLAW_INSTANCE_ID:-}"
 fi
 
 if ! command -v launchctl >/dev/null 2>&1; then

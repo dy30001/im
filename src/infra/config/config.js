@@ -36,6 +36,7 @@ function readConfig() {
     defaultCodexEffort: readTextEnv("CODEX_IM_DEFAULT_CODEX_EFFORT"),
     defaultCodexAccessMode: readAccessModeEnv("CODEX_IM_DEFAULT_CODEX_ACCESS_MODE"),
     verboseCodexLogs: readBooleanEnv("CODEX_IM_VERBOSE_LOGS", false),
+    performanceLogs: readBooleanEnv("CODEX_IM_PERF_LOGS", false),
     feishu: {
       appId: process.env.FEISHU_APP_ID || "",
       appSecret: process.env.FEISHU_APP_SECRET || "",
